@@ -1,0 +1,19 @@
+FROM python:3.11-slim
+
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /uvx /bin/
+
+ENV UV_PROJECT_ENVIRONMENT=/tmp/.venv
+ENV UV_PYTHON=python3.11
+ENV UV_PYTHON_DOWNLOADS=never
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends make restic \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir mkdocs-material
+
+WORKDIR /workspace/apps/backend
+
+COPY . .
+
+EXPOSE 5050

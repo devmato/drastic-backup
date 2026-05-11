@@ -1,0 +1,78 @@
+name: Test
+
+on:
+  push:
+    branches:
+      - develop
+      - main
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  python:
+    name: Python ${{ matrix.component }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: backend
+            workdir: apps/backend
+          - component: agent
+            workdir: apps/agent
+          - component: common
+            workdir: libs/python/common
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        working-directory: ${{ matrix.workdir }}
+        run: uv sync --frozen --dev
+      - name: Test
+        working-directory: ${{ matrix.workdir }}
+        run: uv run pytest
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install dependencies
+        working-directory: apps/frontend
+        run: corepack enable && yarn install --immutable
+      - name: Build
+        working-directory: apps/frontend
+        run: yarn build
+
+  docs:
+    name: Documentation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Build docs
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install mkdocs-material
+          mkdocs build
+
+  release-tooling:
+    name: Release Tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check scripts
+        run: |
+          bash -n scripts/release.sh
+          bash -n scripts/build-agent-artifact.sh
+          bash -n scripts/generate-env.sh
+          bash -n scripts/ci/publish-docker-image.sh
+          python -m py_compile scripts/ci/upload-forgejo-release-asset.py

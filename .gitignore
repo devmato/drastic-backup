@@ -1,0 +1,107 @@
+# -----------------------------
+# Python / Bytecode / Caches
+# -----------------------------
+**/__pycache__/
+**/*.py[cod]
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/*.egg-info/
+
+# Virtualenvs
+**/.venv/
+**/venv/
+**/env/
+
+# -----------------------------
+# Node / Frontend
+# -----------------------------
+**/node_modules/
+**/.yarn/
+**/dist/
+**/build/
+**/*.spec
+**/.quasar/
+**/.vite/
+**/.eslintcache
+
+# Quasar temp artifacts
+**/quasar.config.*.temporary.compiled*
+
+# MkDocs
+site/
+docs-site/
+
+# Cordova / Capacitor (Quasar)
+**/src-cordova/node_modules/
+**/src-cordova/platforms/
+**/src-cordova/plugins/
+**/src-cordova/www/
+**/src-capacitor/www/
+**/src-capacitor/node_modules/
+
+# Logs
+**/npm-debug.log*
+**/yarn-debug.log*
+**/yarn-error.log*
+**/*.log
+
+# -----------------------------
+# IDE / OS
+# -----------------------------
+**/.idea/
+**/.vscode/
+**/.DS_Store
+**/Thumbs.db
+**/.vscode/settings.json
+
+# -----------------------------
+# Env / Secrets
+# -----------------------------
+**/.env
+**/.env.*
+!**/.env.default
+!**/.env.dev
+!**/.env.dev.example
+!**/.env.override.example
+!**/.env.dev.override.example
+!**/.env.test.example
+!**/.env.prod.example
+!**/.env.prod.override.example
+**/*token*.txt
+**/o365_token.txt
+
+# -----------------------------
+# Docker
+# -----------------------------
+docker-compose.override.yml
+
+# -----------------------------
+# Backend runtime / generated
+# -----------------------------
+**/celerybeat-schedule
+**/celerybeat*
+**/celery.*
+
+# flask session
+**/flask_session/*
+
+# -----------------------------
+# App-specific paths (scoped)
+# -----------------------------
+
+# Ignore local configs (keep samples)
+apps/agent/config/config.cfg
+
+# storage: ignore contents, keep README
+apps/backend/storage/*
+!apps/backend/storage/README.md
+!apps/backend/storage/README.MD
+
+# app runtime data
+apps/backend/import/*
+!apps/backend/import/.gitkeep
+apps/backend/data/*
+!apps/backend/data/.gitkeep
+apps/agent/data/*
+apps/agent/data-dev-native/*

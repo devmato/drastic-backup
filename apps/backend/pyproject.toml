@@ -1,0 +1,58 @@
+[project]
+name = "drastic-backup-server"
+version = "0.1.0"
+description = "Drastic Backup Server"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "apprise>=1.9.6",
+    "bcrypt>=5.0.0",
+    "click>=8.3.1",
+    "cron-descriptor>=2.0.6",
+    "croniter>=6.0.0",
+    "drastic-common",
+    "flask>=3.1.2",
+    "flask-jwt-extended>=4.7.1",
+    "flask-migrate>=4.1.0",
+    "flask-smorest>=0.45.0",
+    "flask-socketio>=5.6.0",
+    "flask-sqlalchemy>=3.1.1",
+    "gunicorn>=23.0.0",
+    "marshmallow>=3.26.1",
+    "pycryptodome>=3.23.0",
+    "pymysql>=1.1.2",
+    "requests>=2.32.5",
+    "simple-websocket>=1.1.0",
+    "werkzeug>=3.1.5",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.14.9",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["drastic_server", "drastic_common"]
+
+[tool.uv.sources]
+drastic-common = { path = "../../libs/python/common", editable = true }

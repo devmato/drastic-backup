@@ -1,0 +1,25 @@
+FROM python:3.11-slim
+
+ARG DRASTIC_DEV_UID=1000
+ARG DRASTIC_DEV_GID=1000
+
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /uvx /bin/
+
+ENV UV_PROJECT_ENVIRONMENT=/tmp/.venv
+ENV UV_PYTHON=python3.11
+ENV UV_PYTHON_DOWNLOADS=never
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN if ! getent group "$DRASTIC_DEV_GID" >/dev/null; then \
+        groupadd --gid "$DRASTIC_DEV_GID" drastic; \
+    fi \
+    && if ! getent passwd "$DRASTIC_DEV_UID" >/dev/null; then \
+        useradd --uid "$DRASTIC_DEV_UID" --gid "$DRASTIC_DEV_GID" --create-home --shell /bin/sh drastic; \
+    fi
+
+WORKDIR /workspace/apps/agent
+
+COPY . .

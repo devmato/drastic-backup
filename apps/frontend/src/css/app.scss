@@ -1,0 +1,78 @@
+// app global css in SCSS form
+
+body.body--dark {
+  background: #000;
+}
+
+body.body--light {
+  background: $grey-1;
+}
+
+.db-dialog-card-sm {
+  width: 100%;
+  max-width: 400px;
+}
+
+.db-dialog-card-md {
+  width: 100%;
+  max-width: 500px;
+}
+
+.db-dialog-card-lg {
+  width: 100%;
+  max-width: 600px;
+}
+
+.q-dialog__inner--minimized > .app-dialog-wide {
+  width: 60vw;
+  max-width: calc(100vw - 48px);
+}
+
+.q-dialog__inner--minimized > .db-job-form-dialog {
+  height: min(680px, calc(100vh - 48px));
+}
+
+@media (max-width: 599px) {
+  .q-dialog__inner--minimized > .app-dialog-wide {
+    width: calc(100vw - 48px);
+  }
+}
+
+.db-auth-page {
+  background:
+    radial-gradient(circle at top, rgba(83, 109, 254, 0.18), transparent 32%),
+    linear-gradient(160deg, #1f2933 0%, #111827 100%);
+}
+
+.db-auth-card {
+  width: 100%;
+  max-width: 420px;
+}
+
+.db-code-block {
+  max-height: 400px;
+  overflow: auto;
+  padding: 12px;
+  background: $grey-2;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.db-code-block--wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.db-log-message {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.db-error-code {
+  font-size: 30vh;
+  line-height: 1;
+}
+
+.db-error-subtitle {
+  opacity: 0.4;
+}

@@ -1,0 +1,54 @@
+[project]
+name = "drastic-agent"
+version = "0.1.0"
+description = "Drastic Backup Agent"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.3.1",
+    "croniter>=6.0.0",
+    "dataset>=1.6.2",
+    "drastic-common",
+    "docker>=7.1.0",
+    "marshmallow>=4.2.0",
+    "python-socketio[client]>=5.16.0",
+    "requests>=2.32.5",
+]
+
+[project.scripts]
+drastic-agent = "drastic_agent.__main__:cli"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[dependency-groups]
+build = [
+    "pyinstaller>=6.11.0",
+]
+dev = [
+    "pytest>=8.4.2",
+    "ruff>=0.14.9",
+    "watchfiles>=1.1.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "B", "I"]
+ignore = ["E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["drastic_agent", "drastic_common"]
+
+[tool.uv.sources]
+drastic-common = { path = "../../libs/python/common", editable = true }

@@ -1,0 +1,355 @@
+<template>
+  <q-dialog v-model="dialogVisible" persistent :maximized="$q.screen.lt.md">
+    <q-card class="app-dialog-wide db-job-form-dialog column no-wrap">
+      <q-card-section class="col-auto"><div class="text-h6">{{ editingJob ? 'Edit Job' : 'Add Job' }}</div></q-card-section>
+      <q-form class="column no-wrap col" @submit="submitForm">
+        <q-card-section class="col scroll">
+          <div class="row no-wrap">
+            <div class="col-auto q-pa-sm q-mr-md" style="width: 200px">
+              <q-list dense separator>
+                <q-item
+                  v-for="section in sections"
+                  :key="section.name"
+                  clickable
+                  dense
+                  :active="activeSection === section.name"
+                  active-class="bg-grey-2 text-primary text-weight-medium"
+                  :disable="section.requiresEntries && !entriesConfigured"
+                  @click="activeSection = section.name"
+                >
+                  <q-item-section side><q-icon :name="section.icon" size="xs" /></q-item-section>
+                  <q-item-section>{{ section.label }}</q-item-section>
+                </q-item>
+              </q-list>
+            </div>
+
+            <q-separator vertical />
+
+            <div class="col q-pl-md">
+              <q-tab-panels v-model="activeSection" class="bg-transparent">
+                <q-tab-panel name="general" class="q-pa-none">
+                  <div class="q-gutter-md">
+                    <q-input outlined dense v-model="jobForm.name" label="Job Name" :rules="[val => !!val || 'Required']" />
+                    <q-select outlined dense v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
+                  </div>
+                </q-tab-panel>
+
+                <q-tab-panel name="entries" class="q-pa-none">
+                  <component
+                    :is="currentTypeComponent"
+                    v-if="currentTypeComponent"
+                    v-model="jobForm.config"
+                    :agent-id="agentId"
+                    :agent-online="agentOnline"
+                  />
+                </q-tab-panel>
+
+                <q-tab-panel name="actions" class="q-pa-none">
+                  <JobActionsPanel
+                    :job-id="editingJob?.id"
+                    v-model="draftActions"
+                    :persist-immediately="false"
+                    :disabled="!entriesConfigured || !agentOnline"
+                  />
+                </q-tab-panel>
+
+                <q-tab-panel name="schedules" class="q-pa-none">
+                  <JobSchedulesPanel
+                    :job-id="editingJob?.id"
+                    v-model="draftSchedules"
+                    :repositories="dialogRepositories"
+                    :all-repositories="allRepositories"
+                    :persist-immediately="false"
+                    :disabled="!entriesConfigured"
+                  />
+                </q-tab-panel>
+              </q-tab-panels>
+            </div>
+          </div>
+        </q-card-section>
+        <q-card-actions align="right" class="col-auto">
+          <q-btn flat label="Cancel" color="red" :disable="submitting" @click="dialogVisible = false" />
+          <q-btn v-if="previousSection" flat dense no-caps icon="chevron_left" label="Prev" type="button" color="grey-7" :disable="submitting" @click="goPrevious" />
+          <q-btn v-if="nextSection" flat dense no-caps label="Next" icon-right="chevron_right" type="button" color="grey-8" :disable="!canGoNext || submitting" @click="goNext" />
+          <q-btn label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+        </q-card-actions>
+      </q-form>
+    </q-card>
+  </q-dialog>
+</template>
+
+<script setup>
+import { computed, reactive, ref, watch } from 'vue'
+import { useQuasar } from 'quasar'
+import FileBackupJobForm from 'components/jobs/forms/FileBackupJobForm.vue'
+import ProxmoxBackupJobForm from 'components/jobs/forms/ProxmoxBackupJobForm.vue'
+import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
+import JobSchedulesPanel from 'components/jobs/panels/JobSchedulesPanel.vue'
+
+const $q = useQuasar()
+
+const props = defineProps({
+  modelValue: { type: Boolean, required: true },
+  editingJob: { type: Object, default: null },
+  agentId: { type: [Number, String], default: null },
+  agentOnline: { type: Boolean, default: false },
+  repositories: { type: Array, default: () => [] },
+  allRepositories: { type: Array, default: () => [] },
+  submitting: { type: Boolean, default: false },
+})
+
+const emit = defineEmits(['update:modelValue', 'save'])
+
+const sections = [
+  { name: 'general', label: 'General', icon: 'settings' },
+  { name: 'entries', label: 'Entries', icon: 'description' },
+  { name: 'actions', label: 'Commands', icon: 'terminal', requiresEntries: true },
+  { name: 'schedules', label: 'Schedule', icon: 'event', requiresEntries: true },
+]
+
+const jobTypeOptions = [
+  { label: 'File-Backup', value: 'file' },
+  { label: 'Proxmox-Backup', value: 'proxmox' },
+]
+
+const jobForm = reactive(createEmptyJobForm())
+const activeSection = ref('general')
+const draftActions = ref([])
+const draftSchedules = ref([])
+
+const dialogVisible = computed({
+  get: () => props.modelValue,
+  set: value => emit('update:modelValue', value),
+})
+
+const activeSectionIndex = computed(() => sections.findIndex(section => section.name === activeSection.value))
+
+const previousSection = computed(() => sections[activeSectionIndex.value - 1] || null)
+
+const nextSection = computed(() => sections[activeSectionIndex.value + 1] || null)
+
+const canLeaveGeneral = computed(() => {
+  return Boolean(jobForm.name.trim() && jobForm.type)
+})
+
+const canGoNext = computed(() => {
+  if (!nextSection.value) {
+    return false
+  }
+
+  if (activeSection.value === 'general') {
+    return canLeaveGeneral.value
+  }
+
+  if (activeSection.value === 'entries') {
+    return entriesConfigured.value
+  }
+
+  return !nextSection.value.requiresEntries || entriesConfigured.value
+})
+
+const currentTypeComponent = computed(() => {
+  if (jobForm.type === 'file') {
+    return FileBackupJobForm
+  }
+
+  if (jobForm.type === 'proxmox') {
+    return ProxmoxBackupJobForm
+  }
+
+  return null
+})
+
+const dialogRepositories = computed(() => props.repositories)
+const allRepositories = computed(() => props.allRepositories)
+
+const entriesConfigured = computed(() => {
+  if (jobForm.type === 'file') {
+    return (jobForm.config?.paths || []).length > 0
+  }
+
+  if (jobForm.type === 'proxmox') {
+    return jobForm.config?.selection_mode !== 'include' || (jobForm.config?.guest_ids || []).length > 0
+  }
+
+  return false
+})
+
+watch(
+  () => props.modelValue,
+  value => {
+    if (value) {
+      resetForm()
+    }
+  }
+)
+
+watch(
+  () => jobForm.type,
+  type => {
+    if (!props.editingJob) {
+      jobForm.config = cloneConfig(type)
+    }
+  }
+)
+
+watch(entriesConfigured, value => {
+  if (!value && ['actions', 'schedules'].includes(activeSection.value)) {
+    activeSection.value = 'entries'
+  }
+})
+
+function createEmptyJobForm() {
+  return {
+    name: '',
+    type: 'file',
+    config: {
+      paths: [],
+      exclude_patterns: [],
+    },
+  }
+}
+
+function cloneFileConfig(config = {}) {
+  return {
+    paths: (config.paths || []).map(path => ({ ...path })),
+    exclude_patterns: (config.exclude_patterns || []).map(pattern => ({ ...pattern })),
+  }
+}
+
+function cloneProxmoxConfig(config = {}) {
+  return {
+    selection_mode: config.selection_mode || 'all',
+    guest_ids: [...(config.guest_ids || [])],
+  }
+}
+
+function cloneAction(action) {
+  return {
+    ...action,
+    data: { ...(action.data || {}) },
+  }
+}
+
+function cloneSchedule(schedule) {
+  const dayOfWeek = schedule.day_of_week || parseDayOfWeek(schedule.cron_string)
+  const cronParts = schedule.cron_string?.split(' ') || []
+
+  return {
+    ...schedule,
+    repository_id: schedule.repository_id,
+    retention_id: schedule.retention_id || null,
+    hour: schedule.hour || cronParts[1] || '0',
+    minute: schedule.minute || cronParts[0] || '0',
+    day_of_week: [...dayOfWeek],
+    config: cloneScheduleConfig(schedule.config),
+  }
+}
+
+function cloneScheduleConfig(config = {}) {
+  return {
+    repository_check: {
+      enabled: Boolean(config.repository_check?.enabled),
+      read_data: config.repository_check?.read_data || null,
+    },
+  }
+}
+
+function parseDayOfWeek(cronString) {
+  const dowPart = cronString?.split(' ')[4]
+  return dowPart === '*' || !dowPart ? [0, 1, 2, 3, 4, 5, 6] : dowPart.split(',').map(Number)
+}
+
+function cloneConfig(type, config = {}) {
+  if (type === 'proxmox') {
+    return cloneProxmoxConfig(config)
+  }
+
+  return cloneFileConfig(config)
+}
+
+function resetForm() {
+  const form = createEmptyJobForm()
+  activeSection.value = 'general'
+
+  if (props.editingJob) {
+    form.name = props.editingJob.name
+    form.type = props.editingJob.type || 'file'
+    form.config = cloneConfig(form.type, props.editingJob.config)
+    draftActions.value = props.editingJob.actions.map(cloneAction)
+    draftSchedules.value = props.editingJob.schedules.map(cloneSchedule)
+  } else if (form.type === 'proxmox') {
+    form.config = cloneProxmoxConfig()
+    draftActions.value = []
+    draftSchedules.value = []
+  } else {
+    draftActions.value = []
+    draftSchedules.value = []
+  }
+
+  jobForm.name = form.name
+  jobForm.type = form.type
+  jobForm.config = form.config
+}
+
+function normalizeScheduleRepositoryId(schedule) {
+  return schedule.repository_id
+}
+
+function goNext() {
+  if (!canGoNext.value || !nextSection.value) {
+    return
+  }
+
+  activeSection.value = nextSection.value.name
+}
+
+function goPrevious() {
+  if (!previousSection.value) {
+    return
+  }
+
+  activeSection.value = previousSection.value.name
+}
+
+function submitForm() {
+  if (jobForm.type === 'file' && (jobForm.config?.paths || []).length === 0) {
+    $q.notify({ message: 'Select at least one include path', color: 'red', position: 'top' })
+    return
+  }
+
+  if (jobForm.type === 'proxmox' && jobForm.config?.selection_mode === 'include' && (jobForm.config?.guest_ids || []).length === 0) {
+    $q.notify({ message: 'Select at least one Proxmox guest', color: 'red', position: 'top' })
+    return
+  }
+
+  const payload = {
+    name: jobForm.name,
+    config: cloneConfig(jobForm.type, jobForm.config),
+    actions: draftActions.value.map(action => ({
+      id: action.id,
+      module: action.module,
+      hook: action.hook,
+      data: { ...(action.data || {}) },
+    })),
+    schedules: draftSchedules.value.map(schedule => ({
+      hour: schedule.hour,
+      minute: schedule.minute,
+      day_of_week: [...(schedule.day_of_week || [])],
+      repository_id: normalizeScheduleRepositoryId(schedule),
+      retention_id: schedule.retention_id || null,
+      enabled: schedule.enabled,
+      id: schedule.id,
+      config: cloneScheduleConfig(schedule.config),
+    })),
+  }
+
+  if (!props.editingJob) {
+    payload.type = jobForm.type
+  }
+
+  emit('save', payload)
+}
+
+defineOptions({ name: 'JobManageDialog' })
+</script>

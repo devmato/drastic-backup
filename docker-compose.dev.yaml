@@ -1,0 +1,117 @@
+services:
+  db:
+    image: mariadb:11.4
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-UTC}
+      MARIADB_ROOT_PASSWORD: ${MARIADB_ROOT_PASSWORD}
+      MARIADB_DATABASE: ${MARIADB_DATABASE}
+      MARIADB_USER: ${MARIADB_USER}
+      MARIADB_PASSWORD: ${MARIADB_PASSWORD}
+    command: ["--character-set-server=utf8mb4", "--collation-server=utf8mb4_unicode_ci"]
+    volumes:
+      - db_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mariadb-admin ping -h 127.0.0.1 -u$$MARIADB_USER -p$$MARIADB_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ./apps/backend
+      dockerfile: Dockerfile.dev
+    user: "${DRASTIC_DEV_UID:-1000}:${DRASTIC_DEV_GID:-1000}"
+    volumes:
+      - .:/workspace
+      - ./apps/backend/data/asset-cache:/opt/drastic-server/asset-cache
+      - ./apps/backend/storage/rest-server:/data
+    env_file:
+      - path: .env.default
+        required: true
+      - path: .env.dev
+        required: true
+      - path: .env.dev.override
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+      HOME: /tmp
+      DRASTIC_PUBLIC_URL: ${DRASTIC_PUBLIC_URL:-}
+      DRASTIC_AGENT_IMAGE: ${DRASTIC_AGENT_IMAGE:-ghcr.io/devmato/drastic-backup-agent:latest}
+      DRASTIC_AGENT_RELEASE_BASE_URL: ${DRASTIC_AGENT_RELEASE_BASE_URL:-https://github.com}
+      DRASTIC_AGENT_RELEASE_REPOSITORY: ${DRASTIC_AGENT_RELEASE_REPOSITORY:-devmato/drastic-backup}
+      DRASTIC_AGENT_ARTIFACT_TAG: ${DRASTIC_AGENT_ARTIFACT_TAG:-}
+      DRASTIC_AGENT_ARTIFACT_NAME_TEMPLATE: ${DRASTIC_AGENT_ARTIFACT_NAME_TEMPLATE:-drastic-agent-{os}-{arch}-{tag}.{ext}}
+      DRASTIC_ASSET_CACHE_PATH: ${DRASTIC_ASSET_CACHE_PATH:-/opt/drastic-server/asset-cache}
+      DRASTIC_REST_SERVER_URL: ${DRASTIC_REST_SERVER_URL:-http://rest-server:8000}
+      DRASTIC_REST_SERVER_DATA_DIRECTORY: /data
+      DRASTIC_DOCS_SITE_PATH: /tmp/drastic-docs-site
+      DRASTIC_HOST_BACKEND_PORT: ${DRASTIC_HOST_BACKEND_PORT:-5050}
+      DRASTIC_BIND_BACKEND_PORT: ${DRASTIC_BIND_BACKEND_PORT:-5050}
+      DRASTIC_BIND_DEV_FRONTEND_PORT: ${DRASTIC_BIND_DEV_FRONTEND_PORT:-9050}
+      DRASTIC_HOST_DEV_FRONTEND_PORT: ${DRASTIC_HOST_DEV_FRONTEND_PORT:-9050}
+      DRASTIC_GUNICORN_WORKERS: ${DRASTIC_GUNICORN_WORKERS:-1}
+      DRASTIC_GUNICORN_THREADS: ${DRASTIC_GUNICORN_THREADS:-16}
+      DRASTIC_GUNICORN_TIMEOUT: ${DRASTIC_GUNICORN_TIMEOUT:-300}
+      DRASTIC_GUNICORN_GRACEFUL_TIMEOUT: ${DRASTIC_GUNICORN_GRACEFUL_TIMEOUT:-60}
+      DRASTIC_GUNICORN_KEEPALIVE: ${DRASTIC_GUNICORN_KEEPALIVE:-5}
+      DRASTIC_GUNICORN_LOG_LEVEL: ${DRASTIC_GUNICORN_LOG_LEVEL:-info}
+      DRASTIC_REST_PROXY_TIMEOUT_SECONDS: ${DRASTIC_REST_PROXY_TIMEOUT_SECONDS:-300}
+      DRASTIC_COMMAND_TIMEOUT_SECONDS: ${DRASTIC_COMMAND_TIMEOUT_SECONDS:-60}
+      DRASTIC_TASK_TIMEOUT_SECONDS: ${DRASTIC_TASK_TIMEOUT_SECONDS:-600}
+    ports:
+      - "${DRASTIC_HOST_BACKEND_PORT:-5050}:${DRASTIC_BIND_BACKEND_PORT:-5050}"
+    depends_on:
+      db:
+        condition: service_healthy
+      rest-server:
+        condition: service_started
+    working_dir: /workspace/apps/backend
+    command:
+      [
+        "sh",
+        "-c",
+        "(cd /workspace && mkdocs build --site-dir /tmp/drastic-docs-site) && mkdir -p /workspace/apps/backend/storage /workspace/apps/backend/import /workspace/apps/backend/data && uv sync --frozen && sh scripts/run.sh",
+      ]
+
+  frontend:
+    build:
+      context: ./apps/frontend
+      dockerfile: Dockerfile.dev
+    user: "${DRASTIC_DEV_UID:-1000}:${DRASTIC_DEV_GID:-1000}"
+    volumes:
+      - .:/workspace
+    env_file:
+      - path: .env.default
+        required: true
+      - path: .env.dev
+        required: true
+      - path: .env.dev.override
+        required: false
+    environment:
+      TZ: ${TZ:-UTC}
+      HOME: /tmp
+      DRASTIC_HOST_BACKEND_PORT: ${DRASTIC_HOST_BACKEND_PORT:-5050}
+      DRASTIC_BIND_BACKEND_PORT: ${DRASTIC_BIND_BACKEND_PORT:-5050}
+      DRASTIC_HOST_DEV_FRONTEND_PORT: ${DRASTIC_HOST_DEV_FRONTEND_PORT:-9050}
+      DRASTIC_BIND_DEV_FRONTEND_PORT: ${DRASTIC_BIND_DEV_FRONTEND_PORT:-9050}
+      QUASAR_API_PROXY_TARGET: http://backend:${DRASTIC_BIND_BACKEND_PORT:-5050}
+    ports:
+      - "${DRASTIC_HOST_DEV_FRONTEND_PORT:-9050}:${DRASTIC_BIND_DEV_FRONTEND_PORT:-9050}"
+    depends_on:
+      - backend
+    working_dir: /workspace/apps/frontend
+    command: ["sh", "-c", "yarn install --immutable && yarn dev --host 0.0.0.0"]
+
+  rest-server:
+    image: restic/rest-server:latest
+    user: "${DRASTIC_DEV_UID:-1000}:${DRASTIC_DEV_GID:-1000}"
+    environment:
+      TZ: ${TZ:-UTC}
+      DATA_DIRECTORY: /data
+      DISABLE_AUTHENTICATION: "1"
+    volumes:
+      - ./apps/backend/storage/rest-server:/data
+
+volumes:
+  db_data:

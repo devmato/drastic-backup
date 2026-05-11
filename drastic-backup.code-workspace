@@ -1,0 +1,9 @@
+{
+  "folders": [
+    { "path": ".", "name": "root" },
+    { "path": "apps/backend", "name": "backend" },
+    { "path": "apps/agent", "name": "agent" },
+    { "path": "libs/python/common", "name": "common" },
+    { "path": "apps/frontend", "name": "frontend" }
+  ]
+}

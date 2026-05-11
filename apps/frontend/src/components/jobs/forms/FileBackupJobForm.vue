@@ -1,0 +1,108 @@
+<template>
+  <div class="q-mt-md">
+    <div class="row items-center q-mb-sm">
+      <div class="text-subtitle1">File Selection</div>
+      <q-space />
+      <q-badge color="grey-7" :label="`${selectedEntries.length} selected`" />
+    </div>
+
+    <PathSelectionPanel
+      v-if="agentId && agentOnline"
+      mode="include-exclude"
+      :load-entries="loadAgentEntries"
+      :selection="configModel"
+      :reload-key="agentId"
+      browser-title="Directory Browser"
+      selected-title="Selected Paths"
+      empty-label="No directories found or agent offline"
+      error-message="Could not load directory listing"
+      @update:selection="updateSelection"
+    >
+      <template v-slot:selected-after>
+        <div class="q-mt-md">
+          <div class="text-subtitle2 q-mb-sm">Custom Exclude Pattern</div>
+          <div class="row q-col-gutter-sm items-start">
+            <div class="col">
+              <q-input
+                outlined
+                dense
+                v-model="excludePattern"
+                label="Exclude pattern"
+                placeholder="e.g. *.tmp or /var/cache/**"
+                @keyup.enter="addCustomExcludePattern"
+              />
+            </div>
+            <div class="col-auto">
+              <q-btn color="primary" icon="remove" label="Add exclude" @click="addCustomExcludePattern" />
+            </div>
+          </div>
+        </div>
+      </template>
+    </PathSelectionPanel>
+    <q-banner v-else class="bg-grey-2 text-grey-8">
+      Agent must be online to browse directories.
+    </q-banner>
+  </div>
+</template>
+
+<script setup>
+import { computed, ref } from 'vue'
+import PathSelectionPanel from 'components/PathSelectionPanel.vue'
+import { useJobStore } from 'stores/job'
+
+const props = defineProps({
+  modelValue: { type: Object, required: true },
+  agentId: { type: [Number, String], default: null },
+  agentOnline: { type: Boolean, default: false },
+})
+
+const emit = defineEmits(['update:modelValue'])
+
+const jobStore = useJobStore()
+const excludePattern = ref('')
+
+const configModel = computed(() => createConfig(props.modelValue))
+
+const selectedEntries = computed(() => [
+  ...configModel.value.paths.map(entry => ({ ...entry, exclude: false })),
+  ...configModel.value.exclude_patterns.map(entry => ({ ...entry, exclude: true })),
+])
+
+function createConfig(config = {}) {
+  return {
+    paths: (config.paths || []).map(path => ({ ...path })),
+    exclude_patterns: (config.exclude_patterns || []).map(pattern => ({ ...pattern })),
+  }
+}
+
+function emitConfig(nextConfig) {
+  emit('update:modelValue', createConfig(nextConfig))
+}
+
+function updateSelection(nextSelection) {
+  emitConfig(nextSelection)
+}
+
+async function loadAgentEntries(path) {
+  return jobStore.getDirlist(props.agentId, path)
+}
+
+function addCustomExcludePattern() {
+  const trimmedPattern = excludePattern.value.trim()
+
+  if (!trimmedPattern) {
+    return
+  }
+
+  emitConfig({
+    paths: configModel.value.paths.filter(entry => entry.path !== trimmedPattern),
+    exclude_patterns: [
+      ...configModel.value.exclude_patterns.filter(entry => entry.path !== trimmedPattern),
+      { path: trimmedPattern, group: 'pattern' },
+    ],
+  })
+  excludePattern.value = ''
+}
+
+defineOptions({ name: 'FileBackupJobForm' })
+</script>

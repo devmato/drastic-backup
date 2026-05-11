@@ -1,0 +1,201 @@
+<template>
+  <q-layout view="hHh Lpr lff">
+    <q-header elevated>
+      <q-toolbar class="bg-primary">
+        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" />
+        <q-toolbar-title class="row items-center no-wrap q-gutter-sm">
+          <span class="app-toolbar-title__text">dRastic Backup</span>
+          <q-badge
+            v-if="environmentBadgeLabel"
+            :color="environmentBadgeColor"
+            :label="environmentBadgeLabel"
+            text-color="white"
+            class="app-toolbar-title__env text-weight-bold"
+          />
+        </q-toolbar-title>
+
+        <q-btn flat dense round icon="menu_book" href="/docs/" target="_blank" aria-label="Documentation" class="q-mr-sm">
+          <q-tooltip>Documentation</q-tooltip>
+        </q-btn>
+
+        <q-btn-dropdown flat no-caps v-if="userStore.loggedIn">
+          <template v-slot:label>
+            <div class="row items-center no-wrap">
+              <q-icon left name="account_circle" />
+              <div class="text-center gt-sm">{{ userStore.user.name }}</div>
+            </div>
+          </template>
+          <q-list>
+            <q-item clickable v-close-popup @click="logout()">
+              <q-item-section avatar><q-icon name="lock" /></q-item-section>
+              <q-item-section><q-item-label>Logout</q-item-label></q-item-section>
+            </q-item>
+          </q-list>
+        </q-btn-dropdown>
+      </q-toolbar>
+    </q-header>
+
+    <q-drawer v-model="leftDrawerOpen" show-if-above :width="250" dark>
+      <q-scroll-area class="fit">
+        <q-list padding dark dense>
+          <q-item-label header class="text-grey-5 text-subtitle2 q-px-md q-pt-md q-pb-xs">
+            Infrastructure
+          </q-item-label>
+          <DrawerLink to="/agents" icon="desktop_windows" label="Agents" />
+          <DrawerLink to="/repositories" icon="inventory_2" label="Repositories" />
+
+          <q-item-label header class="text-grey-5 text-subtitle2 q-px-md q-pt-lg q-pb-xs">
+            Backup
+          </q-item-label>
+          <DrawerLink to="/jobs" icon="backup" label="Jobs" />
+          <DrawerLink to="/retentions" icon="recycling" label="Retention Policies" />
+
+          <q-item-label header class="text-grey-5 text-subtitle2 q-px-md q-pt-lg q-pb-xs">
+            Settings
+          </q-item-label>
+          <DrawerLink to="/notifications" icon="notifications" label="Notifications" />
+        </q-list>
+      </q-scroll-area>
+    </q-drawer>
+
+    <q-page-container>
+      <router-view />
+    </q-page-container>
+
+    <ReauthenticationDialog />
+  </q-layout>
+</template>
+
+<script setup>
+import { computed, ref, onBeforeMount, onBeforeUnmount, onMounted } from 'vue'
+import DrawerLink from 'components/DrawerLink.vue'
+import ReauthenticationDialog from 'components/auth/ReauthenticationDialog.vue'
+import { useRouter } from 'vue-router'
+import { useUserStore } from 'stores/user'
+import { useAgentStore } from 'stores/agent'
+import { useJobStore } from 'stores/job'
+import { subscribeToSocketEvents } from 'src/utils/socket'
+
+const router = useRouter()
+const userStore = useUserStore()
+const agentStore = useAgentStore()
+const jobStore = useJobStore()
+let stopRealtimeSocketListener = null
+let realtimeSyncStarted = false
+
+function queuedLoad(loader) {
+  let inFlight = false
+  let queued = false
+
+  return async () => {
+    if (inFlight) {
+      queued = true
+      return
+    }
+
+    inFlight = true
+
+    try {
+      do {
+        queued = false
+        await loader()
+      } while (queued)
+    } finally {
+      inFlight = false
+    }
+  }
+}
+
+const queueAgentReload = queuedLoad(() => agentStore.loadAgents())
+const queueJobReload = queuedLoad(() => jobStore.loadJobs())
+
+async function startRealtimeSync() {
+  if (realtimeSyncStarted || !userStore.loggedIn) {
+    return
+  }
+
+  realtimeSyncStarted = true
+  stopRealtimeSocketListener = await subscribeToSocketEvents(async (payload) => {
+    const eventName = payload?.name || ''
+
+    if (eventName.startsWith('agentstate') || eventName === 'agentsupdate') {
+      await queueAgentReload()
+      await queueJobReload()
+      return
+    }
+
+    if (eventName.startsWith('jobstate') || eventName === 'jobsupdate') {
+      await queueJobReload()
+    }
+  })
+}
+
+async function logout() {
+  await userStore.logout()
+  router.push('/login')
+}
+
+onBeforeMount(async () => {
+  if (!userStore.loggedIn) {
+    await userStore.getUser()
+  }
+
+  await startRealtimeSync()
+})
+
+onMounted(() => {
+  startRealtimeSync()
+})
+
+onBeforeUnmount(() => {
+  if (stopRealtimeSocketListener) {
+    stopRealtimeSocketListener()
+  }
+})
+
+defineOptions({ name: 'MainLayout' })
+
+const leftDrawerOpen = ref(false)
+const environmentBadgeLabel = computed(() => {
+  const env = String(userStore.environment || '').trim().toLowerCase()
+  if (env === 'dev') {
+    return 'DEV'
+  }
+  if (env === 'test') {
+    return 'TEST'
+  }
+  return ''
+})
+const environmentBadgeColor = computed(() => {
+  if (environmentBadgeLabel.value === 'DEV') {
+    return 'red-7'
+  }
+  if (environmentBadgeLabel.value === 'TEST') {
+    return 'orange-7'
+  }
+  return ''
+})
+
+function toggleLeftDrawer() {
+  leftDrawerOpen.value = !leftDrawerOpen.value
+}
+</script>
+
+<style scoped>
+.app-toolbar-title__text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-toolbar-title__env {
+  flex-shrink: 0;
+}
+
+@media (max-width: 599px) {
+  .app-toolbar-title__env {
+    display: none;
+  }
+}
+</style>

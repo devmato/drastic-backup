@@ -1,0 +1,46 @@
+{
+  "name": "drastic-backup-frontend",
+  "version": "0.1.0",
+  "description": "Frontend for drastic-backup",
+  "productName": "dRastic Backup",
+  "author": "devmato <git@devmato.net>",
+  "license": "MIT",
+  "private": true,
+  "packageManager": "yarn@4.10.3",
+  "scripts": {
+    "lint": "eslint \"./**/*.{js,mjs,cjs,vue}\"",
+    "format": "prettier --write \"**/*.{js,vue,scss,md,json}\"",
+    "test": "echo \"No test specified\" && exit 0",
+    "dev": "quasar dev",
+    "build": "quasar build"
+  },
+  "dependencies": {
+    "@quasar/cli": "^2.5.0",
+    "@quasar/extras": "^1.17.0",
+    "axios": "^1.2.1",
+    "pinia": "^2.0.11",
+    "pinia-plugin-persistedstate": "^4.1.1",
+    "qrcode": "^1.5.4",
+    "quasar": "^2.18.1",
+    "socket.io-client": "^4.8.3",
+    "uuid": "^10.0.0",
+    "vue": "^3.4.18",
+    "vue-qrcode": "^2.2.2",
+    "vue-router": "^4.0.12"
+  },
+  "devDependencies": {
+    "@quasar/app-vite": "^1.11.0",
+    "autoprefixer": "^10.4.2",
+    "eslint": "^8.11.0",
+    "eslint-config-prettier": "^8.1.0",
+    "eslint-plugin-vue": "^9.0.0",
+    "postcss": "^8.4.14",
+    "prettier": "^2.5.1",
+    "vite-plugin-checker": "^0.6.4"
+  },
+  "engines": {
+    "node": "^22 || ^20 || ^18 || ^16",
+    "npm": ">= 6.13.4",
+    "yarn": ">= 1.21.1"
+  }
+}

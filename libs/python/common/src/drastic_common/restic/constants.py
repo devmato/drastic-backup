@@ -1,0 +1,1 @@
+RESTIC_VERSION = "0.18.1"

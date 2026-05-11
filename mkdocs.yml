@@ -1,0 +1,60 @@
+site_name: dRastic Backup Documentation
+site_description: User and deployment documentation for dRastic Backup
+site_url: ""
+
+theme:
+  name: material
+  palette:
+    - scheme: default
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - scheme: slate
+      primary: deep purple
+      accent: deep purple
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.instant
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+    - content.code.copy
+
+nav:
+  - Home: index.md
+  - User Guide:
+    - Overview: user-guide.md
+    - Agent Installation: agent-installation.md
+    - Backup and Restore: backup-and-restore.md
+  - Deployment:
+    - Deployment: deployment.md
+    - Configuration: configuration.md
+    - Security: security.md
+    - Troubleshooting: troubleshooting.md
+  - Development:
+    - Development Setup: development.md
+    - Project Structure: project-structure.md
+    - CI and Releases: ci-and-releases.md
+    - Release Checklist: release-checklist.md
+    - Building the Docs: docs-site.md
+
+exclude_docs: |
+  changelog/UNRELEASED.md
+
+markdown_extensions:
+  - tables
+  - fenced_code
+  - codehilite
+  - admonition
+  - toc:
+      permalink: true
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
