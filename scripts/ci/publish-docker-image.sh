@@ -48,8 +48,17 @@ for tag in "${TAGS[@]}"; do
     BUILD_TAGS+=("-t" "$tag")
 done
 
-docker build "${BUILD_TAGS[@]}" -f "$DOCKERFILE" "$CONTEXT"
+if [[ -n "${CONTAINER_PLATFORMS:-}" ]]; then
+    docker buildx build \
+        --platform "$CONTAINER_PLATFORMS" \
+        --push \
+        "${BUILD_TAGS[@]}" \
+        -f "$DOCKERFILE" \
+        "$CONTEXT"
+else
+    docker build "${BUILD_TAGS[@]}" -f "$DOCKERFILE" "$CONTEXT"
 
-for tag in "${TAGS[@]}"; do
-    docker push "$tag"
-done
+    for tag in "${TAGS[@]}"; do
+        docker push "$tag"
+    done
+fi

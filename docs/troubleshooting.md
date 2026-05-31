@@ -57,9 +57,9 @@ If generated repository URLs point to the wrong host, set `DRASTIC_PUBLIC_URL` t
 
 ## Repository Secret Operations Are Locked
 
-Repository creation, repository password changes, and new agent repository provisioning require the per-user recovery key returned during login. If the browser no longer has that key in memory, the UI asks for the account password in a confirmation dialog and retries the operation without navigating away.
+Repository creation and new agent repository provisioning require the per-user recovery key returned during login. If the browser no longer has that key in memory, the UI asks for the account password in a confirmation dialog and retries the operation without navigating away. Changing a repository password after creation is not supported yet.
 
-After an agent restart, repository jobs also need a successful backend sync so repository keys can be hydrated into memory. If an agent-specific recovery envelope already exists, the agent can request it from the backend and decrypt it locally. If repository access still fails, verify the agent is online, assigned to the repository, and has synced after the assignment.
+After an agent restart, repository jobs also need a successful backend sync so restic access keys can be hydrated into memory. If an agent-specific recovery envelope already exists, the agent can request it from the backend and decrypt it locally. If repository access still fails, verify the agent is online, assigned to the repository, and has synced after the assignment.
 
 ## API Documentation
 

@@ -4,7 +4,7 @@ import hmac
 import logging
 from pathlib import Path
 
-from flask import Flask, Response, abort, jsonify, send_file, send_from_directory
+from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
 from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from drastic_server import models as _models  # noqa: F401
@@ -22,7 +22,9 @@ from drastic_server.services.agent import (
     AgentArtifactError,
     AgentArtifactNotFoundError,
     agent_artifact_path,
+    agent_git_repository,
     render_linux_agent_install_script,
+    render_linux_agentctl_script,
 )
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.socketio.namespaces import agent as _agent_namespace  # noqa: F401
@@ -115,12 +117,21 @@ def _register_install_route(app: Flask) -> None:
             content_type="text/x-shellscript; charset=utf-8",
         )
 
+    @app.get("/agentctl")
+    def serve_agent_lifecycle_manager():
+        from drastic_server.utils.urls import public_server_url
+
+        return Response(
+            render_linux_agentctl_script(public_server_url(), agent_git_repository(app.config)),
+            content_type="text/x-shellscript; charset=utf-8",
+        )
+
 
 def _register_agent_artifact_routes(app: Flask) -> None:
     @app.get("/agents/<string:os_name>/<string:arch>")
     def serve_agent_artifact(os_name: str, arch: str):
         try:
-            artifact_path = agent_artifact_path(app.config, os_name, arch)
+            artifact_path = agent_artifact_path(app.config, os_name, arch, request.args.get("version"))
         except AgentArtifactNotFoundError as exc:
             abort(404, description=str(exc))
         except AgentArtifactError as exc:

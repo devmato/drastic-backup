@@ -2,6 +2,7 @@ from drastic_server.models.job import Job, JobType
 from drastic_server.schemas.job import JobCreateInputSchema, ScheduleCreateInputSchema
 from drastic_server.schemas.repository import CheckInputSchema
 from drastic_server.services.job import (
+    build_schedule_cron_string,
     create_job_instance,
     normalize_schedule_config,
     update_job_instance,
@@ -65,6 +66,14 @@ def test_schedule_config_accepts_repository_check_read_data():
     assert normalize_schedule_config(data["config"]) == {
         "repository_check": {"enabled": True, "read_data": "100%"}
     }
+
+
+def test_build_schedule_cron_string_collapses_full_week():
+    assert build_schedule_cron_string("0", "1", [0, 1, 2, 3, 4, 5, 6]) == "0 1 * * *"
+
+
+def test_build_schedule_cron_string_uses_selected_weekdays():
+    assert build_schedule_cron_string("30", "2", [1, 5]) == "30 2 * * 1,5"
 
 
 def test_repository_check_input_accepts_optional_read_data_subset():

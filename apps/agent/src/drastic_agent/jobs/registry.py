@@ -1,11 +1,12 @@
 from drastic_agent.jobs.file_backup import FileBackupJobHandler
 from drastic_agent.jobs.proxmox_backup import ProxmoxBackupJobHandler
+from drastic_common.agent.enums import AgentJobType
 
 
 def get_job_handler(agent, job, repository_id, retention_id=None, run_options=None):
     job_type = job.get("type")
 
-    if job_type == "file":
+    if job_type == AgentJobType.file.name:
         return FileBackupJobHandler(
             agent=agent,
             job=job,
@@ -14,7 +15,7 @@ def get_job_handler(agent, job, repository_id, retention_id=None, run_options=No
             run_options=run_options,
         )
 
-    if job_type == "proxmox":
+    if job_type == AgentJobType.proxmox.name:
         return ProxmoxBackupJobHandler(
             agent=agent,
             job=job,

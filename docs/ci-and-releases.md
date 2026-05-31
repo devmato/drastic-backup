@@ -67,7 +67,7 @@ ghcr.io/devmato/drastic-backup-server
 ghcr.io/devmato/drastic-backup-agent
 ```
 
-The GitHub workflows use `GITHUB_TOKEN` with `packages: write` permission and do not require additional secrets for GHCR publishing in the `devmato/drastic-backup` repository.
+The GitHub workflows use `GITHUB_TOKEN` with `packages: write` permission and do not require additional secrets for GHCR publishing in the `devmato/drastic-backup` repository. GHCR server and agent image tags are published as multi-arch manifests for `linux/amd64` and `linux/arm64`.
 
 Forgejo-compatible publishing remains available through `.forgejo/workflows/server-image.yml` and `.forgejo/workflows/agent-image.yml`. Required Forgejo variables and secrets:
 
@@ -79,7 +79,7 @@ Forgejo-compatible publishing remains available through `.forgejo/workflows/serv
 
 ## Agent Artifact
 
-The GitHub agent artifact workflow currently builds a Linux amd64 archive for release distribution and attaches it to GitHub releases on `v*` tags. Artifact names follow the backend artifact template, for example `drastic-agent-linux-amd64-v0.1.0.tar.gz`.
+The GitHub agent artifact workflow builds Linux amd64 and arm64 archives for release distribution and attaches them to GitHub releases on `v*` tags. Artifact names follow the backend artifact template, for example `drastic-agent-linux-amd64-v0.1.0.tar.gz` and `drastic-agent-linux-arm64-v0.1.0.tar.gz`. Forgejo agent artifact publishing remains amd64-only.
 
 Native installers download public release assets through the backend cache. The backend builds release download URLs in this form for GitHub, Forgejo, and Gitea:
 

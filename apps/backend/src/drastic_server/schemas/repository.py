@@ -1,20 +1,13 @@
 from marshmallow import EXCLUDE, Schema, fields, validate
 
-from drastic_server.models.repository import Repository, RepositoryKind
+from drastic_common.agent.enums import AgentRepositoryKind
+from drastic_common.agent.schemas import AgentRepositorySchema
 
-_REPOSITORY_KIND_NAMES = tuple(kind.value for kind in RepositoryKind)
+_REPOSITORY_KIND_NAMES = tuple(kind.value for kind in AgentRepositoryKind)
 
 
-class RepositorySchema(Schema):
-    id = fields.Integer(required=True)
-    kind = fields.String(required=True, validate=validate.OneOf(_REPOSITORY_KIND_NAMES))
-    location = fields.String(required=True, validate=validate.Length(min=1))
-    environment = fields.Dict(
-        keys=fields.String(),
-        values=fields.Raw(),
-        load_default=dict,
-        dump_default=dict,
-    )
+class RepositorySchema(AgentRepositorySchema):
+    pass
 
 
 class RepositoryResponseSchema(Schema):
@@ -25,6 +18,7 @@ class RepositoryResponseSchema(Schema):
     repository_path = fields.Method("get_repository_path", dump_only=True)
     environment = fields.Dict(keys=fields.String(), values=fields.Raw(), dump_default=dict)
     restic_id = fields.String(allow_none=True)
+    password_secret_id = fields.Integer(allow_none=True)
     stats = fields.Raw(allow_none=True)
     created = fields.DateTime(allow_none=True)
 

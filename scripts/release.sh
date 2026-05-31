@@ -200,12 +200,6 @@ for pyproject in [
 ]:
     replace_required(pyproject, r'^(version\s*=\s*)"[^"]+"', rf'\g<1>"{next_version}"')
 
-replace_required(
-    "apps/agent/src/drastic_agent/constants.py",
-    r'^VERSION\s*=\s*"[^"]+"',
-    f'VERSION = "{next_version}"',
-)
-
 lock_packages = {"drastic-agent", "drastic-backup-server", "drastic-common"}
 for lock_file in [
     Path("apps/agent/uv.lock"),
@@ -285,7 +279,6 @@ git add \
     apps/backend/uv.lock \
     apps/agent/pyproject.toml \
     apps/agent/uv.lock \
-    apps/agent/src/drastic_agent/constants.py \
     libs/python/common/pyproject.toml \
     libs/python/common/uv.lock
 

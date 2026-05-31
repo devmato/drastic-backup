@@ -27,6 +27,9 @@
           />
 
           <template v-if="form.kind === 'custom'">
+            <q-banner v-if="isSshLocation" dense rounded class="bg-blue-1 text-blue-10">
+              SSH/SFTP repositories use the executing agent's SSH public key. Install that key on the target host before running jobs.
+            </q-banner>
             <div class="text-subtitle2 q-mt-md">Environment Variables</div>
             <div v-for="(env, idx) in form.envVars" :key="idx" class="row q-gutter-sm items-center">
               <q-input outlined dense v-model="env.name" label="Name" class="col" />
@@ -36,8 +39,8 @@
             <q-btn flat dense icon="add" label="Add Variable" @click="form.envVars.push({ name: '', value: '' })" />
           </template>
 
-          <q-checkbox v-model="form.setCustomPassword" label="Set custom password" />
-          <template v-if="form.setCustomPassword">
+          <q-checkbox v-if="!isEdit" v-model="form.setCustomPassword" label="Set custom password" />
+          <template v-if="!isEdit && form.setCustomPassword">
             <q-input
               outlined
               v-model="form.password"
@@ -91,7 +94,10 @@ const form = reactive({
 })
 
 const isEdit = computed(() => Boolean(props.repository))
-
+const isSshLocation = computed(() => {
+  const location = String(form.location || '').trim().toLowerCase()
+  return form.kind === 'custom' && (location.startsWith('sftp:') || location.startsWith('ssh:'))
+})
 const dialogVisible = computed({
   get: () => props.modelValue,
   set: value => emit('update:modelValue', value),
@@ -129,7 +135,7 @@ function submitForm() {
     payload.environment = environment
   }
 
-  if (form.setCustomPassword) {
+  if (!isEdit.value && form.setCustomPassword) {
     payload.password = form.password
   }
 

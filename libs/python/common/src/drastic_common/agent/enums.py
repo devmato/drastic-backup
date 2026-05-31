@@ -33,5 +33,20 @@ class AgentOperationLogLevel(enum.Enum):
     error = {"text": "Error"}
 
 
+class AgentJobType(enum.Enum):
+    file = {"text": "File-Backup"}
+    proxmox = {"text": "Proxmox-Backup"}
+
+
+class AgentJobActionModule(enum.Enum):
+    command = {"text": "Execute command on agent"}
+    docker = {"text": "Control docker container"}
+
+
+class AgentRepositoryKind(str, enum.Enum):
+    custom = "custom"
+    native = "native"
+
+
 AgentReportType = AgentOperationType
 AgentReportState = AgentOperationState

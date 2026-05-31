@@ -61,6 +61,14 @@ class SecretEnvelopeTests(unittest.TestCase):
         json.dumps(envelope)
         self.assertEqual(decrypt_with_private_key(envelope, private_key), "repo-secret")
 
+    def test_agent_public_key_envelope_supports_large_secrets(self):
+        private_key, public_key = generate_agent_keypair()
+        secret = "x" * 4096
+        envelope = encrypt_for_public_key(secret, public_key)
+
+        json.dumps(envelope)
+        self.assertEqual(decrypt_with_private_key(envelope, private_key), secret)
+
 
 class EncryptedModelFieldTests(unittest.TestCase):
     def setUp(self):
@@ -109,7 +117,7 @@ class EncryptionKeyConfigTests(unittest.TestCase):
 class RepositorySecretRevealTests(unittest.TestCase):
     def test_reveal_repository_recovery_key_requires_account_password(self):
         user = User(name="admin")
-        user.set_password("account-password", recovery_key="user-recovery-key")
+        user.set_initial_password("account-password", recovery_key="user-recovery-key")
         repository = Repository(user_id=1, name="Repo", kind="custom", location="rest:http://repo")
         store_recovery_key(repository, "repo-password", "user-recovery-key")
 
@@ -123,9 +131,53 @@ class RepositorySecretRevealTests(unittest.TestCase):
 
     def test_ensure_user_recovery_key_roundtrip(self):
         user = User(name="admin")
-        user.set_password("account-password", recovery_key="user-recovery-key")
+        user.set_initial_password("account-password", recovery_key="user-recovery-key")
 
         self.assertEqual(ensure_user_recovery_key(user, "account-password"), "user-recovery-key")
+
+
+class UserPasswordTests(unittest.TestCase):
+    def test_set_initial_password_refuses_existing_password(self):
+        user = User(name="admin")
+        user.set_initial_password("account-password")
+
+        with self.assertRaisesRegex(ValueError, "Initial password is already set"):
+            user.set_initial_password("new-password")
+
+    def test_change_password_preserves_recovery_key(self):
+        user = User(name="admin")
+        user.set_initial_password("old-password", recovery_key="user-recovery-key")
+
+        user.change_password("old-password", "new-password")
+
+        self.assertFalse(user.check_password("old-password"))
+        self.assertTrue(user.check_password("new-password"))
+        self.assertEqual(ensure_user_recovery_key(user, "new-password"), "user-recovery-key")
+
+    def test_change_password_keeps_repository_secrets_readable(self):
+        user = User(name="admin")
+        user.set_initial_password("old-password", recovery_key="user-recovery-key")
+        repository = Repository(user_id=1, name="Repo", kind="custom", location="rest:http://repo")
+        store_recovery_key(repository, "repo-password", "user-recovery-key")
+
+        user.change_password("old-password", "new-password")
+        recovery_key = ensure_user_recovery_key(user, "new-password")
+
+        self.assertEqual(recovery_key, "user-recovery-key")
+        self.assertEqual(reveal_repository_recovery_key(user, repository, "new-password"), "repo-password")
+
+    def test_change_password_rejects_wrong_current_password_without_changes(self):
+        user = User(name="admin")
+        user.set_initial_password("old-password", recovery_key="user-recovery-key")
+        original_password_hash = user.password
+        original_recovery_key_envelope = dict(user.encrypted_recovery_key)
+
+        with self.assertRaisesRegex(ValueError, "Wrong password"):
+            user.change_password("wrong-password", "new-password")
+
+        self.assertEqual(user.password, original_password_hash)
+        self.assertEqual(user.encrypted_recovery_key, original_recovery_key_envelope)
+        self.assertEqual(ensure_user_recovery_key(user, "old-password"), "user-recovery-key")
 
 
 class BootstrapSeedTests(unittest.TestCase):
@@ -157,7 +209,7 @@ class BootstrapSeedTests(unittest.TestCase):
     def test_bootstrap_does_not_update_existing_admin_by_default(self):
         with self.app.app_context():
             user = User(name="admin")
-            user.set_password("old-password")
+            user.set_initial_password("old-password")
             db.session.add(user)
             db.session.commit()
 
@@ -166,18 +218,21 @@ class BootstrapSeedTests(unittest.TestCase):
 
             self.assertTrue(bcrypt.checkpw(b"old-password", user.password.encode("utf-8")))
 
-    def test_bootstrap_updates_existing_admin_when_enabled(self):
+    def test_bootstrap_does_not_update_existing_admin(self):
         with self.app.app_context():
             user = User(name="admin")
-            user.set_password("old-password")
+            user.set_initial_password("old-password", recovery_key="existing-recovery-key")
             db.session.add(user)
             db.session.commit()
+            original_recovery_key_envelope = dict(user.encrypted_recovery_key)
 
-            self.app.config["BOOTSTRAP_ADMIN_UPDATE"] = True
             _seed_bootstrap_admin_if_configured()
             db.session.refresh(user)
 
-            self.assertTrue(bcrypt.checkpw(b"new-password", user.password.encode("utf-8")))
+            self.assertTrue(bcrypt.checkpw(b"old-password", user.password.encode("utf-8")))
+            self.assertFalse(bcrypt.checkpw(b"new-password", user.password.encode("utf-8")))
+            self.assertEqual(user.encrypted_recovery_key, original_recovery_key_envelope)
+            self.assertEqual(ensure_user_recovery_key(user, "old-password"), "existing-recovery-key")
 
 
 if __name__ == "__main__":

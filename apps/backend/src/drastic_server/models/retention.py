@@ -1,6 +1,7 @@
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
+
 # Rentention policy
 class Retention(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'retentions'

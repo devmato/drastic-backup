@@ -3,11 +3,12 @@
   <q-page class="db-auth-page flex flex-center q-pa-md">
     <q-card class="db-auth-card q-pa-lg">
       <q-card-section class="text-center">
-        <q-img
+        <img
           src="/icons/drastic-backup-icon.svg"
-          width="96px"
-          fit="contain"
-          class="q-mx-auto q-mb-md"
+          width="96"
+          height="96"
+          alt="dRastic Backup"
+          class="block q-mx-auto q-mb-md"
         />
         <div class="text-h5">dRastic Backup</div>
         <div class="text-subtitle2 text-grey-8">

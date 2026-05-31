@@ -125,7 +125,7 @@ const platformCards = computed(() => {
       id: 'linux',
       title: 'Linux',
       icon: 'fa-brands fa-linux',
-      chips: ['systemd', 'amd64'],
+      chips: ['systemd', 'amd64/arm64'],
       actions: [
         {
           id: 'linux-setup',
@@ -161,7 +161,7 @@ const platformCards = computed(() => {
       id: 'docker',
       title: 'Docker',
       icon: 'fa-brands fa-docker',
-      chips: ['Docker', 'Compose', 'amd64'],
+      chips: ['Docker', 'Compose', 'amd64/arm64'],
       actions: [
         {
           id: 'docker-run',

@@ -22,6 +22,10 @@ class AgentResponseSchema(Schema):
     hostname = fields.String(allow_none=True)
     os = fields.String(allow_none=True)
     version = fields.String(allow_none=True)
+    install_type = fields.String(required=True)
+    ssh_public_key = fields.String(allow_none=True)
+    ssh_key_fingerprint = fields.String(allow_none=True)
+    ssh_key_algorithm = fields.String(allow_none=True)
     online = fields.Boolean(required=True)
     repositories = fields.List(fields.Nested(RepositoryResponseSchema), required=True)
     last_connection = fields.DateTime(allow_none=True)
@@ -131,7 +135,9 @@ class AgentRegisterInputSchema(Schema):
     version = fields.String(required=False, allow_none=True)
     platform = fields.String(required=False, allow_none=True)
     deployment = fields.String(required=False, allow_none=True)
+    install_type = fields.String(required=False, allow_none=True)
     public_key = fields.String(required=False, allow_none=True)
+    ssh_public_key = fields.String(required=False, allow_none=True)
 
 
 class AgentRegisterResponseSchema(Schema):

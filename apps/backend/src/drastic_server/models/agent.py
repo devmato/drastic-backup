@@ -20,6 +20,9 @@ agent_repositories = db.Table(
     "agent_repositories",
     db.Column("agent_id", db.Integer, db.ForeignKey("agents.id"), primary_key=True),
     db.Column("repository_id", db.Integer, db.ForeignKey("repositories.id"), primary_key=True),
+    db.Column("encrypted_restic_access_key", db.JSON, nullable=True),
+    db.Column("restic_key_id", db.String(255), nullable=True),
+    db.Column("provisioned", db.Boolean, nullable=False, default=False),
 )
 
 
@@ -29,8 +32,12 @@ class Agent(IdMixin, TimeMixin, db.Model):
     user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("agents"))
     secret = db.Column(db.String(255), nullable=False)
     public_key = db.Column(db.Text, nullable=True)
+    ssh_public_key = db.Column(db.Text, nullable=True)
+    ssh_key_fingerprint = db.Column(db.String(255), nullable=True)
+    ssh_key_algorithm = db.Column(db.String(64), nullable=True)
     os = db.Column(db.String(255), nullable=True)
     version = db.Column(db.String(255), nullable=True)
+    install_type = db.Column(db.String(32), nullable=False, default="manual")
     hostname = db.Column(db.String(255), nullable=True)
     last_connection = db.Column(db.DateTime, nullable=True)
     repositories = db.relationship(
@@ -38,8 +45,6 @@ class Agent(IdMixin, TimeMixin, db.Model):
         secondary=agent_repositories,
         backref=db.backref("agents"),
     )
-    # ssh_pubkey = db.Column(db.Text, nullable=True)
-
     # Online property
     @hybrid_property
     def online(self):
@@ -49,6 +54,13 @@ class Agent(IdMixin, TimeMixin, db.Model):
     @staticmethod
     def generate_secret():
         return secrets.token_urlsafe(32)
+
+    @staticmethod
+    def normalize_install_type(value):
+        normalized = str(value or "").strip().lower()
+        if normalized in {"docker", "release", "git", "manual"}:
+            return normalized
+        return "manual"
 
     # Expose AgentCommand instance as property
     # @property
@@ -64,34 +76,6 @@ class AgentSession(IdMixin, TimeMixin, db.Model):
         "Agent", foreign_keys=[agent_id], backref=db.backref("session", uselist=False)
     )
     request_sid = db.Column(db.String(255), nullable=False)
-
-
-class AgentRepositorySecret(IdMixin, TimeMixin, db.Model):
-    __tablename__ = "agent_repository_secrets"
-    __table_args__ = (
-        db.UniqueConstraint(
-            "agent_id",
-            "repository_id",
-            name="uq_agent_repository_secrets_agent_id_repository_id",
-        ),
-    )
-
-    agent_id = db.Column(db.Integer, db.ForeignKey("agents.id"), nullable=False)
-    repository_id = db.Column(db.Integer, db.ForeignKey("repositories.id"), nullable=False)
-    encrypted_recovery_key = db.Column(db.JSON, nullable=False)
-    encrypted_agent_key = db.Column(db.JSON, nullable=True)
-    restic_key_id = db.Column(db.String(255), nullable=True)
-    provisioned = db.Column(db.Boolean, nullable=False, default=False)
-    agent = db.relationship(
-        "Agent",
-        foreign_keys=[agent_id],
-        backref=db.backref("repository_secrets", cascade="all, delete-orphan"),
-    )
-    repository = db.relationship(
-        "Repository",
-        foreign_keys=[repository_id],
-        backref=db.backref("agent_secrets", cascade="all, delete-orphan"),
-    )
 
 
 class AgentOperation(IdMixin, TimeMixin, db.Model):

@@ -39,6 +39,17 @@ export const useAgentStore = defineStore('agent', () => {
     await loadAgents()
   }
 
+  async function resetKnownHosts(agentId) {
+    const response = await api.post(`/agents/${agentId}/actions/reset-known-hosts`)
+    return response.data
+  }
+
+  async function rotateSshKey(agentId) {
+    const response = await api.post(`/agents/${agentId}/actions/rotate-ssh-key`)
+    await loadAgents()
+    return response.data
+  }
+
   async function getAgentOperations(agentId, params = {}) {
     const query = new URLSearchParams(params).toString()
     const response = await api.get(`/agents/${agentId}/operations?${query}`)
@@ -59,5 +70,5 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
-  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, getAgentOperations, deleteOperation, getOperation, getInstallOptions }
+  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, resetKnownHosts, rotateSshKey, getAgentOperations, deleteOperation, getOperation, getInstallOptions }
 })

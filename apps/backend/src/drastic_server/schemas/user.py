@@ -15,5 +15,13 @@ class UserInitInputSchema(Schema):
     password = fields.String(required=True, validate=validate.Length(min=8))
 
 
+class UserChangePasswordInputSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    current_password = fields.String(required=True, validate=validate.Length(min=1))
+    new_password = fields.String(required=True, validate=validate.Length(min=8))
+
+
 class NeedsInitResponseSchema(Schema):
     needs_init = fields.Boolean(required=True)

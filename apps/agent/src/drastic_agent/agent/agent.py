@@ -20,6 +20,7 @@ import socketio
 from croniter import croniter
 from docker import DockerClient
 from docker.errors import DockerException
+from marshmallow import ValidationError
 from socketio.exceptions import ConnectionError
 
 from drastic_agent.agent.action import AgentAction
@@ -38,11 +39,17 @@ from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.agent.schemas import AgentReportSchema
-from drastic_agent.constants import VERSION
 from drastic_agent.jobs.registry import get_job_handler
 from drastic_agent.proxmox import ProxmoxApiClient, ProxmoxError, get_proxmox_guest_driver
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
+from drastic_agent.version import agent_version
+from drastic_common.agent.commands import (
+    ASYNC_AGENT_COMMANDS,
+    AgentCommandName,
+    AgentCommandRequestSchema,
+)
+from drastic_common.agent.enums import AgentJobActionModule, AgentRepositoryKind
 from drastic_common.restic import RESTIC_VERSION, ResticApi
 from drastic_common.restic.exceptions import ResticError
 from drastic_common.restic.repository import ResticRepository
@@ -52,6 +59,7 @@ from drastic_common.secret_envelope import (
     encrypt_for_public_key,
     generate_agent_keypair,
 )
+from drastic_common.ssh_keys import generate_ssh_keypair
 
 
 def _agent_data_dir() -> str:
@@ -60,6 +68,21 @@ def _agent_data_dir() -> str:
 
 def _agent_data_path(*parts: str) -> str:
     return os.path.join(_agent_data_dir(), *parts)
+
+
+def _ensure_agent_data_dir() -> str:
+    data_dir = _agent_data_dir()
+    os.makedirs(data_dir, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(data_dir, 0o700)
+    except PermissionError:
+        logging.warning("Could not set permissions on agent data directory %s", data_dir)
+    return data_dir
+
+
+def _is_ssh_repository_location(location) -> bool:
+    normalized = str(location or "").strip().lower()
+    return normalized.startswith("sftp:") or normalized.startswith("ssh:")
 
 
 def _rewrite_managed_restic_location(location: str, server_url: str | None) -> str:
@@ -134,6 +157,8 @@ def _redact_secrets(value):
                 "recovery_key",
                 "encrypted_recovery_key",
                 "encrypted_agent_key",
+                "encrypted_restic_access_key",
+                "encrypted_value",
                 "agent_secret",
             }:
                 redacted[key] = "<redacted>"
@@ -193,6 +218,7 @@ class Agent:
         self.__reconnect_retry_interval = timedelta(seconds=15)
         self.__schedule_run_slots = {}
         self.__repository_passwords = {}
+        self.__secret_values = {}
 
         # Download binary if not exists
         self.__check_restic_binary()
@@ -264,8 +290,17 @@ class Agent:
         return "docker" if os.path.exists("/.dockerenv") else "native"
 
     @property
+    def install_type(self) -> str:
+        if self.deployment == "docker":
+            return "docker"
+        install_source = str(os.environ.get("DRASTIC_AGENT_INSTALL_SOURCE") or "").strip().lower()
+        if install_source in {"release", "git"}:
+            return install_source
+        return "manual"
+
+    @property
     def version(self):
-        return str(VERSION)
+        return agent_version()
 
     """ Download restic binary from github """
 
@@ -522,14 +557,76 @@ class Agent:
                 location=location,
                 password=password,
                 env=env,
+                ssh_private_key=self.__repository_ssh_private_key(repository),
+                ssh_known_hosts_path=self.__ssh_known_hosts_path(),
             )
         )
         return repository
 
+    def __ssh_known_hosts_path(self):
+        return _agent_data_path("ssh", "known_hosts")
+
+    def __ssh_identity_private_key_path(self):
+        return _agent_data_path("ssh", "identity")
+
+    def __ssh_identity_public_key_path(self):
+        return _agent_data_path("ssh", "identity.pub")
+
+    def __ensure_ssh_keypair(self, rotate=False):
+        ssh_dir = _agent_data_path("ssh")
+        private_key_path = self.__ssh_identity_private_key_path()
+        public_key_path = self.__ssh_identity_public_key_path()
+
+        if not rotate and os.path.exists(private_key_path) and os.path.exists(public_key_path):
+            return
+
+        os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+        try:
+            os.chmod(ssh_dir, 0o700)
+        except PermissionError:
+            logging.warning("Could not set permissions on agent SSH directory %s", ssh_dir)
+
+        private_key, public_key = generate_ssh_keypair()
+        with open(private_key_path, "w", encoding="utf-8") as key_file:
+            key_file.write(private_key)
+            if not private_key.endswith("\n"):
+                key_file.write("\n")
+        with open(public_key_path, "w", encoding="utf-8") as key_file:
+            key_file.write(public_key)
+            if not public_key.endswith("\n"):
+                key_file.write("\n")
+
+        try:
+            os.chmod(private_key_path, 0o600)
+            os.chmod(public_key_path, 0o600)
+        except PermissionError:
+            logging.warning("Could not set permissions on agent SSH identity")
+
+    def __agent_ssh_private_key(self):
+        self.__ensure_ssh_keypair()
+        try:
+            with open(self.__ssh_identity_private_key_path(), encoding="utf-8") as key_file:
+                return key_file.read()
+        except OSError as exc:
+            raise AgentExeption(f"Agent SSH private key could not be loaded: {exc}") from exc
+
+    def __agent_ssh_public_key(self):
+        self.__ensure_ssh_keypair()
+        try:
+            with open(self.__ssh_identity_public_key_path(), encoding="utf-8") as key_file:
+                return key_file.read().strip()
+        except OSError as exc:
+            raise AgentExeption(f"Agent SSH public key could not be loaded: {exc}") from exc
+
+    def __repository_ssh_private_key(self, repository):
+        if not _is_ssh_repository_location(repository.get("location")):
+            return None
+        return self.__agent_ssh_private_key()
+
     def __repository_location_env(self, repository):
         env = dict(repository.get("environment") or {})
         location = repository["location"]
-        if repository.get("kind") == "native":
+        if repository.get("kind") == AgentRepositoryKind.native.value:
             if str(location).startswith("rest:"):
                 location = _rewrite_managed_restic_location(location, self.__server)
             else:
@@ -565,13 +662,18 @@ class Agent:
             self.__repository_passwords = {}
         return self.__repository_passwords
 
+    def __secret_value_cache(self):
+        if not hasattr(self, "_Agent__secret_values"):
+            self.__secret_values = {}
+        return self.__secret_values
+
     def __repository_agent_password(self, repository):
         repository_id = repository.get("id")
         cache = self.__repository_password_cache()
         if repository_id in cache:
             return cache[repository_id]
 
-        encrypted_agent_key = _json_mapping(repository.get("encrypted_agent_key"))
+        encrypted_agent_key = _json_mapping(repository.get("encrypted_restic_access_key"))
         if not encrypted_agent_key:
             return None
 
@@ -589,6 +691,10 @@ class Agent:
 
     def __repository_recovery_password(self, repository):
         repository_id = repository.get("id")
+        password_secret_id = repository.get("password_secret_id")
+        if password_secret_id in self.__secret_value_cache():
+            return self.__secret_value_cache()[password_secret_id]["value"]
+
         encrypted_recovery_key = self.__repository_recovery_envelope(repository)
         if not encrypted_recovery_key:
             raise AgentExeption(
@@ -620,7 +726,7 @@ class Agent:
 
     def __strip_repository_secret_fields(self, repository):
         sanitized = dict(repository)
-        sanitized.pop("encrypted_agent_key", None)
+        sanitized.pop("encrypted_restic_access_key", None)
         sanitized.pop("encrypted_recovery_key", None)
         return sanitized
 
@@ -660,7 +766,13 @@ class Agent:
         recovery_password = self.__repository_recovery_password(repository)
 
         self.__resticapi.set_repository(
-            ResticRepository(location=location, password=recovery_password, env=env)
+            ResticRepository(
+                location=location,
+                password=recovery_password,
+                env=env,
+                ssh_private_key=self.__repository_ssh_private_key(repository),
+                ssh_known_hosts_path=self.__ssh_known_hosts_path(),
+            )
         )
         if initialize:
             try:
@@ -690,7 +802,13 @@ class Agent:
             logging.warning(str(exc))
         self.__clear_local_repository_secret(repository_id)
         self.__resticapi.set_repository(
-            ResticRepository(location=location, password=agent_password, env=env)
+            ResticRepository(
+                location=location,
+                password=agent_password,
+                env=env,
+                ssh_private_key=self.__repository_ssh_private_key(repository),
+                ssh_known_hosts_path=self.__ssh_known_hosts_path(),
+            )
         )
         return agent_password
 
@@ -765,8 +883,19 @@ class Agent:
         Thread(target=runner, daemon=True).start()
 
     def __handle_execute_command(self, data):
-        command_name = data["command"]
-        command_args = dict(data.get("args") or {})
+        try:
+            command_request = AgentCommandRequestSchema().load(data)
+        except ValidationError as exc:
+            report = AgentReport.command_report()
+            report.log_message(
+                f"Invalid agent command payload: {exc.messages}",
+                final_state=AgentReportState.failed,
+            )
+            return report.finish()
+
+        command = command_request["command"]
+        command_name = command.value
+        command_args = dict(command_request.get("args") or {})
         logging.info(
             f"Executing command {command_name} with arguments: {_redact_secrets(command_args)}"
         )
@@ -780,16 +909,16 @@ class Agent:
             )
             return report.finish()
 
-        if command_name in {"run_job", "run_restore", "check_repository", "unlock_repository"}:
+        if command in ASYNC_AGENT_COMMANDS:
             self.__run_command_async(command_name, command_args)
             report = AgentReport.command_report()
-            if command_name == "run_job":
+            if command == AgentCommandName.run_job:
                 report.log_message(
                     f"Started job {command_args.get('job_id')} on repository {command_args.get('repository_id')}"
                 )
-            elif command_name == "run_restore":
+            elif command == AgentCommandName.run_restore:
                 report.log_message(f"Started restore operation {command_args.get('operation_uuid')}")
-            elif command_name == "unlock_repository":
+            elif command == AgentCommandName.unlock_repository:
                 report.log_message(
                     f"Started repository unlock on repository {command_args.get('repository_id')}"
                 )
@@ -849,25 +978,36 @@ class Agent:
                 report.log_message(f"Executing actions on {action['hook']}:")
                 log_message = False
 
+            module_name = action.get("module")
+            try:
+                module = AgentJobActionModule[module_name].name
+            except (KeyError, TypeError):
+                report.log_message(
+                    f"Action module {module_name} not supported",
+                    final_state=AgentReportState.warning,
+                )
+                continue
+
             # Check if AgentAction has appropriate methode
-            if hasattr(AgentAction, action["module"]):
+            if hasattr(AgentAction, module):
                 try:
                     # Execute action
-                    getattr(AgentAction, action["module"])(
+                    getattr(AgentAction, module)(
                         report=report, docker_client=self.__docker_client, **action["data"]
                     )
                 except Exception as e:
                     # Set warning state and log message on error
                     report.log_message(
-                        f"Failed to execute {action['module']} action: {e}",
+                        f"Failed to execute {module} action: {e}",
                         final_state=AgentReportState.warning,
                     )
 
     """ Init configuration """
 
     def init_config(self):
-        os.makedirs(_agent_data_dir(), exist_ok=True)
+        _ensure_agent_data_dir()
         self.__config.read(_agent_data_path("config.ini"))
+        self.__ensure_ssh_keypair()
 
         env_server = os.getenv("DRASTIC_SERVER")
         env_username = os.getenv("DRASTIC_USER")
@@ -922,7 +1062,9 @@ class Agent:
                     "version": self.version,
                     "platform": self.platform,
                     "deployment": self.deployment,
+                    "install_type": self.install_type,
                     "public_key": public_key,
+                    "ssh_public_key": self.ssh_public_key,
                 },
                 timeout=15,
             )
@@ -997,8 +1139,14 @@ class Agent:
 
     def save_config(self):
         logging.info("Saving config file")
-        with open(_agent_data_path("config.ini"), "w") as configfile:
+        _ensure_agent_data_dir()
+        config_path = _agent_data_path("config.ini")
+        with open(config_path, "w") as configfile:
             self.__config.write(configfile)
+        try:
+            os.chmod(config_path, 0o600)
+        except PermissionError:
+            logging.warning("Could not set permissions on agent config file %s", config_path)
 
     # def __load_sshkey(self):
 
@@ -1028,7 +1176,9 @@ class Agent:
             "agent_os": self.os,
             "agent_hostname": self.hostname,
             "agent_version": self.version,
+            "agent_install_type": self.install_type,
             "agent_public_key": self.public_key,
+            "agent_ssh_public_key": self.ssh_public_key,
         }
 
     @property
@@ -1042,6 +1192,10 @@ class Agent:
         if "AGENT" not in self.__config:
             return None
         return _decode_config_secret(self.__config.get("AGENT", "public_key", fallback=None))
+
+    @property
+    def ssh_public_key(self):
+        return self.__agent_ssh_public_key()
 
     @property
     def configured(self):
@@ -1194,6 +1348,13 @@ class Agent:
             server_data = request["result"]
 
             self.__clear_local_repository_secrets()
+            self.__secret_value_cache().clear()
+            for envelope in server_data.get("secret_envelopes") or []:
+                try:
+                    self.__store_secret_envelope_value(envelope)
+                except AgentExeption as exc:
+                    report.log_message(str(exc), final_state=AgentReportState.warning)
+
             repositories.delete()
             synced_repositories = []
             for repository in server_data["repositories"]:
@@ -1219,6 +1380,50 @@ class Agent:
             report.log_message("Agent sync failed", final_state=AgentReportState.failed)
 
         return report.finish()
+
+    def cmd_reset_known_hosts(self):
+        report = AgentReport.command_report()
+        known_hosts_path = self.__ssh_known_hosts_path()
+        try:
+            if os.path.exists(known_hosts_path):
+                os.remove(known_hosts_path)
+                report.log_message("SSH known_hosts reset")
+            else:
+                report.log_message("SSH known_hosts was already empty")
+        except Exception as exc:
+            report.log_message(
+                f"Resetting SSH known_hosts failed: {exc}",
+                final_state=AgentReportState.failed,
+            )
+        return report.finish()
+
+    def cmd_rotate_ssh_key(self):
+        self.__ensure_ssh_keypair(rotate=True)
+        public_key = self.__agent_ssh_public_key()
+        report = AgentReport.command_report(data={"ssh_public_key": public_key})
+        report.log_message("Agent SSH key rotated. Install the new public key on SSH targets before the next run.")
+        return report.finish()
+
+    def __store_secret_envelope_value(self, envelope):
+        secret_id = envelope.get("user_secret_id")
+        encrypted_value = _json_mapping(envelope.get("encrypted_value"))
+        if not secret_id or not encrypted_value:
+            return
+
+        private_key = self.private_key
+        if not private_key:
+            raise AgentExeption(f"Secret {secret_id} cannot be unlocked without agent key")
+
+        try:
+            value = decrypt_with_private_key(encrypted_value, private_key)
+        except SecretEnvelopeError as exc:
+            raise AgentExeption(f"Secret {secret_id} envelope is invalid") from exc
+
+        self.__secret_value_cache()[secret_id] = {
+            "type": envelope.get("type"),
+            "value": value,
+            "public_data": envelope.get("public_data") or {},
+        }
 
     """ Run backup job: returns None """
 

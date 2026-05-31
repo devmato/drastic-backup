@@ -1,6 +1,11 @@
-from drastic_server.models.agent import Agent, AgentRepositorySecret, AgentSession
+from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.schemas.repository import RepositorySchema
 from drastic_server.services.agent.operations import AgentOperationService
+from drastic_server.services.repository import (
+    agent_repository_assignment,
+    repository_password_envelope,
+    store_agent_restic_access_key,
+)
 
 
 class AgentException(Exception):
@@ -22,13 +27,29 @@ class AgentRequestService:
 
     def _repository_payload(self, repository):
         payload = RepositorySchema().dump(repository)
-        secret = AgentRepositorySecret.query.filter(
-            AgentRepositorySecret.agent_id == self.agent.id,
-            AgentRepositorySecret.repository_id == repository.id,
-        ).first()
-        if secret and secret.encrypted_agent_key:
-            payload["encrypted_agent_key"] = secret.encrypted_agent_key
+        assignment = agent_repository_assignment(self.agent, repository.id)
+        if assignment and assignment.get("encrypted_restic_access_key"):
+            payload["encrypted_restic_access_key"] = assignment["encrypted_restic_access_key"]
         return payload
+
+    def _secret_envelope_payload(self, envelope):
+        secret = envelope.user_secret
+        return {
+            "user_secret_id": secret.id,
+            "type": secret.type,
+            "encrypted_value": envelope.encrypted_value,
+            "public_data": secret.public_data or {},
+        }
+
+    def _secret_envelopes_payload(self):
+        envelopes = []
+        seen = set()
+        for repository in self.agent.repositories:
+            envelope = repository_password_envelope(self.agent, repository)
+            if envelope and envelope.id not in seen:
+                envelopes.append(self._secret_envelope_payload(envelope))
+                seen.add(envelope.id)
+        return envelopes
 
     def _repositories_payload(self):
         return [self._repository_payload(repository) for repository in self.agent.repositories]
@@ -44,6 +65,7 @@ class AgentRequestService:
         return SyncSchema().dump(
             {
                 "repositories": self._repositories_payload(),
+                "secret_envelopes": self._secret_envelopes_payload(),
                 "jobs": Job.query.filter(Job.agent_id == self.agent.id).all(),
                 "retentions": Retention.query.join(JobSchedule)
                 .join(Job, JobSchedule.job_id == Job.id)
@@ -65,29 +87,33 @@ class AgentRequestService:
         if not any(repository.id == repository_id for repository in self.agent.repositories):
             raise AgentException("Repository is not assigned to this agent")
 
-        secret = AgentRepositorySecret.query.filter(
-            AgentRepositorySecret.agent_id == self.agent.id,
-            AgentRepositorySecret.repository_id == repository_id,
-        ).first()
-        if not secret:
+        repository = next(
+            (repository for repository in self.agent.repositories if repository.id == repository_id), None
+        )
+        if repository is None:
+            raise AgentException("Repository is not assigned to this agent")
+
+        envelope = repository_password_envelope(self.agent, repository)
+        if not envelope:
             raise AgentException("Repository recovery envelope is not provisioned for this agent")
 
-        return {"encrypted_recovery_key": secret.encrypted_recovery_key}
+        return {"encrypted_recovery_key": envelope.encrypted_value}
 
-    def store_repository_agent_key(self, repository_id, encrypted_agent_key):
+    def store_repository_agent_key(self, repository_id, encrypted_agent_key, restic_key_id=None):
         repository_id = int(repository_id)
         if not any(repository.id == repository_id for repository in self.agent.repositories):
             raise AgentException("Repository is not assigned to this agent")
 
-        secret = AgentRepositorySecret.query.filter(
-            AgentRepositorySecret.agent_id == self.agent.id,
-            AgentRepositorySecret.repository_id == repository_id,
-        ).first()
-        if not secret:
+        assignment = agent_repository_assignment(self.agent, repository_id)
+        if not assignment:
             raise AgentException("Repository recovery envelope is not provisioned for this agent")
 
-        secret.encrypted_agent_key = encrypted_agent_key
-        secret.provisioned = True
+        store_agent_restic_access_key(
+            self.agent,
+            repository_id,
+            encrypted_agent_key,
+            restic_key_id=restic_key_id,
+        )
 
         from drastic_server.extensions import db
 

@@ -1,5 +1,6 @@
-from wtforms import fields
 import json
+
+from wtforms import fields
 
 # Credits: https://gist.github.com/dukebody/dcc371bf286534d546e9
 
@@ -11,8 +12,8 @@ class JSONField(fields.StringField):
         if valuelist:
             try:
                 self.data = json.loads(valuelist[0])
-            except ValueError:
-                raise ValueError('This field contains invalid JSON')
+            except ValueError as err:
+                raise ValueError('This field contains invalid JSON') from err
         else:
             self.data = None
 
@@ -21,5 +22,5 @@ class JSONField(fields.StringField):
         if self.data:
             try:
                 json.dumps(self.data)
-            except TypeError:
-                raise ValueError('This field contains invalid JSON')
+            except TypeError as err:
+                raise ValueError('This field contains invalid JSON') from err

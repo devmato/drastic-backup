@@ -12,6 +12,7 @@ _PASSWORD_ALGORITHM = "AES-256-GCM"
 _PASSWORD_KDF = "PBKDF2-SHA256"
 _PASSWORD_ITERATIONS = 600_000
 _RSA_ALGORITHM = "RSA-OAEP-SHA256"
+_HYBRID_RSA_ALGORITHM = "RSA-OAEP-SHA256+AES-256-GCM"
 
 
 class SecretEnvelopeError(ValueError):
@@ -98,15 +99,22 @@ def encrypt_for_public_key(plaintext: str, public_key: str) -> Mapping[str, str 
     except (ValueError, IndexError, TypeError) as exc:
         raise SecretEnvelopeError("invalid public key") from exc
 
-    cipher = PKCS1_OAEP.new(key, hashAlgo=SHA256)
+    data_key = get_random_bytes(32)
+    data_cipher = AES.new(data_key, AES.MODE_GCM)
+    ciphertext, tag = data_cipher.encrypt_and_digest(str(plaintext or "").encode("utf-8"))
+
+    key_cipher = PKCS1_OAEP.new(key, hashAlgo=SHA256)
     try:
-        ciphertext = cipher.encrypt(str(plaintext or "").encode("utf-8"))
+        encrypted_key = key_cipher.encrypt(data_key)
     except ValueError as exc:
-        raise SecretEnvelopeError("secret is too large for public key envelope") from exc
+        raise SecretEnvelopeError("secret key could not be encrypted for public key") from exc
 
     return {
         "v": _ENVELOPE_VERSION,
-        "alg": _RSA_ALGORITHM,
+        "alg": _HYBRID_RSA_ALGORITHM,
+        "encrypted_key": _b64encode(encrypted_key),
+        "nonce": _b64encode(data_cipher.nonce),
+        "tag": _b64encode(tag),
         "ciphertext": _b64encode(ciphertext),
     }
 
@@ -114,7 +122,8 @@ def encrypt_for_public_key(plaintext: str, public_key: str) -> Mapping[str, str 
 def decrypt_with_private_key(envelope: Mapping[str, Any], private_key: str) -> str:
     if int(envelope.get("v") or 0) != _ENVELOPE_VERSION:
         raise SecretEnvelopeError("unsupported public key envelope version")
-    if envelope.get("alg") != _RSA_ALGORITHM:
+    algorithm = envelope.get("alg")
+    if algorithm not in {_RSA_ALGORITHM, _HYBRID_RSA_ALGORITHM}:
         raise SecretEnvelopeError("unsupported public key envelope algorithm")
 
     try:
@@ -124,7 +133,15 @@ def decrypt_with_private_key(envelope: Mapping[str, Any], private_key: str) -> s
 
     cipher = PKCS1_OAEP.new(key, hashAlgo=SHA256)
     try:
-        plaintext = cipher.decrypt(_b64decode(envelope.get("ciphertext")))
+        if algorithm == _RSA_ALGORITHM:
+            plaintext = cipher.decrypt(_b64decode(envelope.get("ciphertext")))
+        else:
+            data_key = cipher.decrypt(_b64decode(envelope.get("encrypted_key")))
+            data_cipher = AES.new(data_key, AES.MODE_GCM, nonce=_b64decode(envelope.get("nonce")))
+            plaintext = data_cipher.decrypt_and_verify(
+                _b64decode(envelope.get("ciphertext")),
+                _b64decode(envelope.get("tag")),
+            )
     except ValueError as exc:
         raise SecretEnvelopeError("public key envelope could not be decrypted") from exc
 

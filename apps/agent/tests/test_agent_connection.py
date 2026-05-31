@@ -2,6 +2,7 @@ import bz2
 import configparser
 import hashlib
 import os
+import stat
 from datetime import datetime, timedelta
 
 import drastic_agent.agent.agent as agent_module
@@ -26,7 +27,12 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__reconnect_retry_interval = timedelta(seconds=15)
     agent._Agent__schedule_run_slots = {}
     agent._Agent__repository_passwords = {}
+    agent._Agent__secret_values = {}
     return agent
+
+
+def file_mode(path):
+    return stat.S_IMODE(os.stat(path).st_mode)
 
 
 class FakeRepositorySecrets:
@@ -97,6 +103,22 @@ def test_set_repository_initializes_before_agent_key_provisioning(monkeypatch):
     ]
 
 
+def test_save_config_restricts_agent_state_permissions(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    agent._Agent__config["AGENT"] = {
+        "identifier": "agent-17",
+        "secret": "secret-17",
+        "private_key": "private-key",
+        "public_key": "public-key",
+    }
+
+    Agent.save_config(agent)
+
+    assert file_mode(tmp_path) == 0o700
+    assert file_mode(tmp_path / "config.ini") == 0o600
+
+
 def test_set_repository_uses_agent_key_envelope_without_persisting_secret(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     agent._Agent__config["AGENT"] = {"private_key": "private-key"}
@@ -109,7 +131,7 @@ def test_set_repository_uses_agent_key_envelope_without_persisting_secret(monkey
                 "id": 1,
                 "location": "rest:http://repo.test/repo",
                 "environment": {},
-                "encrypted_agent_key": {"v": 1},
+                "encrypted_restic_access_key": {"v": 1},
             }
 
     class FakeRepositorySecrets:
@@ -228,9 +250,11 @@ def test_set_repository_ignores_already_initialized_during_provisioning(monkeypa
     assert key_add_calls == ["agent-password"]
 
 
-def test_register_updates_runtime_configuration(monkeypatch):
+def test_register_updates_runtime_configuration(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
     agent = build_agent(identifier=None, secret=None)
     save_calls = []
+    payloads = []
 
     class Response:
         status_code = 201
@@ -239,7 +263,12 @@ def test_register_updates_runtime_configuration(monkeypatch):
         def json():
             return {"identifier": "agent-17", "secret": "secret-17"}
 
-    monkeypatch.setattr(agent_module.requests, "post", lambda *args, **kwargs: Response())
+    def fake_post(*args, **kwargs):
+        payloads.append(kwargs["json"])
+        return Response()
+
+    monkeypatch.setattr(agent_module.requests, "post", fake_post)
+    monkeypatch.setattr(agent_module, "generate_ssh_keypair", lambda: ("ssh-private-key", "ssh-public-key"))
     monkeypatch.setattr(agent, "save_config", lambda: save_calls.append(True))
 
     result = Agent.register(agent, "http://server.test", "user", "pass")
@@ -249,7 +278,38 @@ def test_register_updates_runtime_configuration(monkeypatch):
     assert agent._Agent__secret == "secret-17"
     assert agent.configured is True
     assert agent._Agent__config["AGENT"]["identifier"] == "agent-17"
+    assert payloads[0]["ssh_public_key"] == "ssh-public-key"
     assert save_calls == [True]
+
+
+def test_repository_ssh_private_key_uses_agent_identity_for_ssh_locations(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_module, "generate_ssh_keypair", lambda: ("ssh-private-key", "ssh-public-key"))
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+
+    assert Agent._Agent__repository_ssh_private_key(
+        agent, {"id": 1, "location": "sftp:user@example.test:/repo"}
+    ) == "ssh-private-key\n"
+    assert Agent._Agent__repository_ssh_private_key(
+        agent, {"id": 1, "location": "rest:http://repo.test/repo"}
+    ) is None
+
+
+def test_rotate_ssh_key_replaces_agent_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    generated = iter([
+        ("first-private-key", "first-public-key"),
+        ("second-private-key", "second-public-key"),
+    ])
+    monkeypatch.setattr(agent_module, "generate_ssh_keypair", lambda: next(generated))
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+
+    assert agent.ssh_public_key == "first-public-key"
+    report = Agent.cmd_rotate_ssh_key(agent)
+
+    assert report.final_state.name == "success"
+    assert report.data["ssh_public_key"] == "second-public-key"
+    assert agent.ssh_public_key == "second-public-key"
 
 
 def test_maintain_server_connection_retries_registration_and_connects(monkeypatch):
@@ -419,7 +479,7 @@ def test_sync_hydrates_agent_keys_without_persisting_secret_payloads(monkeypatch
                         "id": 1,
                         "location": "rest:http://repo.test/repo",
                         "environment": {},
-                        "encrypted_agent_key": {"v": 1},
+                        "encrypted_restic_access_key": {"v": 1},
                         "encrypted_recovery_key": {"should": "not-persist"},
                     }
                 ],

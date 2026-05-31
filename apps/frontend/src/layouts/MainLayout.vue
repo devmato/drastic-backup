@@ -26,6 +26,11 @@
             </div>
           </template>
           <q-list>
+            <q-item clickable v-close-popup @click="openChangePasswordDialog">
+              <q-item-section avatar><q-icon name="key" /></q-item-section>
+              <q-item-section><q-item-label>Change Password</q-item-label></q-item-section>
+            </q-item>
+            <q-separator />
             <q-item clickable v-close-popup @click="logout()">
               <q-item-section avatar><q-icon name="lock" /></q-item-section>
               <q-item-section><q-item-label>Logout</q-item-label></q-item-section>
@@ -62,6 +67,83 @@
       <router-view />
     </q-page-container>
 
+    <q-dialog v-model="changePasswordDialogOpen" persistent>
+      <q-card class="db-dialog-card-sm">
+        <q-card-section>
+          <div class="text-h6">Change Password</div>
+          <div class="text-caption text-grey-7">
+            Enter your current password and choose a new one. You will be signed out afterwards.
+          </div>
+        </q-card-section>
+
+        <q-form ref="changePasswordForm" @submit="submitChangePassword">
+          <q-card-section class="q-gutter-sm">
+            <q-input
+              outlined
+              autofocus
+              v-model="changeCurrentPassword"
+              :type="showChangePasswords ? 'text' : 'password'"
+              label="Current Password"
+              autocomplete="current-password"
+              lazy-rules
+              :rules="[val => !!val || 'Required']"
+              :disable="changePasswordSubmitting"
+            >
+              <template #prepend><q-icon name="lock" /></template>
+            </q-input>
+
+            <q-input
+              outlined
+              v-model="changeNewPassword"
+              :type="showChangePasswords ? 'text' : 'password'"
+              label="New Password"
+              autocomplete="new-password"
+              lazy-rules
+              :rules="[
+                val => !!val || 'Required',
+                val => String(val || '').length >= 8 || 'Password must be at least 8 characters'
+              ]"
+              :disable="changePasswordSubmitting"
+            >
+              <template #prepend><q-icon name="vpn_key" /></template>
+              <template #append>
+                <q-icon
+                  :name="showChangePasswords ? 'visibility_off' : 'visibility'"
+                  class="cursor-pointer"
+                  @click="showChangePasswords = !showChangePasswords"
+                />
+              </template>
+            </q-input>
+
+            <q-input
+              outlined
+              v-model="changeConfirmPassword"
+              :type="showChangePasswords ? 'text' : 'password'"
+              label="Confirm New Password"
+              autocomplete="new-password"
+              lazy-rules
+              :rules="[
+                val => !!val || 'Required',
+                val => val === changeNewPassword || 'Passwords do not match'
+              ]"
+              :disable="changePasswordSubmitting"
+            >
+              <template #prepend><q-icon name="verified_user" /></template>
+            </q-input>
+
+            <q-banner v-if="changePasswordError" dense rounded class="bg-red-1 text-red-10">
+              {{ changePasswordError }}
+            </q-banner>
+          </q-card-section>
+
+          <q-card-actions align="right">
+            <q-btn flat label="Cancel" :disable="changePasswordSubmitting" @click="closeChangePasswordDialog" />
+            <q-btn label="Change Password" type="submit" color="primary" :loading="changePasswordSubmitting" />
+          </q-card-actions>
+        </q-form>
+      </q-card>
+    </q-dialog>
+
     <ReauthenticationDialog />
   </q-layout>
 </template>
@@ -74,14 +156,26 @@ import { useRouter } from 'vue-router'
 import { useUserStore } from 'stores/user'
 import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
+import { useQuasar } from 'quasar'
 import { subscribeToSocketEvents } from 'src/utils/socket'
+import { getApiErrorMessage } from 'src/utils/api-error'
 
 const router = useRouter()
 const userStore = useUserStore()
 const agentStore = useAgentStore()
 const jobStore = useJobStore()
+const $q = useQuasar()
 let stopRealtimeSocketListener = null
 let realtimeSyncStarted = false
+
+const changePasswordDialogOpen = ref(false)
+const changePasswordSubmitting = ref(false)
+const changePasswordError = ref('')
+const changePasswordForm = ref(null)
+const changeCurrentPassword = ref('')
+const changeNewPassword = ref('')
+const changeConfirmPassword = ref('')
+const showChangePasswords = ref(false)
 
 function queuedLoad(loader) {
   let inFlight = false
@@ -133,6 +227,46 @@ async function startRealtimeSync() {
 async function logout() {
   await userStore.logout()
   router.push('/login')
+}
+
+function resetChangePasswordDialog() {
+  changeCurrentPassword.value = ''
+  changeNewPassword.value = ''
+  changeConfirmPassword.value = ''
+  changePasswordError.value = ''
+  showChangePasswords.value = false
+  changePasswordForm.value?.resetValidation?.()
+}
+
+function openChangePasswordDialog() {
+  resetChangePasswordDialog()
+  changePasswordDialogOpen.value = true
+}
+
+function closeChangePasswordDialog() {
+  if (changePasswordSubmitting.value) {
+    return
+  }
+  changePasswordDialogOpen.value = false
+  resetChangePasswordDialog()
+}
+
+async function submitChangePassword() {
+  changePasswordError.value = ''
+  changePasswordSubmitting.value = true
+  try {
+    await userStore.changePassword(changeCurrentPassword.value, changeNewPassword.value)
+    changePasswordDialogOpen.value = false
+    resetChangePasswordDialog()
+    $q.notify({ message: 'Password changed. Please sign in again.', color: 'green', position: 'top' })
+    router.push('/login')
+  } catch (error) {
+    changePasswordError.value = error?.response?.status === 401
+      ? 'Current password is wrong'
+      : getApiErrorMessage(error, 'Password change failed')
+  } finally {
+    changePasswordSubmitting.value = false
+  }
 }
 
 onBeforeMount(async () => {

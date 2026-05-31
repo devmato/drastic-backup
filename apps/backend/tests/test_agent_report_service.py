@@ -11,10 +11,10 @@ from drastic_server.models.agent import (
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
-    AgentRepositorySecret,
 )
 from drastic_server.models.job import Job, JobType
 from drastic_server.models.repository import Repository
+from drastic_server.models.secret import AgentSecretEnvelope, UserSecret
 from drastic_server.models.user import User
 from drastic_server.services.agent import AgentRequestService, operation_start
 from drastic_server.services.agent import operations as agent_operations
@@ -40,7 +40,7 @@ def test_agent_operation_upserts_logs_and_artifacts(monkeypatch):
         db.create_all()
         try:
             user = User(name="admin")
-            user.set_password("password")
+            user.set_initial_password("password")
             agent = Agent(user=user, secret="agent-secret")
             repository = Repository(
                 user=user,
@@ -127,7 +127,7 @@ def test_started_agent_operation_is_updated_by_agent_report(monkeypatch):
         db.create_all()
         try:
             user = User(name="admin")
-            user.set_password("password")
+            user.set_initial_password("password")
             agent = Agent(user=user, secret="agent-secret")
             repository = Repository(
                 user=user,
@@ -189,7 +189,7 @@ def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
         db.create_all()
         try:
             user = User(name="admin")
-            user.set_password("password")
+            user.set_initial_password("password")
             agent = Agent(user=user, secret="agent-secret")
             repository = Repository(
                 user=user,
@@ -197,23 +197,39 @@ def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
                 kind=Repository.KIND_CUSTOM,
                 location="rest:http://repo.test/repo",
             )
+            repository.password_secret = UserSecret(
+                user=user,
+                type=UserSecret.TYPE_REPOSITORY_PASSWORD,
+                name="Repo repository password",
+                encrypted_value={"user": "secret"},
+                public_data={},
+                version=1,
+            )
             agent.repositories.append(repository)
             db.session.add_all([user, agent, repository])
             db.session.flush()
-            secret = AgentRepositorySecret(
+            envelope = AgentSecretEnvelope(
                 agent=agent,
-                repository=repository,
-                encrypted_recovery_key={"recovery": "envelope"},
-                encrypted_agent_key={"agent": "envelope"},
-                provisioned=True,
+                user_secret=repository.password_secret,
+                encrypted_value={"recovery": "envelope"},
+                secret_version=1,
+                active=True,
             )
-            db.session.add(secret)
+            db.session.add(envelope)
+            db.session.execute(
+                _models.agent_repositories.update()
+                .where(
+                    _models.agent_repositories.c.agent_id == agent.id,
+                    _models.agent_repositories.c.repository_id == repository.id,
+                )
+                .values(encrypted_restic_access_key={"agent": "envelope"}, provisioned=True)
+            )
             db.session.commit()
 
             service = AgentRequestService(agent)
             repositories = service.get_repositories()
 
-            assert repositories[0]["encrypted_agent_key"] == {"agent": "envelope"}
+            assert repositories[0]["encrypted_restic_access_key"] == {"agent": "envelope"}
             assert "encrypted_recovery_key" not in repositories[0]
             assert service.repository_recovery_envelope(repository.id) == {
                 "encrypted_recovery_key": {"recovery": "envelope"}
@@ -222,9 +238,14 @@ def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
             assert service.store_repository_agent_key(repository.id, {"new": "agent-envelope"}) == {
                 "ok": True
             }
-            db.session.refresh(secret)
-            assert secret.encrypted_agent_key == {"new": "agent-envelope"}
-            assert secret.provisioned is True
+            assignment = db.session.execute(
+                _models.agent_repositories.select().where(
+                    _models.agent_repositories.c.agent_id == agent.id,
+                    _models.agent_repositories.c.repository_id == repository.id,
+                )
+            ).mappings().first()
+            assert assignment["encrypted_restic_access_key"] == {"new": "agent-envelope"}
+            assert assignment["provisioned"] is True
         finally:
             db.session.remove()
             db.drop_all()
@@ -239,7 +260,7 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
         db.create_all()
         try:
             user = User(name="admin")
-            user.set_password("password")
+            user.set_initial_password("password")
             agent = Agent(user=user, secret="agent-secret")
             repository = Repository(
                 user=user,

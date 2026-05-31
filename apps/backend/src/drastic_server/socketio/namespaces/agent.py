@@ -5,6 +5,7 @@ from flask import current_app, request
 from flask_socketio import Namespace
 from sqlalchemy import delete
 
+from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_server.extensions import db, socketio
 from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.services.agent import AgentRequest
@@ -25,7 +26,9 @@ class AgentNamespace(Namespace):
             agent_os = auth['agent_os']
             agent_hostname = auth['agent_hostname']
             agent_version = auth['agent_version']
+            agent_install_type = auth.get('agent_install_type')
             agent_public_key = auth.get('agent_public_key')
+            agent_ssh_public_key = auth.get('agent_ssh_public_key')
 
         # Terminate connection on invalid authdata
         except KeyError:
@@ -45,8 +48,13 @@ class AgentNamespace(Namespace):
             agent.os = agent_os
             agent.hostname = agent_hostname
             agent.version = agent_version
+            agent.install_type = Agent.normalize_install_type(agent_install_type)
             if agent_public_key and agent.public_key != agent_public_key:
                 agent.public_key = agent_public_key
+            if agent_ssh_public_key and agent.ssh_public_key != agent_ssh_public_key:
+                agent.ssh_public_key = agent_ssh_public_key
+                agent.ssh_key_fingerprint = ssh_public_key_fingerprint(agent_ssh_public_key)
+                agent.ssh_key_algorithm = ssh_public_key_algorithm(agent_ssh_public_key)
             agent.last_connection = datetime.now()
             # Create agent session
             db.session.execute(delete(AgentSession).where(AgentSession.agent_id == agent.id))

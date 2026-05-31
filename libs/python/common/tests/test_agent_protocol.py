@@ -1,6 +1,11 @@
 from datetime import datetime
 
-from drastic_common.agent.enums import AgentOperationState, AgentOperationType
+from drastic_common.agent.commands import (
+    ASYNC_AGENT_COMMANDS,
+    AgentCommandName,
+    AgentCommandRequestSchema,
+)
+from drastic_common.agent.enums import AgentJobType, AgentOperationState, AgentOperationType
 from drastic_common.agent.schemas import AgentOperationSchema, AgentSyncSchema
 
 
@@ -62,3 +67,18 @@ def test_agent_sync_schema_dumps_backend_like_objects():
     assert payload["jobs"][0]["type"] == "file"
     assert payload["actions"][0]["module"] == "command"
     assert payload["schedules"][0]["config"] == {}
+
+
+def test_agent_command_request_schema_loads_known_command():
+    payload = AgentCommandRequestSchema().load(
+        {"command": "run_job", "args": {"job_id": 1, "repository_id": 2}}
+    )
+
+    assert payload["command"] == AgentCommandName.run_job
+    assert payload["command"] in ASYNC_AGENT_COMMANDS
+    assert payload["args"] == {"job_id": 1, "repository_id": 2}
+
+
+def test_shared_job_type_names_match_wire_values():
+    assert AgentJobType.file.name == "file"
+    assert AgentJobType.proxmox.name == "proxmox"

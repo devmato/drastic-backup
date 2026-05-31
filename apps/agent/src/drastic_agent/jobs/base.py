@@ -9,6 +9,7 @@ from drastic_agent.agent.database import (
 )
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_common.restic.exceptions import ResticError
 
 
@@ -210,7 +211,7 @@ class BackupJobHandler:
         except ResticError as exc:
             message = str(exc).lower()
             if "unable to open config file" in message or "is there a repository at" in message:
-                if self.repository.get("kind") == "native":
+                if self.repository.get("kind") == AgentRepositoryKind.native.value:
                     report.log_message(
                         "Native repository is not initialized. Create it from the backend before running backups.",
                         final_state=AgentOperationState.failed,

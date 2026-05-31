@@ -4,7 +4,6 @@ from drastic_server.models.agent import (
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
-    AgentRepositorySecret,
 )
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
@@ -15,6 +14,7 @@ from drastic_server.services.agent.operation_start import (
     start_agent_operation,
 )
 from drastic_server.services.exceptions import RestoreServiceException
+from drastic_server.services.repository import agent_repository_assignment
 
 RESTORE_MODE_PLAIN_FILE = "plain_file"
 
@@ -55,12 +55,9 @@ class RestoreService:
         if agent is None:
             return payload
 
-        secret = AgentRepositorySecret.query.filter(
-            AgentRepositorySecret.agent_id == agent.id,
-            AgentRepositorySecret.repository_id == repository.id,
-        ).first()
-        if secret and secret.encrypted_agent_key:
-            payload["encrypted_agent_key"] = secret.encrypted_agent_key
+        assignment = agent_repository_assignment(agent, repository.id)
+        if assignment and assignment.get("encrypted_restic_access_key"):
+            payload["encrypted_restic_access_key"] = assignment["encrypted_restic_access_key"]
         return payload
 
     @staticmethod

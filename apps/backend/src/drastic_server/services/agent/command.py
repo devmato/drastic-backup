@@ -2,6 +2,7 @@ from flask import current_app
 from flask_socketio import call, emit
 from socketio.exceptions import TimeoutError
 
+from drastic_common.agent.commands import AgentCommandName, agent_command_value
 from drastic_server.env_loader import parse_int_value
 from drastic_server.models.agent import AgentOperationState, AgentOperationType
 from drastic_server.schemas.agent import AgentOperationSchema
@@ -38,6 +39,7 @@ class AgentService:
 
     @classmethod
     def send_command(cls, agent, command, await_response=True, **kwargs):
+        command = agent_command_value(command)
         if not agent.online:
             return cls.failed_command_report("Agent is offline")
 
@@ -64,45 +66,49 @@ class AgentService:
 
     @classmethod
     def list_restore_snapshots(cls, agent, **kwargs):
-        return cls.send_command(agent, "list_restore_snapshots", **kwargs)
+        return cls.send_command(agent, AgentCommandName.list_restore_snapshots, **kwargs)
 
     @classmethod
     def list_restore_entries(cls, agent, **kwargs):
-        return cls.send_command(agent, "list_restore_entries", **kwargs)
+        return cls.send_command(agent, AgentCommandName.list_restore_entries, **kwargs)
 
     @classmethod
     def run_restore(cls, agent, **kwargs):
-        return cls.send_command(agent, "run_restore", await_response=False, **kwargs)
+        return cls.send_command(agent, AgentCommandName.run_restore, await_response=False, **kwargs)
 
     @classmethod
     def cancel_restore(cls, agent, **kwargs):
-        return cls.send_command(agent, "cancel_restore", **kwargs)
+        return cls.send_command(agent, AgentCommandName.cancel_restore, **kwargs)
 
     @classmethod
     def init_repository(cls, agent, location, password, env):
-        return cls.send_command(agent, "init_repository", location=location, password=password, env=env)
+        return cls.send_command(
+            agent, AgentCommandName.init_repository, location=location, password=password, env=env
+        )
 
     @classmethod
     def sync(cls, agent, await_response=False):
-        return cls.send_command(agent, "sync", await_response=await_response)
+        return cls.send_command(agent, AgentCommandName.sync, await_response=await_response)
 
     @classmethod
     def get_repository_stats(cls, agent, repository_id):
-        return cls.send_command(agent, "get_repository_stats", repository_id=repository_id)
+        return cls.send_command(
+            agent, AgentCommandName.get_repository_stats, repository_id=repository_id
+        )
 
     @classmethod
     def get_dirlist(cls, agent, base_directory="/"):
-        return cls.send_command(agent, "get_dirlist", base_directory=base_directory)
+        return cls.send_command(agent, AgentCommandName.get_dirlist, base_directory=base_directory)
 
     @classmethod
     def get_proxmox_guests(cls, agent):
-        return cls.send_command(agent, "get_proxmox_guests")
+        return cls.send_command(agent, AgentCommandName.get_proxmox_guests)
 
     @classmethod
     def run_job(cls, agent, job_id, repository_id, operation_uuid=None, run_options=None):
         return cls.send_command(
             agent,
-            "run_job",
+            AgentCommandName.run_job,
             job_id=job_id,
             repository_id=repository_id,
             operation_uuid=operation_uuid,
@@ -112,25 +118,25 @@ class AgentService:
 
     @classmethod
     def get_job_status(cls, agent, job_id):
-        return cls.send_command(agent, "get_job_status", job_id=job_id)
+        return cls.send_command(agent, AgentCommandName.get_job_status, job_id=job_id)
 
     @classmethod
     def add_job(cls, agent, job):
-        return cls.send_command(agent, "add_job", job_data=JobSchema().dump(job))
+        return cls.send_command(agent, AgentCommandName.add_job, job_data=JobSchema().dump(job))
 
     @classmethod
     def delete_job(cls, agent, job_id):
-        return cls.send_command(agent, "delete_job", job_id=job_id)
+        return cls.send_command(agent, AgentCommandName.delete_job, job_id=job_id)
 
     @classmethod
     def cancel_job(cls, agent, job_id):
-        return cls.send_command(agent, "cancel_job", job_id=job_id)
+        return cls.send_command(agent, AgentCommandName.cancel_job, job_id=job_id)
 
     @classmethod
     def unlock_repository(cls, agent, repository_id, operation_uuid=None):
         return cls.send_command(
             agent,
-            "unlock_repository",
+            AgentCommandName.unlock_repository,
             repository_id=repository_id,
             operation_uuid=operation_uuid,
             await_response=False,
@@ -140,7 +146,7 @@ class AgentService:
     def check_repository(cls, agent, repository_id, read_data_subset=None, operation_uuid=None):
         return cls.send_command(
             agent,
-            "check_repository",
+            AgentCommandName.check_repository,
             repository_id=repository_id,
             read_data_subset=read_data_subset,
             operation_uuid=operation_uuid,
@@ -148,7 +154,15 @@ class AgentService:
 
     @classmethod
     def get_containers(cls, agent):
-        return cls.send_command(agent, "get_containers")
+        return cls.send_command(agent, AgentCommandName.get_containers)
+
+    @classmethod
+    def reset_known_hosts(cls, agent):
+        return cls.send_command(agent, AgentCommandName.reset_known_hosts)
+
+    @classmethod
+    def rotate_ssh_key(cls, agent):
+        return cls.send_command(agent, AgentCommandName.rotate_ssh_key)
 
 
 class AgentCommand:
@@ -208,3 +222,9 @@ class AgentCommand:
 
     def get_containers(self):
         return AgentService.get_containers(self.agent)
+
+    def reset_known_hosts(self):
+        return AgentService.reset_known_hosts(self.agent)
+
+    def rotate_ssh_key(self):
+        return AgentService.rotate_ssh_key(self.agent)

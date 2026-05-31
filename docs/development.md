@@ -71,6 +71,36 @@ Override the server URL explicitly:
 
 `agent-local` loads `.env.default`, `.env.<name>`, `.env.<name>.override`, and then an optional `--env-file`.
 
+## Test Native Installer From Git
+
+For installer and systemd testing without release artifacts, start the development stack without the Docker agent and install a native agent from a concrete git commit:
+
+```bash
+./scripts/dev.sh up --no-agent
+```
+
+```bash
+curl -fsSL http://127.0.0.1:5050/install | bash -s -- \
+  --action install \
+  --source git \
+  --version <commit-sha> \
+  --user admin \
+  --password admin \
+  --no-start
+```
+
+The target host needs `git`, `uv`, Python, and systemd. The `/install` endpoint bootstraps `/opt/drastic-agent/agentctl`, which can later update or uninstall the local native agent without fetching the bootstrap script again:
+
+```bash
+sudo drastic-agent update --source git --version <commit-sha> --no-start
+```
+
+```bash
+sudo drastic-agent uninstall
+```
+
+If the installer runs from another host or VM, set `DRASTIC_PUBLIC_URL` to a URL reachable by that host before rendering `/install`.
+
 ## Reset Local State
 
 Reset persistent development volumes without removing local images:

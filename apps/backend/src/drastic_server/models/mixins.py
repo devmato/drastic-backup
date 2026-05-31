@@ -1,5 +1,7 @@
 from datetime import datetime
+
 from drastic_server.extensions import db
+
 
 # Id column
 class IdMixin():

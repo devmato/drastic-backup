@@ -23,11 +23,11 @@ docker compose -f docker-compose.yaml --env-file .env.prod up -d
 
 The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. For releases, prefer matching version tags such as `v0.1.0` over `latest`.
+The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. For releases, prefer matching version tags such as `v0.1.0` over `latest`.
 
-The bootstrap admin seed creates the configured user when it does not exist. It does not reset an existing user's password unless `DRASTIC_BOOTSTRAP_ADMIN_UPDATE=true` is set intentionally.
+The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 
-Native agent artifacts are loaded from public GitHub, Forgejo, or Gitea releases. The backend caches each requested artifact under `DRASTIC_ASSET_CACHE_PATH` on first access and serves subsequent requests from that local cache.
+Native agent artifacts are loaded from public GitHub, Forgejo, or Gitea releases. GitHub releases provide Linux amd64 and arm64 artifacts. The backend caches each requested artifact under `DRASTIC_ASSET_CACHE_PATH` on first access and serves subsequent requests from that local cache.
 
 ## Agent Installation
 

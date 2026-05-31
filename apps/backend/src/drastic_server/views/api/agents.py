@@ -4,6 +4,7 @@ from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_smorest import Blueprint, abort
 
+from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentOperation, AgentOperationState
 from drastic_server.models.job import Job
@@ -27,10 +28,7 @@ from drastic_server.services.agent import (
 )
 from drastic_server.services.repository import (
     RepositorySecretError,
-    decrypt_recovery_key,
     ensure_agent_envelopes_from_user_recovery_key,
-    ensure_agent_recovery_envelope,
-    validate_user_recovery_key,
 )
 from drastic_server.utils.realtime import emit_agents_update, emit_jobs_update
 from drastic_server.utils.urls import explicit_public_url, public_server_url
@@ -40,6 +38,13 @@ blp = Blueprint("agents", __name__, url_prefix="/api/agents", description="Agent
 
 def _abort_recovery_key_error(exc):
     abort(401, message=str(exc), errors={"recovery_key": ["required"]})
+
+
+def _set_agent_ssh_public_key(agent, public_key):
+    public_key = str(public_key or "").strip() or None
+    agent.ssh_public_key = public_key
+    agent.ssh_key_fingerprint = ssh_public_key_fingerprint(public_key) if public_key else None
+    agent.ssh_key_algorithm = ssh_public_key_algorithm(public_key) if public_key else None
 
 
 @blp.route("/register")
@@ -66,7 +71,9 @@ class AgentRegister(MethodView):
             hostname=data.get("hostname"),
             os=data.get("os"),
             version=data.get("version"),
+            install_type=Agent.normalize_install_type(data.get("install_type")),
         )
+        _set_agent_ssh_public_key(agent, data.get("ssh_public_key"))
         db.session.add(agent)
         db.session.commit()
         emit_agents_update(user.id)
@@ -197,11 +204,11 @@ class AgentSync(MethodView):
         recovery_key = data.get("recovery_key")
         if recovery_key:
             try:
-                user_recovery_key = validate_user_recovery_key(recovery_key)
-                for repository in agent.repositories:
-                    if repository.encrypted_recovery_key:
-                        repository_recovery_key = decrypt_recovery_key(repository, user_recovery_key)
-                        ensure_agent_recovery_envelope(agent, repository, repository_recovery_key)
+                ensure_agent_envelopes_from_user_recovery_key(
+                    agent=agent,
+                    repositories=list(agent.repositories),
+                    user_recovery_key=recovery_key,
+                )
             except RepositorySecretError as exc:
                 _abort_recovery_key_error(exc)
             db.session.commit()
@@ -216,6 +223,52 @@ class AgentSync(MethodView):
             abort(400, message=response.get("log", "Agent sync failed"))
 
         return {"msg": "Agent synchronized"}
+
+
+@blp.route("/<int:agent_id>/actions/reset-known-hosts")
+class AgentResetKnownHosts(MethodView):
+    @jwt_required()
+    @blp.response(200, MessageSchema)
+    def post(self, agent_id):
+        user_id = get_jwt_identity()
+        agent = Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
+
+        if not agent.online:
+            abort(400, message="Agent is offline")
+
+        response = AgentCommand(agent=agent).reset_known_hosts()
+        if is_agent_timeout_response(response):
+            abort(504, message=response.get("log", "Agent request timed out"))
+        if response.get("state") != AgentOperationState.success:
+            abort(400, message=response.get("log", "Reset known hosts failed"))
+
+        return {"msg": "Known hosts reset"}
+
+
+@blp.route("/<int:agent_id>/actions/rotate-ssh-key")
+class AgentRotateSshKey(MethodView):
+    @jwt_required()
+    @blp.response(200, MessageSchema)
+    def post(self, agent_id):
+        user_id = get_jwt_identity()
+        agent = Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
+
+        if not agent.online:
+            abort(400, message="Agent is offline")
+
+        response = AgentCommand(agent=agent).rotate_ssh_key()
+        if is_agent_timeout_response(response):
+            abort(504, message=response.get("log", "Agent request timed out"))
+        if response.get("state") != AgentOperationState.success:
+            abort(400, message=response.get("log", "Rotate SSH key failed"))
+
+        public_key = (response.get("data") or {}).get("ssh_public_key")
+        if public_key:
+            _set_agent_ssh_public_key(agent, public_key)
+            db.session.commit()
+            emit_agents_update(user_id)
+
+        return {"msg": "SSH key rotated"}
 
 
 @blp.route("/<int:agent_id>/operations")

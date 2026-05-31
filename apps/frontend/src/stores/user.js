@@ -55,6 +55,15 @@ export const useUserStore = defineStore('user', () => {
     return response.data
   }
 
+  async function changePassword(currentPassword, newPassword) {
+    const response = await api.put('/user/password', {
+      current_password: currentPassword,
+      new_password: newPassword,
+    })
+    clearSessionState()
+    return response.data
+  }
+
   function clearReauthRequest() {
     reauthResolve = null
     reauthReject = null
@@ -183,6 +192,7 @@ export const useUserStore = defineStore('user', () => {
     fetchNeedsInit,
     fetchAuthStatus,
     initializeUser,
+    changePassword,
     requestReauth,
     confirmReauth,
     cancelReauth,

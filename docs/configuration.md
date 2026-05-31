@@ -61,11 +61,7 @@ Supported environments are `dev`, `test`, and `prod`. Generate local env files w
 | Variable | Purpose |
 | --- | --- |
 | `DRASTIC_BOOTSTRAP_ADMIN_USERNAME` | Initial admin username. |
-| `DRASTIC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password. |
-| `DRASTIC_BOOTSTRAP_ADMIN_UPDATE` | Set to `true` only when the bootstrap seed should intentionally reset an existing bootstrap admin password. Defaults to `false`. |
-| `DRASTIC_BOOTSTRAP_REPOSITORY_NAME` | Optional bootstrap repository name. |
-| `DRASTIC_BOOTSTRAP_REPOSITORY_LOCATION` | Optional custom bootstrap repository location. |
-| `DRASTIC_BOOTSTRAP_REPOSITORY_PASSWORD` | Optional custom bootstrap repository password. |
+| `DRASTIC_BOOTSTRAP_ADMIN_PASSWORD` | Initial admin password. Existing users are never changed by bootstrap. |
 
 ## Timeouts
 
@@ -89,7 +85,9 @@ Supported environments are `dev`, `test`, and `prod`. Generate local env files w
 
 `DRASTIC_APP_MASTER_SECRET` derives the backend settings-encryption key used for repository environment values and notification URLs. Repository passwords are wrapped with a per-user recovery key that is decrypted during login and kept only in browser memory. Database data plus `.env.prod` is not enough to open repositories without a user password or an already provisioned agent.
 
-Agents generate their own keypair during registration. The backend stores agent-specific envelopes for local restic repository keys and recovery access, but cannot decrypt them by itself. Agents hydrate repository keys into memory during startup sync; repository keys are not persisted in the agent data directory. Repository passwords can be generated automatically or set manually, and revealing them in the UI requires re-entering the account password.
+Agents generate their own keypair during registration. The backend stores agent-specific envelopes for local restic access keys and recovery access, but cannot decrypt them by itself. Agents hydrate restic access keys into memory during startup sync; restic access keys are not persisted in the agent data directory. Repository passwords can be generated automatically or set manually during repository creation, and revealing them in the UI requires re-entering the account password. Changing repository passwords after creation is not supported yet.
+
+Agents generate SSH identities locally and advertise only their SSH public key to the backend. Install the public key shown in the agent properties dialog on SSH/SFTP repository targets. Agents manage SSH `known_hosts` locally in their data directory.
 
 For production-style Homelab deployments, back up these items together:
 

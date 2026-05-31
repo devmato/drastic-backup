@@ -217,7 +217,6 @@ prompt_server_agent_values() {
     ROOT_PASSWORD_DEFAULT="$(generate_random_hex 16)"
     DB_PASSWORD_DEFAULT="$(generate_random_hex 16)"
     SECRET_DEFAULT="$(generate_random_hex 32)"
-    REPOSITORY_PASSWORD_DEFAULT="$(generate_random_hex 24)"
 
     prompt "    Server image" "$default_server_image"
     SERVER_IMAGE="$REPLY"
@@ -261,12 +260,6 @@ prompt_server_agent_values() {
     BOOTSTRAP_ADMIN_USERNAME="$REPLY"
     prompt "    Bootstrap admin password" "$(generate_random_hex 12)"
     BOOTSTRAP_ADMIN_PASSWORD="$REPLY"
-    prompt "    Bootstrap repository name" "Bootstrap Repository"
-    BOOTSTRAP_REPOSITORY_NAME="$REPLY"
-    prompt "    Bootstrap repository location" "s3:s3.example.net/drastic-bootstrap"
-    BOOTSTRAP_REPOSITORY_LOCATION="$REPLY"
-    prompt "    Bootstrap repository password" "$REPOSITORY_PASSWORD_DEFAULT"
-    BOOTSTRAP_REPOSITORY_PASSWORD="$REPLY"
     prompt "    Proxmox API URL (optional)" ""
     PROXMOX_API_URL="$REPLY"
     prompt "    Proxmox token id (optional)" ""
@@ -329,10 +322,6 @@ DRASTIC_TASK_TIMEOUT_SECONDS=600
 
 DRASTIC_BOOTSTRAP_ADMIN_USERNAME=$(quote_env_string "$BOOTSTRAP_ADMIN_USERNAME")
 DRASTIC_BOOTSTRAP_ADMIN_PASSWORD=$(quote_env_string "$BOOTSTRAP_ADMIN_PASSWORD")
-DRASTIC_BOOTSTRAP_ADMIN_UPDATE=false
-DRASTIC_BOOTSTRAP_REPOSITORY_NAME=$(quote_env_string "$BOOTSTRAP_REPOSITORY_NAME")
-DRASTIC_BOOTSTRAP_REPOSITORY_LOCATION=$(quote_env_string "$BOOTSTRAP_REPOSITORY_LOCATION")
-DRASTIC_BOOTSTRAP_REPOSITORY_PASSWORD=$(quote_env_string "$BOOTSTRAP_REPOSITORY_PASSWORD")
 
 DRASTIC_SERVER=$(quote_env_string "$PUBLIC_URL")
 DRASTIC_AGENT_HOST_DATA_PATH=$(quote_env_string "$AGENT_HOST_DATA_PATH")

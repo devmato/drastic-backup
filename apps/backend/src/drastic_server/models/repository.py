@@ -1,17 +1,14 @@
-import enum
 import json
 
 from flask import current_app
 
+from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_server.extensions import db
 from drastic_server.models.agent import AgentOperationType
 from drastic_server.models.mixins import IdMixin, TimeMixin
 from drastic_server.utils.crypto import CryptoError, decrypt, encrypt
 
-
-class RepositoryKind(str, enum.Enum):
-    custom = "custom"
-    native = "native"
+RepositoryKind = AgentRepositoryKind
 
 
 class Repository(IdMixin, TimeMixin, db.Model):
@@ -25,7 +22,8 @@ class Repository(IdMixin, TimeMixin, db.Model):
     name = db.Column(db.String(255), nullable=False)
     kind = db.Column(db.String(32), nullable=False, default=KIND_CUSTOM)
     location = db.Column(db.String(255), nullable=False)
-    encrypted_recovery_key = db.Column(db.JSON, nullable=True)
+    password_secret_id = db.Column(db.Integer, db.ForeignKey("user_secrets.id"), nullable=True)
+    password_secret = db.relationship("UserSecret", foreign_keys=[password_secret_id])
     restic_id = db.Column(db.String(255), nullable=True)
     # agent_id = db.Column(db.Integer, db.ForeignKey('agents.id'), nullable=False)
     # agent = db.relationship('Agent', foreign_keys=[agent_id], backref=db.backref('repositories') )

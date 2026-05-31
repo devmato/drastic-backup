@@ -26,6 +26,13 @@ AGENT_ARTIFACT_TARGETS: tuple[dict[str, str], ...] = (
         "description": "Run the Linux x64 agent directly on a host.",
     },
     {
+        "os": "linux",
+        "arch": "arm64",
+        "label": "Linux arm64",
+        "ext": "tar.gz",
+        "description": "Run the Linux arm64 agent directly on a host.",
+    },
+    {
         "os": "windows",
         "arch": "amd64",
         "label": "Windows x64",
@@ -51,6 +58,7 @@ _OS_ALIASES = {
 _ARCH_ALIASES = {
     "x64": "amd64",
     "x86_64": "amd64",
+    "aarch64": "arm64",
 }
 
 
@@ -62,10 +70,12 @@ def normalize_agent_platform(os_name: str, arch: str) -> tuple[str, str]:
     return normalized_os, normalized_arch
 
 
-def agent_artifact_path(config: Mapping[str, Any], os_name: str, arch: str) -> Path:
+def agent_artifact_path(
+    config: Mapping[str, Any], os_name: str, arch: str, requested_version: str | None = None
+) -> Path:
     os_name, arch = normalize_agent_platform(os_name, arch)
     target = _TARGETS_BY_PLATFORM[(os_name, arch)]
-    tag = _agent_artifact_tag(config)
+    tag = _agent_artifact_tag(config, requested_version)
     asset_name = _agent_artifact_name(config, target, tag)
     cached_path = _asset_cache_path(config, tag, asset_name)
     if cached_path.is_file():
@@ -95,11 +105,11 @@ def build_agent_install_targets(config: Mapping[str, Any]) -> list[dict[str, str
         )
 
     agent_image = _agent_image(config)
-    for arch in ("amd64",):
+    for arch, label in (("amd64", "Docker Linux x64"), ("arm64", "Docker Linux arm64")):
         targets.append(
             {
                 "id": f"linux-{arch}-docker",
-                "label": "Docker Linux x64",
+                "label": label,
                 "platform": "linux",
                 "os": "linux",
                 "arch": arch,
@@ -110,6 +120,17 @@ def build_agent_install_targets(config: Mapping[str, Any]) -> list[dict[str, str
         )
 
     return targets
+
+
+def agent_git_repository(config: Mapping[str, Any]) -> str:
+    base_url = str(config.get("AGENT_RELEASE_BASE_URL") or "").strip().rstrip("/")
+    if not base_url:
+        return ""
+    try:
+        repository = "/".join(_release_repository_segments(config))
+    except AgentArtifactError:
+        return ""
+    return f"{base_url}/{repository}.git"
 
 
 def _agent_image(config: Mapping[str, Any]) -> str:
@@ -174,7 +195,11 @@ def _release_repository_segments(config: Mapping[str, Any]) -> list[str]:
     return segments
 
 
-def _agent_artifact_tag(config: Mapping[str, Any]) -> str:
+def _agent_artifact_tag(config: Mapping[str, Any], requested_version: str | None = None) -> str:
+    requested = str(requested_version or "").strip()
+    if requested and requested != "latest":
+        return requested if requested.startswith("v") else f"v{requested}"
+
     configured = str(config.get("AGENT_ARTIFACT_TAG") or "").strip()
     if configured:
         if configured == "latest":

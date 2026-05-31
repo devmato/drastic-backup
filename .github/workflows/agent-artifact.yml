@@ -14,9 +14,17 @@ permissions:
   contents: write
 
 jobs:
-  linux-x64:
-    name: Linux x64 Agent Artifact
-    runs-on: ubuntu-latest
+  build:
+    name: Linux ${{ matrix.arch }} Agent Artifact
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -29,15 +37,27 @@ jobs:
           if [ -z "$VERSION" ] && [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
             VERSION="$GITHUB_REF_NAME"
           fi
-          scripts/build-agent-artifact.sh "$VERSION"
+          scripts/build-agent-artifact.sh "$VERSION" "${{ matrix.arch }}"
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: drastic-agent-linux-amd64
-          path: dist/drastic-agent-linux-amd64-*.tar.gz
+          name: drastic-agent-linux-${{ matrix.arch }}
+          path: dist/drastic-agent-linux-${{ matrix.arch }}-*.tar.gz
+
+  publish:
+    name: Attach Agent Artifacts
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download workflow artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: drastic-agent-linux-*
+          path: dist
+          merge-multiple: true
       - name: Attach to GitHub release
-        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/drastic-agent-linux-amd64-${{ github.ref_name }}.tar.gz
+          files: dist/drastic-agent-linux-*.tar.gz
           generate_release_notes: true

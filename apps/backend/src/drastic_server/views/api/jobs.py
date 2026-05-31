@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from croniter import croniter
 from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_smorest import Blueprint, abort
@@ -20,8 +19,6 @@ from drastic_server.models.job import (
     JobActionModuleEnum,
     JobSchedule,
 )
-from drastic_server.models.repository import Repository
-from drastic_server.models.retention import Retention
 from drastic_server.schemas.agent import AgentOperationStartResponseSchema
 from drastic_server.schemas.common import MessageIdSchema, MessageSchema
 from drastic_server.schemas.job import (
@@ -48,14 +45,14 @@ from drastic_server.services.agent.operation_start import (
     start_agent_operation,
 )
 from drastic_server.services.job import (
+    assign_agent_repository,
     create_job_instance,
+    create_job_schedule,
     normalize_schedule_config,
     update_job_instance,
+    update_job_schedule,
 )
-from drastic_server.services.repository import (
-    RepositorySecretError,
-    ensure_agent_envelopes_from_user_recovery_key,
-)
+from drastic_server.services.repository import RepositorySecretError
 from drastic_server.utils.realtime import emit_job_state, emit_jobs_update
 
 blp = Blueprint("jobs", __name__, url_prefix="/api/jobs", description="Job operations")
@@ -68,37 +65,6 @@ def _abort_recovery_key_error(exc):
 def _abort_agent_command_failure(response):
     status_code = 504 if is_agent_timeout_response(response) else 400
     abort(status_code, message=response.get("log", "Error"))
-
-
-def _assign_agent_repository(user_id, agent, repository_id, user_recovery_key=None):
-    repository = Repository.query.filter(
-        Repository.id == repository_id,
-        Repository.user_id == user_id,
-    ).first_or_404()
-    try:
-        ensure_agent_envelopes_from_user_recovery_key(
-            agent=agent,
-            repositories=[repository],
-            user_recovery_key=user_recovery_key,
-        )
-    except RepositorySecretError as exc:
-        _abort_recovery_key_error(exc)
-
-    assigned = any(assigned_repository.id == repository.id for assigned_repository in agent.repositories)
-
-    if not assigned:
-        agent.repositories.append(repository)
-
-    return repository, not assigned
-
-
-def _validate_retention(user_id, retention_id):
-    if retention_id is None:
-        return None
-
-    return Retention.query.filter(
-        Retention.id == retention_id, Retention.user_id == user_id
-    ).first_or_404()
 
 
 @blp.route("/")
@@ -230,12 +196,15 @@ class JobOperationRun(MethodView):
             abort(400, message="Agent is offline")
 
         repository_id = data["repository_id"]
-        repository, newly_assigned = _assign_agent_repository(
-            user_id,
-            job.agent,
-            repository_id,
-            data.get("recovery_key"),
-        )
+        try:
+            repository, newly_assigned = assign_agent_repository(
+                user_id,
+                job.agent,
+                repository_id,
+                data.get("recovery_key"),
+            )
+        except RepositorySecretError as exc:
+            _abort_recovery_key_error(exc)
 
         if newly_assigned:
             db.session.commit()
@@ -361,33 +330,12 @@ class JobScheduleList(MethodView):
             Job.query.join(Agent).filter(Job.id == job_id, Agent.user_id == user_id).first_or_404()
         )
 
-        minute = data["minute"]
-        hour = data["hour"]
-        day_of_week = data["day_of_week"]
-        enabled = data["enabled"]
-        repository_id = data["repository_id"]
-        retention_id = data["retention_id"]
-        config = normalize_schedule_config(data.get("config") or {})
-
-        _assign_agent_repository(user_id, job.agent, repository_id, data.get("recovery_key"))
-        retention = _validate_retention(user_id, retention_id)
-
-        dow_str = "*" if len(day_of_week) == 7 else ",".join(str(d) for d in day_of_week)
-        cron_string = f"{minute} {hour} * * {dow_str}"
-
-        if not croniter.is_valid(cron_string):
-            abort(400, message="Invalid cron syntax")
-
-        schedule = JobSchedule(
-            job_id=job.id,
-            cron_string=cron_string,
-            enabled=enabled,
-            advanced=False,
-            repository_id=repository_id,
-            retention_id=retention.id if retention else None,
-            config=config,
-        )
-        db.session.add(schedule)
+        try:
+            schedule = create_job_schedule(user_id, job, data)
+        except RepositorySecretError as exc:
+            _abort_recovery_key_error(exc)
+        except ValueError as exc:
+            abort(400, message=str(exc))
         db.session.commit()
         emit_job_state(job)
 
@@ -414,34 +362,14 @@ class JobScheduleDetail(MethodView):
             .first_or_404()
         )
 
-        minute = data["minute"]
-        hour = data["hour"]
-        day_of_week = data["day_of_week"]
-        enabled = data["enabled"]
-        repository_id = data["repository_id"]
-        retention_id = data["retention_id"]
-        config = normalize_schedule_config(data.get("config") or {})
-
-        _assign_agent_repository(
-            user_id,
-            schedule.job.agent,
-            repository_id,
-            data.get("recovery_key"),
-        )
-        retention = _validate_retention(user_id, retention_id)
-
-        dow_str = "*" if len(day_of_week) == 7 else ",".join(str(d) for d in day_of_week)
-        cron_string = f"{minute} {hour} * * {dow_str}"
-
-        if not croniter.is_valid(cron_string):
-            abort(400, message="Invalid cron syntax")
+        try:
+            update_job_schedule(user_id, schedule, data)
+        except RepositorySecretError as exc:
+            _abort_recovery_key_error(exc)
+        except ValueError as exc:
+            abort(400, message=str(exc))
 
         job = schedule.job
-        schedule.cron_string = cron_string
-        schedule.enabled = enabled
-        schedule.repository_id = repository_id
-        schedule.retention_id = retention.id if retention else None
-        schedule.config = config
         db.session.commit()
         emit_job_state(job)
 

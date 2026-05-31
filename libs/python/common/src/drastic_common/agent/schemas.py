@@ -1,14 +1,86 @@
 from datetime import datetime
 from uuid import uuid4
 
-from marshmallow import EXCLUDE, Schema, fields
+from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
 from drastic_common.agent.enums import (
+    AgentJobActionModule,
+    AgentJobType,
     AgentOperationLogLevel,
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
+    AgentRepositoryKind,
 )
+
+_JOB_TYPE_NAMES = tuple(AgentJobType.__members__)
+_ACTION_MODULE_NAMES = tuple(AgentJobActionModule.__members__)
+_PATH_GROUP_NAMES = ("file", "folder", "pattern")
+_PROXMOX_SELECTION_MODES = ("all", "include")
+
+
+class AgentPathEntrySchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    path = fields.String(required=True, validate=validate.Length(min=1))
+    group = fields.String(load_default="folder", validate=validate.OneOf(_PATH_GROUP_NAMES))
+
+
+class AgentFileBackupJobConfigSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    paths = fields.List(
+        fields.Nested(AgentPathEntrySchema), required=True, validate=validate.Length(min=1)
+    )
+    exclude_patterns = fields.List(fields.Nested(AgentPathEntrySchema), load_default=list)
+
+
+class AgentProxmoxBackupJobConfigSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    selection_mode = fields.String(
+        load_default="all", validate=validate.OneOf(_PROXMOX_SELECTION_MODES)
+    )
+    guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
+
+    @validates_schema
+    def validate_guest_selection(self, data, **kwargs):
+        guest_ids = data.get("guest_ids", [])
+
+        if len(set(guest_ids)) != len(guest_ids):
+            raise ValidationError({"guest_ids": ["Duplicate guest IDs are not allowed."]})
+
+        if data.get("selection_mode") == "include" and not guest_ids:
+            raise ValidationError(
+                {"guest_ids": ["Select at least one guest when using include mode."]}
+            )
+
+
+class AgentRepositoryCheckConfigSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    enabled = fields.Boolean(load_default=False)
+    read_data = fields.String(load_default=None, allow_none=True)
+
+    @validates_schema
+    def validate_read_data(self, data, **kwargs):
+        if not data.get("enabled"):
+            data["read_data"] = None
+            return
+
+        read_data = str(data.get("read_data") or "").strip() or None
+        data["read_data"] = read_data
+
+
+class AgentScheduleConfigSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    repository_check = fields.Nested(AgentRepositoryCheckConfigSchema, load_default=dict)
 
 
 class AgentOperationLogSchema(Schema):
@@ -56,10 +128,18 @@ class AgentOperationSchema(Schema):
 
 class AgentRepositorySchema(Schema):
     id = fields.Integer(required=True)
-    kind = fields.String(required=True)
+    kind = fields.String(required=True, validate=validate.OneOf(tuple(kind.value for kind in AgentRepositoryKind)))
     location = fields.String(required=True)
     environment = fields.Dict(keys=fields.String(), values=fields.Raw(), load_default=dict, dump_default=dict)
-    encrypted_agent_key = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
+    password_secret_id = fields.Integer(required=True)
+    encrypted_restic_access_key = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
+
+
+class AgentSecretEnvelopeSchema(Schema):
+    user_secret_id = fields.Integer(required=True)
+    type = fields.String(required=True)
+    encrypted_value = fields.Dict(keys=fields.String(), values=fields.Raw(), required=True)
+    public_data = fields.Dict(keys=fields.String(), values=fields.Raw(), load_default=dict, dump_default=dict)
 
 
 class AgentRetentionSchema(Schema):
@@ -113,6 +193,7 @@ class AgentJobScheduleSchema(Schema):
 
 class AgentSyncSchema(Schema):
     repositories = fields.List(fields.Nested(AgentRepositorySchema), required=True)
+    secret_envelopes = fields.List(fields.Nested(AgentSecretEnvelopeSchema), load_default=list)
     retentions = fields.List(fields.Nested(AgentRetentionSchema), required=True)
     jobs = fields.List(fields.Nested(AgentJobSchema), required=True)
     actions = fields.List(fields.Nested(AgentJobActionSchema), required=True)

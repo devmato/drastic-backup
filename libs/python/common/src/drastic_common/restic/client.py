@@ -1,8 +1,10 @@
 import logging
 import os
+import shutil
 import subprocess
 import tempfile
 import threading
+from contextlib import contextmanager
 from datetime import datetime, timedelta
 
 import drastic_common.restic.parsers as parsers
@@ -62,6 +64,47 @@ class ResticApi:
 
         return env
 
+    @contextmanager
+    def __restic_env(self):
+        env = self.__build_env()
+        repository = self.repository
+        private_key = getattr(repository, "ssh_private_key", None) if repository else None
+        if not private_key:
+            yield env
+            return
+
+        temp_home = tempfile.mkdtemp(prefix="drastic-restic-ssh-")
+        try:
+            ssh_dir = os.path.join(temp_home, ".ssh")
+            os.makedirs(ssh_dir, mode=0o700, exist_ok=True)
+            key_path = os.path.join(ssh_dir, "identity")
+            with open(key_path, "w", encoding="utf-8") as key_file:
+                key_file.write(str(private_key))
+                if not str(private_key).endswith("\n"):
+                    key_file.write("\n")
+            os.chmod(key_path, 0o600)
+
+            known_hosts_path = getattr(repository, "ssh_known_hosts_path", None)
+            if known_hosts_path:
+                os.makedirs(os.path.dirname(known_hosts_path), mode=0o700, exist_ok=True)
+            else:
+                known_hosts_path = os.path.join(ssh_dir, "known_hosts")
+
+            config_path = os.path.join(ssh_dir, "config")
+            with open(config_path, "w", encoding="utf-8") as config_file:
+                config_file.write(
+                    "Host *\n"
+                    f"  IdentityFile {key_path}\n"
+                    "  IdentitiesOnly yes\n"
+                    f"  UserKnownHostsFile {known_hosts_path}\n"
+                    "  StrictHostKeyChecking accept-new\n"
+                )
+            os.chmod(config_path, 0o600)
+            env["HOME"] = temp_home
+            yield env
+        finally:
+            shutil.rmtree(temp_home, ignore_errors=True)
+
     def __register_process(self, pid, process):
         with self._process_lock:
             self._processes[pid] = process
@@ -117,14 +160,17 @@ class ResticApi:
         logging.debug(f"Executing command: {cmd}")
         callback_args = dict(callback_args or {})
 
+        restic_env_context = None
         try:
+            restic_env_context = self.__restic_env()
+            env = restic_env_context.__enter__()
             process = self.__popen(
                 cmd,
                 stdin=subprocess.PIPE if stdin_data is not None else None,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 encoding="utf-8",
-                env=self.__build_env(),
+                env=env,
                 start_new_session=True,
             )
 
@@ -181,6 +227,9 @@ class ResticApi:
             raise ResticBinaryNotFoundError(
                 f"Restic binary not found at {self.binary_path}"
             ) from err
+        finally:
+            if restic_env_context is not None:
+                restic_env_context.__exit__(None, None, None)
 
         logging.debug(f"{len(output)} lines of output")
         logging.debug("Restic proccess exitted")
@@ -273,16 +322,20 @@ class ResticApi:
                 raise ResticFailedError(f"Backup source command not found: {command[0]}") from err
 
             try:
+                restic_env_context = self.__restic_env()
+                restic_env = restic_env_context.__enter__()
                 process = self.__popen(
                     cmd,
                     stdin=producer_process.stdout,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     encoding="utf-8",
-                    env=self.__build_env(),
+                    env=restic_env,
                     start_new_session=True,
                 )
             except FileNotFoundError as err:
+                if "restic_env_context" in locals():
+                    restic_env_context.__exit__(None, None, None)
                 producer_process.kill()
                 producer_process.wait()
                 raise ResticBinaryNotFoundError(
@@ -357,6 +410,8 @@ class ResticApi:
                 if process.poll() is None:
                     process.kill()
                     process.wait()
+            if "restic_env_context" in locals():
+                restic_env_context.__exit__(None, None, None)
             if producer_process is not None and producer_process.poll() is None:
                 producer_process.kill()
                 producer_process.wait()

@@ -9,7 +9,8 @@ SSH_DIR="$DRASTIC_AGENT_DATA_DIR/ssh"
 SSH_KEYFILE="$SSH_DIR/id_rsa"
 SSH_HOME_DIR="${HOME:-/tmp}/.ssh"
 
-mkdir -p "$SSH_DIR"
+mkdir -p "$DRASTIC_AGENT_DATA_DIR" "$SSH_DIR"
+chmod 700 "$DRASTIC_AGENT_DATA_DIR"
 chmod 700 "$SSH_DIR"
 mkdir -p "$(dirname "$SSH_HOME_DIR")"
 

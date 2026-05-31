@@ -7,7 +7,6 @@ from drastic_server.models.agent import (
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
-    AgentRepositorySecret,
     AgentSession,
     agent_repositories,
 )
@@ -21,12 +20,13 @@ from drastic_server.models.job import (
 from drastic_server.models.notification import NotificationConfig
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
+from drastic_server.models.secret import AgentSecretEnvelope, UserSecret, UserSecretType
 from drastic_server.models.user import User
 from drastic_server.models.user_session import UserSession
 
 __all__ = [
     "Agent",
-    "AgentRepositorySecret",
+    "AgentSecretEnvelope",
     "AgentOperation",
     "AgentOperationArtifact",
     "AgentOperationLog",
@@ -44,6 +44,8 @@ __all__ = [
     "NotificationConfig",
     "Repository",
     "Retention",
+    "UserSecret",
+    "UserSecretType",
     "User",
     "UserSession",
 ]

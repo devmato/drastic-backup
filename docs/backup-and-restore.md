@@ -4,19 +4,23 @@
 
 Use a native repository when dRastic should manage storage through the integrated `rest-server`.
 
-Use a custom repository when backups should go to an existing restic target. Configure the repository location and any provider-specific environment values required by restic. Repository passwords can be generated automatically or set manually.
+Use a custom repository when backups should go to an existing restic target. Configure the repository location and any provider-specific environment values required by restic. Repository passwords can be generated automatically or set manually during repository creation.
 
-Repository passwords are protected by the signed-in user's recovery key and are provisioned to agents when they need repository access. Revealing a repository password in the UI requires re-entering the account password.
+For SSH/SFTP custom repositories, copy the executing agent's SSH public key from the agent properties dialog and install it on the target host. The SSH private key stays on the agent and is not stored by the backend.
+
+Repository passwords are protected by the signed-in user's recovery key and are provisioned to agents when they need repository access. Revealing a repository password in the UI requires re-entering the account password. Changing a repository password after creation is not supported yet because it requires coordinated restic key rotation.
 
 ## Assign a Repository
 
 Agents can only use repositories assigned to them. Assign the repository to the agent before running jobs or schedules.
 
+Each agent manages its own SSH identity and `known_hosts` file. New SSH hosts are trusted on first use by that agent. If a host key changes, reset the affected agent's known hosts from the agent properties **Actions** tab and run the job again. If an agent SSH key is rotated, update the target host with the new public key first.
+
 When a job is run manually, dRastic also synchronizes repository access to the selected agent.
 
 If repository secret operations are locked, enter your account password in the confirmation dialog. This restores the recovery key in browser memory without leaving the current page.
 
-Agent synchronization hydrates assigned repository keys into agent memory. Agents do not store repository keys in their data directory; after an agent process restart, backend sync must complete before repository jobs can access their repositories. If a local repository key needs to be recreated, the agent requests its existing recovery envelope from the backend and decrypts it locally. The password confirmation dialog is only needed when the backend must create or refresh a user-protected repository secret or a missing agent-specific envelope.
+Agent synchronization hydrates assigned restic access keys into agent memory. Agents do not store restic access keys in their data directory; after an agent process restart, backend sync must complete before repository jobs can access their repositories. If a local restic access key needs to be recreated, the agent requests its existing recovery envelope from the backend and decrypts it locally. The password confirmation dialog is only needed when the backend must create or refresh a user-protected repository secret or a missing agent-specific envelope.
 
 ## Backup Job Types
 

@@ -176,12 +176,7 @@ class RepositoryDetail(MethodView):
                 repository.environment = data.get("environment") or {}
 
         if data.get("password"):
-            try:
-                user_recovery_key = validate_user_recovery_key(data.get("recovery_key"))
-                store_recovery_key(repository, data["password"], user_recovery_key)
-                ensure_user_agent_recovery_envelopes(int(user_id), repository, data["password"])
-            except RepositorySecretError as exc:
-                _abort_recovery_key_error(exc)
+            abort(400, message="Repository password rotation is not supported yet")
 
         try:
             db.session.commit()
@@ -216,8 +211,12 @@ class RepositoryDetail(MethodView):
             except RuntimeError as exc:
                 abort(409, message=str(exc))
 
+        password_secret = repository.password_secret
         repository.agents = []
         db.session.delete(repository)
+        db.session.flush()
+        if password_secret:
+            db.session.delete(password_secret)
         db.session.commit()
 
         return {"msg": "Repository deleted"}

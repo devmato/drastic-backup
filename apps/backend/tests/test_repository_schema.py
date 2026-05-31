@@ -84,7 +84,7 @@ class _FakeNativeRepository:
     restic_id = None
     stats = None
     created = None
-    encrypted_recovery_key = {"v": 1}
+    password_secret_id = 1
     environment = {}
 
     @property

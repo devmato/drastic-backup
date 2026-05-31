@@ -1,4 +1,10 @@
-from drastic_server.models.job import Job, JobType
+from croniter import croniter
+
+from drastic_server.extensions import db
+from drastic_server.models.job import Job, JobSchedule, JobType
+from drastic_server.models.repository import Repository
+from drastic_server.models.retention import Retention
+from drastic_server.services.repository import ensure_agent_envelopes_from_user_recovery_key
 
 
 def _normalize_check_config(config):
@@ -47,6 +53,86 @@ def _normalize_proxmox_backup_config(config):
 
 def normalize_schedule_config(config):
     return _normalize_check_config(config)
+
+
+def assign_agent_repository(user_id, agent, repository_id, user_recovery_key=None):
+    repository = Repository.query.filter(
+        Repository.id == repository_id,
+        Repository.user_id == user_id,
+    ).first_or_404()
+    ensure_agent_envelopes_from_user_recovery_key(
+        agent=agent,
+        repositories=[repository],
+        user_recovery_key=user_recovery_key,
+    )
+
+    assigned = any(assigned_repository.id == repository.id for assigned_repository in agent.repositories)
+    if not assigned:
+        agent.repositories.append(repository)
+
+    return repository, not assigned
+
+
+def validate_retention(user_id, retention_id):
+    if retention_id is None:
+        return None
+
+    return Retention.query.filter(
+        Retention.id == retention_id, Retention.user_id == user_id
+    ).first_or_404()
+
+
+def build_schedule_cron_string(minute, hour, day_of_week):
+    dow_str = "*" if len(day_of_week) == 7 else ",".join(str(d) for d in day_of_week)
+    cron_string = f"{minute} {hour} * * {dow_str}"
+
+    if not croniter.is_valid(cron_string):
+        raise ValueError("Invalid cron syntax")
+
+    return cron_string
+
+
+def create_job_schedule(user_id, job, data):
+    repository_id = data["repository_id"]
+    retention_id = data["retention_id"]
+    assign_agent_repository(user_id, job.agent, repository_id, data.get("recovery_key"))
+    retention = validate_retention(user_id, retention_id)
+    cron_string = build_schedule_cron_string(
+        minute=data["minute"],
+        hour=data["hour"],
+        day_of_week=data["day_of_week"],
+    )
+
+    schedule = JobSchedule(
+        job_id=job.id,
+        cron_string=cron_string,
+        enabled=data["enabled"],
+        advanced=False,
+        repository_id=repository_id,
+        retention_id=retention.id if retention else None,
+        config=normalize_schedule_config(data.get("config") or {}),
+    )
+    db.session.add(schedule)
+    return schedule
+
+
+def update_job_schedule(user_id, schedule, data):
+    repository_id = data["repository_id"]
+    retention_id = data["retention_id"]
+    assign_agent_repository(user_id, schedule.job.agent, repository_id, data.get("recovery_key"))
+    retention = validate_retention(user_id, retention_id)
+    cron_string = build_schedule_cron_string(
+        minute=data["minute"],
+        hour=data["hour"],
+        day_of_week=data["day_of_week"],
+    )
+
+    schedule.cron_string = cron_string
+    schedule.enabled = data["enabled"]
+    schedule.repository_id = repository_id
+    schedule.retention_id = retention.id if retention else None
+    schedule.config = normalize_schedule_config(data.get("config") or {})
+    return schedule
 
 
 def _get_job_type(job_type):

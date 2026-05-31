@@ -1,78 +1,25 @@
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
+from drastic_common.agent.schemas import (
+    AgentFileBackupJobConfigSchema,
+    AgentPathEntrySchema,
+    AgentProxmoxBackupJobConfigSchema,
+    AgentRepositoryCheckConfigSchema,
+    AgentScheduleConfigSchema,
+)
 from drastic_server.models.job import JobActionModuleEnum, JobType
 
 _JOB_TYPE_NAMES = tuple(JobType.__members__)
 _ACTION_MODULE_NAMES = tuple(JobActionModuleEnum.__members__)
 _ACTION_HOOK_NAMES = ("start", "error", "success", "end")
-_PATH_GROUP_NAMES = ("file", "folder", "pattern")
 _DOCKER_ACTION_NAMES = ("stop", "start", "command")
-_PROXMOX_SELECTION_MODES = ("all", "include")
 _PROXMOX_GUEST_TYPES = ("qemu",)
 
-
-class PathEntrySchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    path = fields.String(required=True, validate=validate.Length(min=1))
-    group = fields.String(load_default="folder", validate=validate.OneOf(_PATH_GROUP_NAMES))
-
-
-class FileBackupJobConfigSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    paths = fields.List(
-        fields.Nested(PathEntrySchema), required=True, validate=validate.Length(min=1)
-    )
-    exclude_patterns = fields.List(fields.Nested(PathEntrySchema), load_default=list)
-
-
-class ProxmoxBackupJobConfigSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    selection_mode = fields.String(
-        load_default="all", validate=validate.OneOf(_PROXMOX_SELECTION_MODES)
-    )
-    guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
-
-    @validates_schema
-    def validate_guest_selection(self, data, **kwargs):
-        guest_ids = data.get("guest_ids", [])
-
-        if len(set(guest_ids)) != len(guest_ids):
-            raise ValidationError({"guest_ids": ["Duplicate guest IDs are not allowed."]})
-
-        if data.get("selection_mode") == "include" and not guest_ids:
-            raise ValidationError(
-                {"guest_ids": ["Select at least one guest when using include mode."]}
-            )
-
-
-class RepositoryCheckConfigSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    enabled = fields.Boolean(load_default=False)
-    read_data = fields.String(load_default=None, allow_none=True)
-
-    @validates_schema
-    def validate_read_data(self, data, **kwargs):
-        if not data.get("enabled"):
-            data["read_data"] = None
-            return
-
-        read_data = str(data.get("read_data") or "").strip() or None
-        data["read_data"] = read_data
-
-
-class ScheduleConfigSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    repository_check = fields.Nested(RepositoryCheckConfigSchema, load_default=dict)
+PathEntrySchema = AgentPathEntrySchema
+FileBackupJobConfigSchema = AgentFileBackupJobConfigSchema
+ProxmoxBackupJobConfigSchema = AgentProxmoxBackupJobConfigSchema
+RepositoryCheckConfigSchema = AgentRepositoryCheckConfigSchema
+ScheduleConfigSchema = AgentScheduleConfigSchema
 
 
 class JobActionSchema(Schema):

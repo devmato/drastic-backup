@@ -348,7 +348,9 @@ async function onCheckSubmit() {
   }
 }
 
-onMounted(() => repositoryStore.loadRepositories())
+onMounted(() => {
+  repositoryStore.loadRepositories()
+})
 
 defineOptions({ name: 'RepositoriesPage' })
 </script>

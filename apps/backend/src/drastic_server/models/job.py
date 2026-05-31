@@ -1,5 +1,4 @@
 import copy
-import enum
 import json
 from datetime import datetime
 from uuid import uuid4
@@ -8,18 +7,12 @@ from cron_descriptor import get_description
 from sqlalchemy import Enum
 from sqlalchemy.ext.hybrid import hybrid_property
 
+from drastic_common.agent.enums import AgentJobActionModule, AgentJobType
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
-
-class JobType(enum.Enum):
-    file = {"text": "File-Backup"}
-    proxmox = {"text": "Proxmox-Backup"}
-
-
-class JobActionModuleEnum(enum.Enum):
-    command = {"text": "Execute command on agent"}
-    docker = {"text": "Control docker container"}
+JobType = AgentJobType
+JobActionModuleEnum = AgentJobActionModule
 
 
 class Job(IdMixin, TimeMixin, db.Model):
@@ -180,4 +173,3 @@ class JobSchedule(IdMixin, TimeMixin, db.Model):
     @property
     def cron_description(self):
         return get_description(self.cron_string)
-

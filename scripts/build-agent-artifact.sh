@@ -6,9 +6,28 @@ ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 VERSION=${1:-$(tr -d '[:space:]' < "$ROOT_DIR/VERSION")}
 VERSION=${VERSION#v}
 ARTIFACT_OS="linux"
-ARTIFACT_ARCH="amd64"
-ARTIFACT_NAME="drastic-agent-${ARTIFACT_OS}-${ARTIFACT_ARCH}-v${VERSION}"
+REQUESTED_ARCH=${2:-$(uname -m)}
 OUTPUT_DIR="$ROOT_DIR/dist"
+
+normalize_arch() {
+    case "$1" in
+        x86_64|amd64)
+            printf 'amd64'
+            ;;
+        aarch64|arm64)
+            printf 'arm64'
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+ARTIFACT_ARCH=$(normalize_arch "$REQUESTED_ARCH") || {
+    echo "ABBRUCH: Unsupported artifact architecture: $REQUESTED_ARCH" >&2
+    exit 1
+}
+ARTIFACT_NAME="drastic-agent-${ARTIFACT_OS}-${ARTIFACT_ARCH}-v${VERSION}"
 STAGING_DIR="$OUTPUT_DIR/$ARTIFACT_NAME"
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -16,14 +35,15 @@ if [[ "$(uname -s)" != "Linux" ]]; then
     exit 1
 fi
 
-case "$(uname -m)" in
-    x86_64|amd64)
-        ;;
-    *)
-        echo "ABBRUCH: Agent-Artefakte werden aktuell nur fuer linux amd64 gebaut." >&2
-        exit 1
-        ;;
-esac
+HOST_ARCH=$(normalize_arch "$(uname -m)") || {
+    echo "ABBRUCH: Agent-Artefakte werden aktuell nur fuer linux amd64 oder arm64 gebaut." >&2
+    exit 1
+}
+
+if [[ "$ARTIFACT_ARCH" != "$HOST_ARCH" ]]; then
+    echo "ABBRUCH: Zielarchitektur $ARTIFACT_ARCH passt nicht zur Host-Architektur $HOST_ARCH." >&2
+    exit 1
+fi
 
 cd "$ROOT_DIR/apps/agent"
 uv sync --frozen --group build
@@ -31,6 +51,7 @@ uv run --group build pyinstaller \
     --clean \
     --onefile \
     --name drastic-agent \
+    --copy-metadata drastic-agent \
     --workpath build/pyinstaller \
     --specpath build/pyinstaller \
     --paths src \
