@@ -8,9 +8,11 @@ import platform
 import re
 import secrets
 import stat
+import subprocess
 import tempfile
-from datetime import datetime, timedelta
-from threading import Thread
+from concurrent.futures import CancelledError
+from datetime import datetime, timedelta, timezone
+from threading import Event
 from time import monotonic, sleep
 from urllib.parse import urlparse, urlunparse
 from zipfile import ZipFile
@@ -22,6 +24,7 @@ from docker import DockerClient
 from docker.errors import DockerException
 from marshmallow import ValidationError
 from socketio.exceptions import ConnectionError
+from sqlalchemy.exc import IntegrityError
 
 from drastic_agent.agent.action import AgentAction
 from drastic_agent.agent.database import (
@@ -33,10 +36,13 @@ from drastic_agent.agent.database import (
     repositories,
     repository_secrets,
     retentions,
+    schedule_runs,
     schedules,
 )
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
+from drastic_agent.agent.execution import ExecutionManager
+from drastic_agent.agent.operation_store import operation_store
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.jobs.registry import get_job_handler
@@ -193,6 +199,35 @@ def _sha256sum_entry(sums_text: str, archive_name: str) -> str | None:
     return None
 
 
+def _sha256_file(path: str) -> str:
+    digest = hashlib.sha256()
+    with open(path, "rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _restic_binary_is_valid(binary_path: str) -> bool:
+    if not os.path.isfile(binary_path) or not os.access(binary_path, os.X_OK):
+        return False
+
+    try:
+        result = subprocess.run(
+            [binary_path, "version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+    output = f"{result.stdout}\n{result.stderr}"
+    return result.returncode == 0 and re.search(
+        rf"\brestic\s+{re.escape(RESTIC_VERSION)}(?:\s|$)", output
+    ) is not None
+
+
 class Agent:
     identifier = None
     client = None
@@ -219,6 +254,8 @@ class Agent:
         self.__schedule_run_slots = {}
         self.__repository_passwords = {}
         self.__secret_values = {}
+        self.__shutdown_event = Event()
+        self.__execution = ExecutionManager()
 
         # Download binary if not exists
         self.__check_restic_binary()
@@ -312,86 +349,103 @@ class Agent:
         binary_folder = _agent_data_path("bin")
         binary_path = os.path.join(binary_folder, binary_name)
 
-        # Check if binary exists
-        if not os.path.exists(binary_path):
-            logging.info("Restic binary not found. Attempting download...")
-
-            # Create binary folder
-            os.makedirs(binary_folder, exist_ok=True)
-
-            # Determinante archive name & download url
-            archive_name = f"{binary_name}.{'zip' if 'windows' in binary_name else 'bz2'}"
-            url = f"https://github.com/restic/restic/releases/download/v{RESTIC_VERSION}/{archive_name}"
-            checksums_url = (
-                f"https://github.com/restic/restic/releases/download/v{RESTIC_VERSION}/SHA256SUMS"
-            )
-
-            logging.info(f"Downlading from {url}...")
-
-            # Download from github releases
-            try:
-                r = requests.get(url, timeout=120)
-                r.raise_for_status()
-
-                checksums_response = requests.get(checksums_url, timeout=120)
-                checksums_response.raise_for_status()
-                expected_checksum = _sha256sum_entry(checksums_response.text, archive_name)
-                if not expected_checksum:
-                    raise AgentExeption(
-                        f"Restic checksum entry for {archive_name} not found in SHA256SUMS"
-                    )
-                actual_checksum = hashlib.sha256(r.content).hexdigest()
-                if actual_checksum.lower() != expected_checksum:
-                    raise AgentExeption(
-                        "Restic binary checksum mismatch: "
-                        f"expected {expected_checksum}, got {actual_checksum}"
-                    )
-
-                logging.info("Download checksum verified. extracting and setting execution rights...")
-
-                # Archive name have bz2 or zip extension
-                assert archive_name.endswith("bz2") or archive_name.endswith("zip")
-
-                # Extract bz2
-                if archive_name.endswith("bz2"):
-                    with open(binary_path, "wb") as file:
-                        file.write(bz2.decompress(r.content))
-
-                # Extract zip
-                elif archive_name.endswith("zip"):
-                    with tempfile.TemporaryFile() as fp:
-                        fp.write(r.content)
-                        fp.seek(0)
-                        with ZipFile(fp) as zip_file:
-                            member = zip_file.filelist[0]
-                            extracted_name = os.path.basename(member.filename)
-                            if not extracted_name:
-                                raise AgentExeption("Restic archive did not contain a binary")
-                            binary_path = os.path.join(binary_folder, extracted_name)
-                            with zip_file.open(member) as source, open(binary_path, "wb") as target:
-                                target.write(source.read())
-
-                # Execute chmod +x on new file
-                st = os.stat(binary_path)
-                os.chmod(binary_path, st.st_mode | stat.S_IEXEC)
-
-                logging.info(f"Downloaded restic version {RESTIC_VERSION} to {binary_path}")
-            except Exception as e:
-                error = f"Restic binary download failed: {e}"
-                logging.error(error)
-                raise AgentExeption(error) from e
-        else:
+        os.makedirs(binary_folder, exist_ok=True)
+        if _restic_binary_is_valid(binary_path):
             logging.info(f"Found restic binary at: {binary_path}")
+        else:
+            if os.path.exists(binary_path):
+                logging.warning("Existing restic binary is invalid. Attempting download...")
+            else:
+                logging.info("Restic binary not found. Attempting download...")
+            self.__download_restic_binary(binary_folder, binary_name, binary_path)
 
         # Create ResticApi instance with binary path
-        self.__resticapi = ResticApi(binary_path=binary_path)
+        shutdown_event = getattr(self, "_Agent__shutdown_event", None)
+        if shutdown_event is None:
+            shutdown_event = Event()
+            self.__shutdown_event = shutdown_event
+        self.__resticapi = ResticApi(
+            binary_path=binary_path,
+            cancellation_event=shutdown_event,
+            timeout=_env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400),
+        )
+
+    def __download_restic_binary(self, binary_folder, binary_name, binary_path):
+        archive_name = f"{binary_name}.{'zip' if 'windows' in binary_name else 'bz2'}"
+        url = f"https://github.com/restic/restic/releases/download/v{RESTIC_VERSION}/{archive_name}"
+        checksums_url = (
+            f"https://github.com/restic/restic/releases/download/v{RESTIC_VERSION}/SHA256SUMS"
+        )
+        archive_path = None
+        candidate_path = None
+
+        logging.info(f"Downloading from {url}...")
+        try:
+            archive_fd, archive_path = tempfile.mkstemp(
+                dir=binary_folder, prefix=f".{archive_name}.", suffix=".tmp"
+            )
+            with os.fdopen(archive_fd, "wb") as archive_file:
+                response = requests.get(url, timeout=120)
+                response.raise_for_status()
+                archive_file.write(response.content)
+
+            checksums_response = requests.get(checksums_url, timeout=120)
+            checksums_response.raise_for_status()
+            expected_checksum = _sha256sum_entry(checksums_response.text, archive_name)
+            if not expected_checksum:
+                raise AgentExeption(
+                    f"Restic checksum entry for {archive_name} not found in SHA256SUMS"
+                )
+            actual_checksum = _sha256_file(archive_path)
+            if actual_checksum.lower() != expected_checksum:
+                raise AgentExeption(
+                    "Restic binary checksum mismatch: "
+                    f"expected {expected_checksum}, got {actual_checksum}"
+                )
+
+            candidate_fd, candidate_path = tempfile.mkstemp(
+                dir=binary_folder, prefix=f".{binary_name}.", suffix=".tmp"
+            )
+            with os.fdopen(candidate_fd, "wb") as target:
+                if archive_name.endswith(".bz2"):
+                    with bz2.open(archive_path, "rb") as source:
+                        target.write(source.read())
+                else:
+                    with ZipFile(archive_path) as zip_file:
+                        members = [member for member in zip_file.filelist if not member.is_dir()]
+                        if not members:
+                            raise AgentExeption("Restic archive did not contain a binary")
+                        with zip_file.open(members[0]) as source:
+                            target.write(source.read())
+
+            mode = os.stat(candidate_path).st_mode
+            os.chmod(candidate_path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+            if not _restic_binary_is_valid(candidate_path):
+                raise AgentExeption(
+                    f"Downloaded restic binary failed version check for {RESTIC_VERSION}"
+                )
+
+            os.replace(candidate_path, binary_path)
+            candidate_path = None
+            logging.info(f"Downloaded restic version {RESTIC_VERSION} to {binary_path}")
+        except Exception as exc:
+            error = f"Restic binary download failed: {exc}"
+            logging.error(error)
+            raise AgentExeption(error) from exc
+        finally:
+            for temporary_path in (candidate_path, archive_path):
+                if temporary_path:
+                    try:
+                        os.unlink(temporary_path)
+                    except FileNotFoundError:
+                        pass
 
     """ Start job & report scheduler (Blocking) """
 
     def __start_scheduler(self):
         sleep_time = 0.1
 
-        while True:
+        while not self.__shutdown_event.wait(sleep_time):
             now = datetime.now()
 
             self.__run_due_schedules(now)
@@ -402,25 +456,14 @@ class Agent:
             else:
                 self.__maintain_server_connection(now)
 
-            sleep(sleep_time)
-
-    def __schedule_key(self, job, schedule):
-        return schedule.get("id") or (
-            job["id"],
-            schedule.get("cron_string"),
-            schedule.get("repository_id"),
-        )
 
     def __run_due_schedules(self, now):
-        current_slot = now.replace(second=0, microsecond=0)
-
-        stale_schedule_keys = [
-            schedule_key
-            for schedule_key, last_slot in self.__schedule_run_slots.items()
-            if last_slot < current_slot
-        ]
-        for schedule_key in stale_schedule_keys:
-            self.__schedule_run_slots.pop(schedule_key, None)
+        utc_slot = now.astimezone(timezone.utc).replace(second=0, microsecond=0)
+        planned_slot = utc_slot.isoformat()
+        run_slots = getattr(self, "_Agent__schedule_run_slots", {})
+        self.__schedule_run_slots = {
+            schedule_id: slot for schedule_id, slot in run_slots.items() if slot == planned_slot
+        }
 
         # Process job schedules (Works without server connection as long as job data is synced)
         for job in jobs:
@@ -429,22 +472,115 @@ class Agent:
                 if not cron_string or not croniter.match(cron_string, now):
                     continue
 
-                schedule_key = self.__schedule_key(job, schedule)
-                if self.__schedule_run_slots.get(schedule_key) == current_slot:
+                schedule_id = schedule.get("id")
+                if schedule_id is None:
+                    logging.warning("Ignoring schedule without id for job %s", job["id"])
+                    continue
+                if self.__schedule_run_slots.get(schedule_id) == planned_slot:
                     continue
 
+                created_at = datetime.now(timezone.utc).isoformat()
+                try:
+                    schedule_run_id = schedule_runs.insert(
+                        {
+                            "schedule_id": schedule_id,
+                            "planned_slot": planned_slot,
+                            "status": "claimed",
+                            "reason": None,
+                            "created_at": created_at,
+                            "updated_at": created_at,
+                        },
+                        ensure=False,
+                    )
+                except IntegrityError:
+                    self.__schedule_run_slots[schedule_id] = planned_slot
+                    continue
+                self.__schedule_run_slots[schedule_id] = planned_slot
+
                 logging.info(f"Starting job {job['id']} by schedule {cron_string}")
-                Thread(
-                    target=self.cmd_run_job,
-                    args=(
+                try:
+                    future = self.__execution_manager().submit(
+                        self.cmd_run_job,
                         job["id"],
                         schedule["repository_id"],
                         schedule.get("retention_id"),
-                        {**(schedule.get("config") or {}), "schedule_id": schedule.get("id")},
-                    ),
-                    daemon=True,
-                ).start()
-                self.__schedule_run_slots[schedule_key] = current_slot
+                        run_options={
+                            **(schedule.get("config") or {}),
+                            "schedule_id": schedule_id,
+                        },
+                        resources={("job", job["id"]), ("repository", schedule["repository_id"])},
+                    )
+                except Exception as exc:
+                    logging.exception("Could not submit scheduled job %s", job["id"])
+                    self.__update_schedule_run(schedule_run_id, "skipped", str(exc))
+                    continue
+
+                if future is None:
+                    self.__update_schedule_run(
+                        schedule_run_id,
+                        "skipped",
+                        "execution capacity or requested resource is busy",
+                    )
+                else:
+                    self.__update_schedule_run(schedule_run_id, "started")
+                    if hasattr(future, "add_done_callback"):
+                        future.add_done_callback(
+                            lambda completed, run_id=schedule_run_id: self.__finish_schedule_run(
+                                run_id, completed
+                            )
+                        )
+
+    def __finish_schedule_run(self, schedule_run_id, future):
+        try:
+            report = future.result()
+        except CancelledError:
+            self.__update_schedule_run(schedule_run_id, "failed", "execution was cancelled")
+            return
+        except Exception as exc:
+            logging.exception("Scheduled operation failed")
+            self.__update_schedule_run(schedule_run_id, "failed", str(exc))
+            return
+
+        state = getattr(report, "state", None)
+        if state in {AgentReportState.failed, AgentReportState.cancelled}:
+            reason = getattr(report, "log", None) or "operation reported failure"
+            self.__update_schedule_run(schedule_run_id, "failed", reason)
+        else:
+            self.__update_schedule_run(schedule_run_id, "finished")
+
+    def __update_schedule_run(self, schedule_run_id, status, reason=None):
+        schedule_runs.update(
+            {
+                "id": schedule_run_id,
+                "status": status,
+                "reason": reason,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            },
+            ["id"],
+            ensure=False,
+        )
+
+    def __recover_schedule_runs(self):
+        for status in ("claimed", "started"):
+            for run in list(schedule_runs.find(status=status)):
+                self.__update_schedule_run(
+                    run["id"],
+                    "failed",
+                    "agent stopped before scheduled execution completed",
+                )
+
+    def __prune_schedule_runs(self, now=None):
+        cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=90)
+        for status in ("finished", "failed", "skipped"):
+            for run in list(schedule_runs.find(status=status)):
+                try:
+                    updated_at = datetime.fromisoformat(str(run["updated_at"]).replace("Z", "+00:00"))
+                except (KeyError, TypeError, ValueError):
+                    continue
+                if updated_at.tzinfo is None:
+                    updated_at = updated_at.replace(tzinfo=timezone.utc)
+                if updated_at < cutoff:
+                    schedule_runs.delete(id=run["id"])
 
     def __flush_report_queue(self):
         # Send update for pending job reports
@@ -452,14 +588,23 @@ class Agent:
             if not report.sent:
                 report.sent = self.__send_report(report)
 
-        # Send finished reports
-        try:
-            report = AgentReport.finished_reports.popleft()
+        # A triggered child must not overtake its parent. Blocked children and
+        # failed sends rotate so unrelated reports still make progress.
+        queue = AgentReport.finished_reports
+        outstanding_uuids = {report.uuid for report in queue}
+        outstanding_uuids.update(report.uuid for report in AgentReport.pending_reports)
+        for _ in range(len(queue)):
+            report = queue.popleft()
+            if report.parent_operation_uuid in outstanding_uuids:
+                queue.append(report)
+                continue
+
             logging.debug(f"Popped report for job {report.uuid} from report queue")
-            if not self.__send_report(report):
-                AgentReport.finished_reports.appendleft(report)
-        except IndexError:
-            pass
+            if self.__send_report(report):
+                operation_store.delete(report.uuid)
+            else:
+                queue.append(report)
+            break
 
     def __maintain_server_connection(self, now):
         if self.connected:
@@ -726,7 +871,6 @@ class Agent:
 
     def __strip_repository_secret_fields(self, repository):
         sanitized = dict(repository)
-        sanitized.pop("encrypted_restic_access_key", None)
         sanitized.pop("encrypted_recovery_key", None)
         return sanitized
 
@@ -740,6 +884,12 @@ class Agent:
         except SecretEnvelopeError as exc:
             raise AgentExeption(f"Repository {repository_id} agent key could not be sealed") from exc
 
+        repositories.update(
+            {"id": repository_id, "encrypted_restic_access_key": encrypted_agent_key},
+            ["id"],
+            types={"encrypted_restic_access_key": db.types.json},
+        )
+
         request = self.__send_request(
             "store_repository_agent_key",
             repository_id=repository_id,
@@ -751,12 +901,6 @@ class Agent:
     def __clear_local_repository_secret(self, repository_id):
         try:
             repository_secrets.delete(repository_id=repository_id)
-        except Exception:
-            pass
-
-    def __clear_local_repository_secrets(self):
-        try:
-            repository_secrets.delete()
         except Exception:
             pass
 
@@ -871,16 +1015,122 @@ class Agent:
 
     def __run_command_async(self, command_name, command_args):
         prefixed_command = f"cmd_{command_name}"
+        operation_uuid = command_args.get("operation_uuid") or command_args.get("report_uuid")
+        reservation = None
+        reservation_created = False
+        if operation_uuid:
+            reservation, reservation_created = AgentReport.reserve_history_operation(
+                type=self.__operation_type_for_command(command_name),
+                operation_uuid=operation_uuid,
+                job_id=command_args.get("job_id"),
+                repository_id=command_args.get("repository_id"),
+                retention_id=command_args.get("retention_id"),
+            )
 
         def runner():
             try:
-                getattr(self, prefixed_command)(**command_args)
-            except Exception:
+                result = getattr(self, prefixed_command)(**command_args)
+                if (
+                    operation_uuid
+                    and getattr(result, "type", None) == AgentReportType.command
+                    and getattr(result, "final_state", None) == AgentReportState.failed
+                ):
+                    self.__finish_unexpected_async_failure(
+                        command_name,
+                        command_args,
+                        getattr(result, "log", None) or "command returned failure",
+                    )
+            except Exception as exc:
                 logging.exception(
                     f"Async agent command {command_name} failed with arguments: {command_args}"
                 )
+                if operation_uuid:
+                    self.__finish_unexpected_async_failure(command_name, command_args, exc)
 
-        Thread(target=runner, daemon=True).start()
+        resources = set()
+        if command_args.get("job_id") is not None:
+            resources.add(("job", command_args["job_id"]))
+        if command_args.get("repository_id") is not None:
+            resources.add(("repository", command_args["repository_id"]))
+        future = self.__execution_manager().submit(
+            runner,
+            resources=resources,
+            operation_uuid=operation_uuid,
+        )
+        if future is None and reservation_created:
+            AgentReport.discard_history_reservation(reservation)
+        return future
+
+    @staticmethod
+    def __operation_type_for_command(command_name):
+        return {
+            AgentCommandName.run_job.value: AgentReportType.backup,
+            AgentCommandName.run_restore.value: AgentReportType.restore,
+            AgentCommandName.check_repository.value: AgentReportType.repository_check,
+            AgentCommandName.unlock_repository.value: AgentReportType.repository_unlock,
+        }[command_name]
+
+    def __operation_report_for_command(self, command_name, command_args):
+        operation_uuid = command_args.get("operation_uuid") or command_args.get("report_uuid")
+        if command_name == AgentCommandName.run_job.value:
+            return AgentReport.backup_operation(
+                job_id=command_args.get("job_id"),
+                repository_id=command_args.get("repository_id"),
+                retention_id=command_args.get("retention_id"),
+                operation_uuid=operation_uuid,
+            )
+        if command_name == AgentCommandName.run_restore.value:
+            return AgentReport.restore_operation(
+                operation_uuid=operation_uuid,
+                job_id=command_args.get("job_id"),
+                repository_id=command_args.get("repository_id"),
+            )
+        if command_name == AgentCommandName.check_repository.value:
+            return AgentReport.check_operation(
+                repository_id=command_args.get("repository_id"),
+                operation_uuid=operation_uuid,
+            )
+        return AgentReport(
+            type=AgentReportType.repository_unlock,
+            repository_id=command_args.get("repository_id"),
+            operation_uuid=operation_uuid,
+        )
+
+    def __finish_unexpected_async_failure(self, command_name, command_args, exc):
+        operation_uuid = command_args.get("operation_uuid") or command_args.get("report_uuid")
+        if any(report.uuid == operation_uuid for report in AgentReport.finished_reports):
+            return
+        history = agent_operations.find_one(uuid=operation_uuid)
+        if history and history.get("state") != AgentReportState.running.name:
+            return
+
+        report = AgentReport.get_report(uuid=operation_uuid)
+        if report is None:
+            report = self.__operation_report_for_command(command_name, command_args)
+        report.log_message(
+            f"Unexpected worker failure while executing {command_name}: {exc}",
+            final_state=AgentReportState.failed,
+        )
+        report.finish()
+
+    def __validate_run_job_admission(self, command_args):
+        job_id = command_args.get("job_id")
+        repository_id = command_args.get("repository_id")
+        try:
+            job = jobs.find_one(id=job_id)
+            repository = repositories.find_one(id=repository_id)
+        except Exception as exc:
+            return f"Local synced job data could not be validated: {exc}"
+        if not job:
+            return f"Job with id {job_id} is not available in local sync data"
+        if not repository:
+            return f"Repository with id {repository_id} is not available in local sync data"
+        return None
+
+    def __execution_manager(self):
+        if not hasattr(self, "_Agent__execution"):
+            self.__execution = ExecutionManager()
+        return self.__execution
 
     def __handle_execute_command(self, data):
         try:
@@ -910,8 +1160,31 @@ class Agent:
             return report.finish()
 
         if command in ASYNC_AGENT_COMMANDS:
-            self.__run_command_async(command_name, command_args)
+            operation_uuid = command_args.get("operation_uuid") or command_args.get("report_uuid")
+            if not operation_uuid:
+                report = AgentReport.command_report()
+                report.log_message(
+                    f"Could not start {command_name}: operation_uuid is required",
+                    final_state=AgentReportState.failed,
+                )
+                return report.finish()
+            if command == AgentCommandName.run_job:
+                rejection_reason = self.__validate_run_job_admission(command_args)
+                if rejection_reason:
+                    report = AgentReport.command_report()
+                    report.log_message(
+                        f"Could not start run_job: {rejection_reason}",
+                        final_state=AgentReportState.failed,
+                    )
+                    return report.finish()
+            future = self.__run_command_async(command_name, command_args)
             report = AgentReport.command_report()
+            if future is None:
+                report.log_message(
+                    f"Could not start {command_name}: execution capacity or requested resource is busy",
+                    final_state=AgentReportState.failed,
+                )
+                return report.finish()
             if command == AgentCommandName.run_job:
                 report.log_message(
                     f"Started job {command_args.get('job_id')} on repository {command_args.get('repository_id')}"
@@ -1102,7 +1375,10 @@ class Agent:
         if self.managed_repo_rewrite_enabled and self.env_name != "dev":
             self.__warn_managed_repo_rewrite_enabled()
 
-        # Load report queue
+        # Bound terminal schedule history without discarding interrupted runs.
+        self.__prune_schedule_runs()
+        self.__recover_schedule_runs()
+        AgentReport.recover_interrupted()
         AgentReport.load_queue()
 
         # Attempt registration/connection to server
@@ -1126,13 +1402,20 @@ class Agent:
     def shutdown(self):
         logging.info("Shutting down...")
 
+        AgentReport.cancel_running()
+        if hasattr(self, "_Agent__shutdown_event"):
+            self.__shutdown_event.set()
+
         if self.client:
             try:
                 self.client.disconnect()
             except Exception:
                 pass
 
-        # Save report queue
+        if hasattr(self, "_Agent__execution"):
+            self.__execution.shutdown(wait=True)
+
+        # Finalize any operations which did not exit through their worker.
         AgentReport.save_queue()
 
     """ Save configuration """
@@ -1344,40 +1627,58 @@ class Agent:
 
         request = self.__send_request("sync")
 
-        if request["success"]:
-            server_data = request["result"]
-
-            self.__clear_local_repository_secrets()
-            self.__secret_value_cache().clear()
-            for envelope in server_data.get("secret_envelopes") or []:
-                try:
-                    self.__store_secret_envelope_value(envelope)
-                except AgentExeption as exc:
-                    report.log_message(str(exc), final_state=AgentReportState.warning)
-
-            repositories.delete()
-            synced_repositories = []
-            for repository in server_data["repositories"]:
-                try:
-                    self.__repository_agent_password(repository)
-                except AgentExeption as exc:
-                    report.log_message(str(exc), final_state=AgentReportState.warning)
-                synced_repositories.append(self.__strip_repository_secret_fields(repository))
-            repositories.insert_many(synced_repositories)
-
-            retentions.delete()
-            retentions.insert_many(server_data["retentions"])
-
-            jobs.delete()
-            jobs.insert_many(server_data["jobs"], types={"config": db.types.json})
-
-            schedules.delete()
-            schedules.insert_many(server_data["schedules"], types={"config": db.types.json})
-
-            actions.delete()
-            actions.insert_many(server_data["actions"])
-        else:
+        if not request.get("success"):
             report.log_message("Agent sync failed", final_state=AgentReportState.failed)
+            return report.finish()
+
+        try:
+            server_data = request["result"]
+            synced_repositories = [
+                self.__strip_repository_secret_fields(repository)
+                for repository in server_data["repositories"]
+            ]
+
+            with db:
+                repository_secrets.delete()
+
+                repositories.delete()
+                repositories.insert_many(
+                    synced_repositories,
+                    types={
+                        "environment": db.types.json,
+                        "encrypted_restic_access_key": db.types.json,
+                    },
+                )
+
+                retentions.delete()
+                retentions.insert_many(server_data["retentions"])
+
+                jobs.delete()
+                jobs.insert_many(server_data["jobs"], types={"config": db.types.json})
+
+                schedules.delete()
+                schedules.insert_many(server_data["schedules"], types={"config": db.types.json})
+
+                actions.delete()
+                actions.insert_many(server_data["actions"])
+        except Exception as exc:
+            logging.exception("Agent sync transaction failed")
+            report.log_message(f"Agent sync failed: {exc}", final_state=AgentReportState.failed)
+            return report.finish()
+
+        self.__secret_value_cache().clear()
+        for envelope in server_data.get("secret_envelopes") or []:
+            try:
+                self.__store_secret_envelope_value(envelope)
+            except AgentExeption as exc:
+                report.log_message(str(exc), final_state=AgentReportState.warning)
+
+        self.__repository_password_cache().clear()
+        for repository in synced_repositories:
+            try:
+                self.__repository_agent_password(repository)
+            except AgentExeption as exc:
+                report.log_message(str(exc), final_state=AgentReportState.warning)
 
         return report.finish()
 
@@ -1471,9 +1772,27 @@ class Agent:
 
     """ Cancel running backup job """
 
-    def cmd_cancel_job(self, job_id):
+    def cmd_cancel_job(self, job_id, operation_uuid=None):
         report = AgentReport.command_report()
-        job_report = AgentReport.get_report(job_id=job_id)
+        if operation_uuid and self.__execution_manager().cancel(operation_uuid):
+            job_report = AgentReport.backup_operation(
+                job_id=job_id,
+                repository_id=None,
+                operation_uuid=operation_uuid,
+            )
+            job_report.log_message(
+                f"Canceled queued job {job_id} by user request",
+                final_state=AgentReportState.cancelled,
+            )
+            job_report.finish()
+            report.log_message(f"Canceled queued job {job_id}")
+            return report.finish()
+
+        job_report = (
+            AgentReport.get_report(uuid=operation_uuid)
+            if operation_uuid
+            else AgentReport.get_report(job_id=job_id)
+        )
 
         if job_report:
             job_report.log_message(f"Canceling job {job_id} by user request")
@@ -1487,7 +1806,21 @@ class Agent:
                 return report.finish()
 
             # Cancel restic process
-            self.__resticapi.cancel_process(pid)
+            try:
+                cancelled = self.__resticapi.cancel_process(pid)
+            except Exception as exc:
+                logging.exception("Failed to cancel restic process %s", pid)
+                cancelled = False
+                cancel_reason = str(exc)
+            else:
+                cancel_reason = f"Restic process {pid} is no longer running"
+            if not cancelled:
+                report.log_message(
+                    f"Failed to cancel job {job_id}. {cancel_reason}",
+                    final_state=AgentReportState.failed,
+                )
+                return report.finish()
+            job_report.final_state = AgentReportState.cancelled
 
             report.log_message(f"Canceled job {job_id}")
         else:
@@ -1562,6 +1895,20 @@ class Agent:
     def cmd_cancel_restore(self, operation_uuid=None, report_uuid=None):
         operation_uuid = operation_uuid or report_uuid
         report = AgentReport.command_report()
+        if operation_uuid and self.__execution_manager().cancel(operation_uuid):
+            restore_report = AgentReport.restore_operation(
+                operation_uuid=operation_uuid,
+                job_id=None,
+                repository_id=None,
+            )
+            restore_report.log_message(
+                f"Canceled queued restore {operation_uuid} by user request",
+                final_state=AgentReportState.cancelled,
+            )
+            restore_report.finish()
+            report.log_message(f"Canceled queued restore {operation_uuid}")
+            return report.finish()
+
         restore_report = AgentReport.get_report(uuid=operation_uuid)
 
         if not restore_report:
@@ -1580,6 +1927,20 @@ class Agent:
             )
             return report.finish()
 
-        self.__resticapi.cancel_process(pid)
-        report.log_message(f"Canceled restore {report_uuid}")
+        try:
+            cancelled = self.__resticapi.cancel_process(pid)
+        except Exception as exc:
+            logging.exception("Failed to cancel restic process %s", pid)
+            cancelled = False
+            cancel_reason = str(exc)
+        else:
+            cancel_reason = f"Restic process {pid} is no longer running"
+        if not cancelled:
+            report.log_message(
+                f"Failed to cancel restore {operation_uuid}. {cancel_reason}",
+                final_state=AgentReportState.failed,
+            )
+            return report.finish()
+        restore_report.final_state = AgentReportState.cancelled
+        report.log_message(f"Canceled restore {operation_uuid}")
         return report.finish()

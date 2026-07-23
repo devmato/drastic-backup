@@ -10,6 +10,7 @@ from drastic_server.services.agent.artifacts import (
 from drastic_server.services.agent.command import (
     AgentCommand,
     AgentService,
+    is_agent_conflict_response,
     is_agent_timeout_response,
 )
 from drastic_server.services.agent.installer import (
@@ -37,6 +38,7 @@ __all__ = [
     "agent_git_repository",
     "build_agent_install_targets",
     "is_agent_timeout_response",
+    "is_agent_conflict_response",
     "normalize_agent_platform",
     "render_linux_agentctl_script",
     "render_linux_agent_install_script",

@@ -113,6 +113,7 @@ class AgentOperationStartResponseSchema(Schema):
     type = fields.String(required=True)
     state = fields.String(required=True)
     success = fields.Boolean(load_default=True, dump_default=True)
+    dispatch_status = fields.String(required=True)
 
 
 class AgentOperationQuerySchema(Schema):

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>dRastic recovery export</title>
+  <style>
+    :root { color-scheme: light; font-family: ui-sans-serif, system-ui, sans-serif; color: #17202a; }
+    body { max-width: 1100px; margin: 0 auto; padding: 2rem; line-height: 1.45; }
+    h1, h2, h3, h4 { line-height: 1.15; break-after: avoid; }
+    h2 { border-bottom: 2px solid #17202a; padding-bottom: .3rem; margin-top: 2.5rem; }
+    h3 { margin-top: 1.8rem; }
+    .warning { border: 4px solid #9b1c1c; background: #fff0f0; color: #6f1010; padding: 1rem 1.25rem; font-weight: 700; }
+    .note { border-left: 5px solid #52616b; background: #f3f5f6; padding: .8rem 1rem; }
+    table { width: 100%; border-collapse: collapse; margin: .8rem 0 1.4rem; }
+    th, td { border: 1px solid #aeb6bf; padding: .45rem .55rem; text-align: left; vertical-align: top; }
+    th { background: #eef1f3; width: 24%; }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; overflow-wrap: anywhere; white-space: pre-wrap; }
+    pre { border: 1px solid #ccd1d1; background: #f8f9f9; padding: .7rem; }
+    .secret { border: 2px solid #9b1c1c; background: #fff7f7; padding: .55rem; }
+    .item { break-inside: avoid-page; }
+    @media print {
+      body { max-width: none; padding: 0; font-size: 10pt; }
+      a { color: inherit; text-decoration: none; }
+      .warning, .secret, .note, th, pre { print-color-adjust: exact; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>dRastic recovery export</h1>
+    <div class="warning">
+      CRITICAL: This document contains plaintext repository passwords and provider environment
+      values. Anyone who can read it may be able to access your backups. Store it offline,
+      protect printed copies, and destroy copies securely when no longer needed.
+    </div>
+    <p>Generated: <time>{{ export.generated_at }}</time></p>
+  </header>
+
+  <section>
+    <h2>Account metadata</h2>
+    <table>
+      <tr><th>User ID</th><td>{{ export.user.id }}</td></tr>
+      <tr><th>Name</th><td>{{ export.user.name }}</td></tr>
+      <tr><th>Email</th><td>{{ export.user.email or "Not set" }}</td></tr>
+    </table>
+    <p class="note">The account password, password hash, encrypted user recovery key, sessions, and tokens are not included.</p>
+  </section>
+
+  <section>
+    <h2>External prerequisites not included</h2>
+    <ul>
+      <li>SSH/SFTP target access and private agent SSH material are not included.</li>
+      <li>Proxmox credentials and host prerequisites are not included.</li>
+      <li>Native repository storage must be separately backed up.</li>
+    </ul>
+  </section>
+
+  <section>
+    <h2>Agents</h2>
+    {% for agent in export.agents %}
+      <div class="item">
+        <h3>{{ agent.hostname or "Unnamed agent" }} <small>(ID {{ agent.id }})</small></h3>
+        <table>
+          <tr><th>Install type</th><td>{{ agent.install_type or "Not set" }}</td></tr>
+          <tr><th>Operating system</th><td>{{ agent.os or "Not set" }}</td></tr>
+          <tr><th>Version</th><td>{{ agent.version or "Not set" }}</td></tr>
+          <tr><th>SSH fingerprint</th><td>{{ agent.ssh_key_fingerprint or "Not set" }}</td></tr>
+          <tr><th>SSH algorithm</th><td>{{ agent.ssh_key_algorithm or "Not set" }}</td></tr>
+          <tr><th>SSH public key</th><td><pre>{{ agent.ssh_public_key or "Not set" }}</pre></td></tr>
+        </table>
+      </div>
+    {% else %}<p>No agents.</p>{% endfor %}
+  </section>
+
+  <section>
+    <h2>Repository assignments</h2>
+    <table>
+      <thead><tr><th>Agent</th><th>Repository</th></tr></thead>
+      <tbody>
+      {% for assignment in export.repository_assignments %}
+        <tr>
+          <td>{{ assignment.agent.hostname or "Unnamed agent" }} (ID {{ assignment.agent.id }})</td>
+          <td>{{ assignment.repository.name }} (ID {{ assignment.repository.id }})</td>
+        </tr>
+      {% else %}<tr><td colspan="2">No repository assignments.</td></tr>{% endfor %}
+      </tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>Repositories</h2>
+    {% for repository in export.repositories %}
+      <div class="item">
+        <h3>{{ repository.name }} <small>(ID {{ repository.id }})</small></h3>
+        <table>
+          <tr><th>Kind</th><td>{{ repository.kind }}</td></tr>
+          <tr><th>Configured location</th><td><code>{{ repository.location }}</code></td></tr>
+          <tr><th>Native repository path</th><td><code>{{ repository.native_repository_path or "Not applicable" }}</code></td></tr>
+          <tr><th>Restic ID</th><td>{{ repository.restic_id or "Not set" }}</td></tr>
+          <tr><th>Repository password (plaintext)</th><td><code class="secret">{{ repository.password }}</code></td></tr>
+          <tr><th>Provider environment (plaintext)</th><td><pre class="secret">{{ repository.environment | tojson(indent=2) }}</pre></td></tr>
+        </table>
+      </div>
+    {% else %}<p>No repositories.</p>{% endfor %}
+  </section>
+
+  <section>
+    <h2>Retention policies</h2>
+    {% for retention in export.retentions %}
+      <div class="item">
+        <h3>{{ retention.name }} <small>(ID {{ retention.id }})</small></h3>
+        <table>
+          <tr><th>Keep last</th><td>{{ retention.keep_last if retention.keep_last is not none else "Not set" }}</td></tr>
+          <tr><th>Keep hourly</th><td>{{ retention.keep_hourly if retention.keep_hourly is not none else "Not set" }}</td></tr>
+          <tr><th>Keep weekly</th><td>{{ retention.keep_weekly if retention.keep_weekly is not none else "Not set" }}</td></tr>
+          <tr><th>Keep monthly</th><td>{{ retention.keep_monthly if retention.keep_monthly is not none else "Not set" }}</td></tr>
+          <tr><th>Keep yearly</th><td>{{ retention.keep_yearly if retention.keep_yearly is not none else "Not set" }}</td></tr>
+        </table>
+      </div>
+    {% else %}<p>No retention policies.</p>{% endfor %}
+  </section>
+
+  <section>
+    <h2>Jobs, actions, and schedules</h2>
+    {% for job in export.jobs %}
+      <div class="item">
+        <h3>{{ job.name }} <small>(ID {{ job.id }}, UUID {{ job.uuid }})</small></h3>
+        <table>
+          <tr><th>Agent</th><td>{{ job.agent.hostname or "Unnamed agent" }} (ID {{ job.agent.id }})</td></tr>
+          <tr><th>Type</th><td>{{ job.type }}</td></tr>
+          <tr><th>Configuration</th><td><pre>{{ job.config | tojson(indent=2) }}</pre></td></tr>
+        </table>
+        <h4>Actions</h4>
+        {% for action in job.actions %}
+          <table>
+            <tr><th>Action ID</th><td>{{ action.id }}</td></tr>
+            <tr><th>Module / hook</th><td>{{ action.module }} / {{ action.hook }}</td></tr>
+            <tr><th>Configuration</th><td><pre>{{ action.data | tojson(indent=2) }}</pre></td></tr>
+          </table>
+        {% else %}<p>No actions.</p>{% endfor %}
+        <h4>Schedules</h4>
+        {% for schedule in job.schedules %}
+          <table>
+            <tr><th>Schedule ID</th><td>{{ schedule.id }}</td></tr>
+            <tr><th>Enabled / advanced</th><td>{{ schedule.enabled }} / {{ schedule.advanced }}</td></tr>
+            <tr><th>Cron</th><td><code>{{ schedule.cron_string }}</code></td></tr>
+            <tr><th>Repository</th><td>{{ schedule.repository.name or "Unknown" }} (ID {{ schedule.repository.id }})</td></tr>
+            <tr><th>Retention</th><td>{% if schedule.retention %}{{ schedule.retention.name or "Unknown" }} (ID {{ schedule.retention.id }}){% else %}None{% endif %}</td></tr>
+            <tr><th>Configuration</th><td><pre>{{ schedule.config | tojson(indent=2) }}</pre></td></tr>
+          </table>
+        {% else %}<p>No schedules.</p>{% endfor %}
+      </div>
+    {% else %}<p>No jobs.</p>{% endfor %}
+  </section>
+
+  <footer class="note">
+    Agent secrets and encryption keys, private SSH keys, operation history, logs, artifacts,
+    notification settings/secrets, and application master secrets are intentionally excluded.
+  </footer>
+</body>
+</html>

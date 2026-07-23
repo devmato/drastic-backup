@@ -4,20 +4,40 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from queue import Empty, Queue
 
 import drastic_common.restic.parsers as parsers
-from drastic_common.restic.exceptions import ResticBinaryNotFoundError, ResticFailedError
+from drastic_common.restic.exceptions import (
+    ResticBinaryNotFoundError,
+    ResticCancelledError,
+    ResticFailedError,
+    ResticTimeoutError,
+)
 
 
 class ResticApi:
     _processes = {}
     _process_lock = threading.Lock()
+    _producer_exit_grace = 1.0
 
-    def __init__(self, binary_path, repository=None):
+    def __init__(
+        self,
+        binary_path,
+        repository=None,
+        cancellation_event=None,
+        timeout=None,
+        deadline=None,
+        terminate_grace=5.0,
+    ):
         self._state = threading.local()
         self.binary_path = binary_path
+        self.cancellation_event = cancellation_event
+        self.timeout = timeout
+        self.deadline = deadline
+        self.terminate_grace = terminate_grace
 
         if repository:
             self.set_repository(repository)
@@ -138,6 +158,62 @@ class ResticApi:
             return b"".join(chunks).decode("utf-8", errors="replace")
         return "".join(chunks)
 
+    def __deadline(self):
+        deadlines = []
+        if self.timeout is not None:
+            deadlines.append(time.monotonic() + float(self.timeout))
+        if self.deadline is not None:
+            if isinstance(self.deadline, datetime):
+                now = datetime.now(tz=self.deadline.tzinfo)
+                deadlines.append(time.monotonic() + max(0, (self.deadline - now).total_seconds()))
+            else:
+                deadlines.append(float(self.deadline))
+        return min(deadlines) if deadlines else None
+
+    def __monitor_output(self, process, callback, callback_args, callback_pid, callback_throttle, deadline):
+        output = []
+        output_queue = Queue()
+
+        def read_stdout():
+            try:
+                while True:
+                    line = process.stdout.readline()
+                    if line == "":
+                        break
+                    output_queue.put(line)
+            finally:
+                output_queue.put(None)
+
+        stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+        stdout_thread.start()
+        last_callback_invoked = None
+        stream_closed = False
+        while not (stream_closed and process.poll() is not None):
+            if self.cancellation_event is not None and self.cancellation_event.is_set():
+                raise ResticCancelledError("Restic operation was cancelled")
+            if deadline is not None and time.monotonic() >= deadline:
+                raise ResticTimeoutError("Restic operation timed out")
+            try:
+                line = output_queue.get(timeout=0.05)
+            except Empty:
+                continue
+            if line is None:
+                stream_closed = True
+                continue
+            if callback is not None and (
+                callback_throttle is None
+                or last_callback_invoked is None
+                or datetime.now() - last_callback_invoked >= timedelta(milliseconds=callback_throttle)
+            ):
+                current_callback_args = callback_args
+                if callback_pid:
+                    current_callback_args = {**callback_args, "pid": process.pid}
+                callback(line, **current_callback_args)
+                last_callback_invoked = datetime.now()
+            output.append(line)
+        stdout_thread.join()
+        return output
+
     def __popen(self, *args, **kwargs):
         try:
             return subprocess.Popen(*args, **kwargs)
@@ -159,8 +235,10 @@ class ResticApi:
     ):
         logging.debug(f"Executing command: {cmd}")
         callback_args = dict(callback_args or {})
+        deadline = self.__deadline()
 
         restic_env_context = None
+        process = None
         try:
             restic_env_context = self.__restic_env()
             env = restic_env_context.__enter__()
@@ -175,12 +253,13 @@ class ResticApi:
             )
 
             self.__register_process(process.pid, _ManagedProcess(process))
+            if callback is not None and callback_pid:
+                callback(None, **{**callback_args, "pid": process.pid})
 
             if stdin_data is not None and process.stdin is not None:
                 process.stdin.write(stdin_data)
                 process.stdin.close()
 
-            output = []
             stderr_chunks = []
             stderr_thread = threading.Thread(
                 target=self.__drain_binary_stream,
@@ -188,35 +267,13 @@ class ResticApi:
                 daemon=True,
             )
             stderr_thread.start()
-            last_callback_invoked = None
-
-            while True:
-                last_output = process.stdout.readline()
-
-                if last_output == "" and process.poll() is not None:
-                    break
-
-                if last_output != "":
-                    if callback is not None:
-                        if (
-                            callback_throttle is None
-                            or last_callback_invoked is None
-                            or datetime.now() - last_callback_invoked
-                            >= timedelta(milliseconds=callback_throttle)
-                        ):
-                            if callback_pid:
-                                callback_args["pid"] = process.pid
-
-                            callback(last_output, **callback_args)
-                            last_callback_invoked = datetime.now()
-
-                    output.append(last_output)
+            output = self.__monitor_output(
+                process, callback, callback_args, callback_pid, callback_throttle, deadline
+            )
 
             return_code = process.wait()
             stderr_thread.join()
             stderr_output = self.__join_stream_chunks(stderr_chunks)
-
-            self.__unregister_process(process.pid)
 
             if return_code != 0:
                 raise ResticFailedError(
@@ -228,6 +285,12 @@ class ResticApi:
                 f"Restic binary not found at {self.binary_path}"
             ) from err
         finally:
+            if process is not None:
+                if process.poll() is None:
+                    _ManagedProcess(process).terminate(self.terminate_grace)
+                self.__unregister_process(process.pid)
+                if callback is not None and callback_pid:
+                    callback(None, **{**callback_args, "pid": None})
             if restic_env_context is not None:
                 restic_env_context.__exit__(None, None, None)
 
@@ -303,10 +366,12 @@ class ResticApi:
             tag=tags,
         )
         callback_args = dict(callback_args or {})
+        deadline = self.__deadline()
         producer_process = None
         process = None
         producer_stderr_chunks = []
         producer_stderr_thread = None
+        restic_env_context = None
         output = []
 
         try:
@@ -334,16 +399,15 @@ class ResticApi:
                     start_new_session=True,
                 )
             except FileNotFoundError as err:
-                if "restic_env_context" in locals():
-                    restic_env_context.__exit__(None, None, None)
-                producer_process.kill()
-                producer_process.wait()
+                _ManagedProcess(producer_process).terminate(self.terminate_grace)
                 raise ResticBinaryNotFoundError(
                     f"Restic binary not found at {self.binary_path}"
                 ) from err
 
             producer_process.stdout.close()
             self.__register_process(process.pid, _ManagedProcess(process, producer_process))
+            if callback is not None and callback_pid:
+                callback(None, **{**callback_args, "pid": process.pid})
 
             restic_stderr_chunks = []
             restic_stderr_thread = threading.Thread(
@@ -359,66 +423,74 @@ class ResticApi:
             )
             producer_stderr_thread.start()
 
-            last_callback_invoked = None
-
-            while True:
-                last_output = process.stdout.readline()
-
-                if last_output == "" and process.poll() is not None:
-                    break
-
-                if last_output != "":
-                    if callback is not None:
-                        if (
-                            callback_throttle is None
-                            or last_callback_invoked is None
-                            or datetime.now() - last_callback_invoked
-                            >= timedelta(milliseconds=callback_throttle)
-                        ):
-                            if callback_pid:
-                                callback_args["pid"] = process.pid
-
-                            callback(last_output, **callback_args)
-                            last_callback_invoked = datetime.now()
-
-                    output.append(last_output)
+            output = self.__monitor_output(
+                process, callback, callback_args, callback_pid, callback_throttle, deadline
+            )
 
             return_code = process.wait()
-            producer_return_code = producer_process.wait()
+            producer_was_terminated = False
+            if producer_process.poll() is None:
+                if return_code == 0:
+                    try:
+                        producer_process.wait(timeout=self._producer_exit_grace)
+                    except subprocess.TimeoutExpired:
+                        producer_was_terminated = True
+                        _ManagedProcess(producer_process).terminate(self.terminate_grace)
+                else:
+                    producer_was_terminated = True
+                    _ManagedProcess(producer_process).terminate(self.terminate_grace)
+            producer_return_code = producer_process.poll()
             restic_stderr_thread.join()
             if producer_stderr_thread is not None:
                 producer_stderr_thread.join()
             stderr_output = self.__join_stream_chunks(restic_stderr_chunks)
             producer_stderr_output = self.__join_stream_chunks(producer_stderr_chunks)
+            backup_status = parsers.backup(output)
+            snapshot_id = (
+                backup_status.get("snapshot_id") if isinstance(backup_status, dict) else None
+            )
 
-            if producer_return_code != 0:
+            if producer_return_code is None:
+                raise ResticFailedError(
+                    "Backup source command did not terminate", snapshot_id=snapshot_id
+                )
+
+            if producer_return_code != 0 and not producer_was_terminated:
                 error_parts = [f"Backup source command failed with exit code {producer_return_code}"]
                 if producer_stderr_output.strip():
                     error_parts.append(producer_stderr_output.strip())
                 if stderr_output.strip():
                     error_parts.append(f"Restic stderr: {stderr_output.strip()}")
-                raise ResticFailedError(": ".join(error_parts))
+                raise ResticFailedError(": ".join(error_parts), snapshot_id=snapshot_id)
 
             if return_code != 0:
                 raise ResticFailedError(
-                    f"Restic failed with exit code {return_code}: {stderr_output}"
+                    f"Restic failed with exit code {return_code}: {stderr_output}",
+                    snapshot_id=snapshot_id,
+                )
+
+            if producer_return_code != 0:
+                raise ResticFailedError(
+                    f"Backup source command failed with exit code {producer_return_code}",
+                    snapshot_id=snapshot_id,
                 )
 
         finally:
             if process is not None:
-                self.__unregister_process(process.pid)
                 if process.poll() is None:
-                    process.kill()
-                    process.wait()
-            if "restic_env_context" in locals():
-                restic_env_context.__exit__(None, None, None)
+                    _ManagedProcess(process, producer_process).terminate(self.terminate_grace)
             if producer_process is not None and producer_process.poll() is None:
-                producer_process.kill()
-                producer_process.wait()
+                _ManagedProcess(producer_process).terminate(self.terminate_grace)
+            if process is not None:
+                self.__unregister_process(process.pid)
+                if callback is not None and callback_pid:
+                    callback(None, **{**callback_args, "pid": None})
+            if restic_env_context is not None:
+                restic_env_context.__exit__(None, None, None)
 
         logging.debug(f"{len(output)} lines of output")
         logging.debug("Restic proccess exitted")
-        return parsers.backup(output)
+        return backup_status
 
     def init(self):
         cmd = self.__make_command("init")
@@ -478,15 +550,23 @@ class ResticApi:
         callback_args=None,
         callback_pid=False,
         callback_throttle=None,
+        overwrite_policy="fail_if_exists",
     ):
         if not include_paths:
             raise ValueError("Restore requires at least one include path")
+        overwrite = {
+            "fail_if_exists": "never",
+            "overwrite": "always",
+        }.get(overwrite_policy)
+        if overwrite is None:
+            raise ValueError("Unsupported overwrite policy")
 
         cmd = self.__make_command(
             "restore",
             snapshot_id,
             target=target,
             include=include_paths,
+            overwrite=overwrite,
         )
         return self.__execute_command(
             cmd,
@@ -534,6 +614,10 @@ class ResticApi:
         cmd = self.__make_command("forget", snapshot_ids, dry_run=dry_run, prune=prune)
         return self.__execute_command(cmd)
 
+    def prune(self):
+        cmd = self.__make_command("prune")
+        return self.__execute_command(cmd)
+
     def unlock(self):
         cmd = self.__make_command("unlock")
         return self.__execute_command(cmd)
@@ -543,7 +627,11 @@ class ResticApi:
             process = self._processes.pop(pid, None)
 
         if process:
-            process.kill()
+            terminate = getattr(process, "terminate", None)
+            if terminate is not None:
+                terminate(self.terminate_grace)
+            else:
+                process.kill()
             return True
 
         return False
@@ -558,6 +646,36 @@ class _ManagedProcess:
             try:
                 os.killpg(process.pid, 9)
             except ProcessLookupError:
-                continue
+                if process.poll() is None:
+                    process.kill()
             except OSError:
                 process.kill()
+
+    def terminate(self, grace):
+        running = [process for process in self._processes if process.poll() is None]
+        for process in running:
+            try:
+                os.killpg(process.pid, 15)
+            except ProcessLookupError:
+                if process.poll() is None:
+                    terminate = getattr(process, "terminate", None)
+                    if terminate is not None:
+                        terminate()
+                    else:
+                        process.kill()
+            except OSError:
+                process.terminate()
+        end = time.monotonic() + max(0, grace)
+        while running and time.monotonic() < end:
+            running = [process for process in running if process.poll() is None]
+            if running:
+                time.sleep(min(0.05, max(0, end - time.monotonic())))
+        if running:
+            _ManagedProcess(*running).kill()
+        for process in running:
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                continue
+            except TypeError:
+                process.poll()

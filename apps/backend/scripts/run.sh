@@ -5,6 +5,9 @@ set -e
 echo 'Executing database migrations...'
 uv run python -m flask --app run.py db upgrade
 
+echo 'Executing startup maintenance...'
+uv run python -m flask --app run.py maintenance startup
+
 echo 'Executing bootstrap seed...'
 uv run python -m flask --app run.py seed bootstrap
 

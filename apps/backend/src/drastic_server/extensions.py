@@ -18,6 +18,6 @@ db = SQLAlchemy(
         }
     )
 )
-migrate = Migrate()
+migrate = Migrate(compare_type=True)
 smorest_api = Api()
 socketio = SocketIO(async_mode="threading")

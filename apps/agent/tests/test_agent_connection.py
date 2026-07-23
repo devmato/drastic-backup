@@ -4,10 +4,14 @@ import hashlib
 import os
 import stat
 from datetime import datetime, timedelta
+from threading import Event
+from types import SimpleNamespace
 
 import drastic_agent.agent.agent as agent_module
 from drastic_agent.agent.agent import Agent
+from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
+from drastic_agent.agent.execution import ExecutionManager
 from drastic_agent.agent.report import AgentReport
 
 
@@ -58,6 +62,10 @@ def test_set_repository_initializes_before_agent_key_provisioning(monkeypatch):
                 "encrypted_recovery_key": {"v": 1},
             }
 
+        @staticmethod
+        def update(row, keys, **kwargs):
+            calls.append(("update_repository", row, keys))
+
     class FakeRepositorySecrets:
         @staticmethod
         def delete(**kwargs):
@@ -92,6 +100,11 @@ def test_set_repository_initializes_before_agent_key_provisioning(monkeypatch):
         ("set_repository", "recovery-password"),
         ("init",),
         ("key_add", "agent-password"),
+        (
+            "update_repository",
+            {"id": 1, "encrypted_restic_access_key": {"sealed": "agent-password"}},
+            ["id"],
+        ),
         (
             "request",
             "store_repository_agent_key",
@@ -171,6 +184,11 @@ def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch
         def delete(**kwargs):
             calls.append(("delete_secret", kwargs))
 
+    class FakeRepositories:
+        @staticmethod
+        def update(row, keys, **kwargs):
+            calls.append(("update_repository", row, keys))
+
     class FakeResticApi:
         def set_repository(self, repository):
             calls.append(("set_repository", repository.password))
@@ -182,6 +200,7 @@ def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch
             calls.append(("key_add", password))
 
     monkeypatch.setattr(agent_module, "repository_secrets", FakeRepositorySecrets())
+    monkeypatch.setattr(agent_module, "repositories", FakeRepositories())
     monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
     monkeypatch.setattr(agent_module, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
     monkeypatch.setattr(
@@ -197,6 +216,11 @@ def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch
         ("set_repository", "recovery-password"),
         ("init",),
         ("key_add", "existing-agent-password"),
+        (
+            "update_repository",
+            {"id": 1, "encrypted_restic_access_key": {"sealed": "existing-agent-password"}},
+            ["id"],
+        ),
         (
             "request",
             "store_repository_agent_key",
@@ -221,6 +245,10 @@ def test_set_repository_ignores_already_initialized_during_provisioning(monkeypa
                 "environment": {},
                 "encrypted_recovery_key": {"v": 1},
             }
+
+        @staticmethod
+        def update(row, keys, **kwargs):
+            return None
 
     class FakeRepositorySecrets:
         @staticmethod
@@ -343,6 +371,8 @@ def test_maintain_server_connection_retries_registration_and_connects(monkeypatc
 def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     started_jobs = []
+    agent_module.schedule_runs.delete(schedule_id=11)
+    agent_module.schedule_runs.delete(schedule_id=12)
 
     class FakeSchedules:
         def __init__(self, items):
@@ -351,14 +381,11 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
         def find(self, **kwargs):
             return [item for item in self.items if item["job_id"] == kwargs["job_id"]]
 
-    class ImmediateThread:
-        def __init__(self, target, args, daemon):
-            self.target = target
-            self.args = args
-            self.daemon = daemon
-
-        def start(self):
-            self.target(*self.args)
+    class ImmediateExecution:
+        def submit(self, target, *args, **kwargs):
+            kwargs.pop("resources", None)
+            target(*args, **kwargs)
+            return object()
 
     monkeypatch.setattr(agent_module, "jobs", [{"id": 1}, {"id": 2}])
     monkeypatch.setattr(
@@ -372,7 +399,7 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
         ),
     )
     monkeypatch.setattr(agent_module.croniter, "match", lambda cron_string, now: True)
-    monkeypatch.setattr(agent_module, "Thread", ImmediateThread)
+    agent._Agent__execution = ImmediateExecution()
     monkeypatch.setattr(
         agent,
         "cmd_run_job",
@@ -440,7 +467,7 @@ def test_send_report_only_marks_log_sent_after_success(monkeypatch):
     assert report.log == ""
 
 
-def test_sync_hydrates_agent_keys_without_persisting_secret_payloads(monkeypatch):
+def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     agent._Agent__config["AGENT"] = {"private_key": "private-key"}
     inserted_repositories = []
@@ -452,7 +479,7 @@ def test_sync_hydrates_agent_keys_without_persisting_secret_payloads(monkeypatch
             inserted_repositories.clear()
 
         @staticmethod
-        def insert_many(rows):
+        def insert_many(rows, **kwargs):
             inserted_repositories.extend(rows)
 
     class FakeSecrets:
@@ -504,19 +531,27 @@ def test_sync_hydrates_agent_keys_without_persisting_secret_payloads(monkeypatch
     assert report.final_state.name == "success"
     assert agent._Agent__repository_passwords == {1: "agent-password"}
     assert inserted_repositories == [
-        {"id": 1, "location": "rest:http://repo.test/repo", "environment": {}}
+        {
+            "id": 1,
+            "location": "rest:http://repo.test/repo",
+            "environment": {},
+            "encrypted_restic_access_key": {"v": 1},
+        }
     ]
     assert secret_deletes == [{}]
 
 
-def test_handle_execute_command_runs_jobs_async(monkeypatch):
+def test_handle_execute_command_rejects_async_job_without_operation_uuid(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     async_calls = []
 
+    monkeypatch.setattr(agent, "_Agent__validate_run_job_admission", lambda command_args: None)
     monkeypatch.setattr(
         agent,
         "_Agent__run_command_async",
-        lambda command_name, command_args: async_calls.append((command_name, command_args)),
+        lambda command_name, command_args: (
+            async_calls.append((command_name, command_args)) or object()
+        ),
     )
 
     report = Agent._Agent__handle_execute_command(
@@ -524,9 +559,9 @@ def test_handle_execute_command_runs_jobs_async(monkeypatch):
         {"command": "run_job", "args": {"job_id": 3, "repository_id": 8}},
     )
 
-    assert async_calls == [("run_job", {"job_id": 3, "repository_id": 8})]
-    assert report.state.name == "success"
-    assert report.log == "Started job 3 on repository 8"
+    assert async_calls == []
+    assert report.state.name == "failed"
+    assert report.log == "Could not start run_job: operation_uuid is required"
 
 
 def test_set_repository_keeps_managed_location_without_rewrite_flag(monkeypatch):
@@ -712,10 +747,130 @@ def test_cancel_restore_fails_when_no_restic_pid_becomes_available(monkeypatch):
     assert cancel_calls == []
 
 
+def test_cancel_job_only_marks_operation_cancelled_after_process_was_killed():
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    AgentReport.running_operations = {}
+    job_report = AgentReport.job_report(
+        job_id=31,
+        repository_id=2,
+        operation_uuid="cancel-job-31",
+    )
+    job_report.data["pid"] = 731
+
+    class MissingProcessResticApi:
+        @staticmethod
+        def cancel_process(pid):
+            assert pid == 731
+            return False
+
+    agent._Agent__resticapi = MissingProcessResticApi()
+
+    report = Agent.cmd_cancel_job(agent, job_id=31, operation_uuid="cancel-job-31")
+
+    assert report.final_state.name == "failed"
+    assert job_report.final_state.name == "success"
+    assert "no longer running" in report.log
+
+
+def test_cancel_restore_marks_operation_cancelled_after_process_was_killed():
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    AgentReport.running_operations = {}
+    restore_report = AgentReport.restore_report(
+        report_uuid="cancel-restore-32",
+        job_id=32,
+        repository_id=2,
+    )
+    AgentReport.process_restore_status(
+        None,
+        operation_uuid="cancel-restore-32",
+        pid=732,
+    )
+
+    class RunningProcessResticApi:
+        @staticmethod
+        def cancel_process(pid):
+            assert pid == 732
+            return True
+
+    agent._Agent__resticapi = RunningProcessResticApi()
+
+    report = Agent.cmd_cancel_restore(agent, operation_uuid="cancel-restore-32")
+
+    assert report.final_state.name == "success"
+    assert restore_report.final_state.name == "cancelled"
+
+
+def _queue_operation(agent, operation_uuid):
+    release = Event()
+    started = Event()
+    queued_ran = Event()
+    execution = ExecutionManager(max_workers=1, max_pending=2)
+
+    def blocked():
+        started.set()
+        release.wait()
+
+    execution.submit(blocked)
+    assert started.wait(1)
+    execution.submit(queued_ran.set, operation_uuid=operation_uuid)
+    agent._Agent__execution = execution
+    return execution, release, queued_ran
+
+
+def test_cancel_job_finishes_successfully_cancelled_queued_operation():
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    AgentReport.running_operations = {}
+    execution, release, queued_ran = _queue_operation(agent, "queued-job-operation")
+
+    report = Agent.cmd_cancel_job(
+        agent,
+        job_id=41,
+        operation_uuid="queued-job-operation",
+    )
+
+    terminal = AgentReport.finished_reports[-1]
+    assert report.final_state == AgentReportState.success
+    assert terminal.uuid == "queued-job-operation"
+    assert terminal.type == AgentReportType.backup
+    assert terminal.final_state == AgentReportState.cancelled
+    assert terminal.ended is not None
+    assert not queued_ran.is_set()
+    release.set()
+    execution.shutdown()
+
+
+def test_cancel_restore_finishes_successfully_cancelled_queued_operation():
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    AgentReport.running_operations = {}
+    execution, release, queued_ran = _queue_operation(agent, "queued-restore-operation")
+
+    report = Agent.cmd_cancel_restore(agent, operation_uuid="queued-restore-operation")
+
+    terminal = AgentReport.finished_reports[-1]
+    assert report.final_state == AgentReportState.success
+    assert terminal.uuid == "queued-restore-operation"
+    assert terminal.type == AgentReportType.restore
+    assert terminal.final_state == AgentReportState.cancelled
+    assert terminal.ended is not None
+    assert not queued_ran.is_set()
+    release.set()
+    execution.shutdown()
+
+
 def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     archive_data = bz2.compress(b"restic-binary")
     checksum = hashlib.sha256(archive_data).hexdigest()
     calls = []
+    smoke_calls = []
+    replacements = []
 
     class Response:
         def __init__(self, content=b"", text=""):
@@ -732,10 +887,26 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
             return Response(text=f"{checksum} restic_0.18.1_linux_amd64.bz2\n")
         return Response(content=archive_data)
 
+    def fake_run(command, **kwargs):
+        candidate_path = command[0]
+        smoke_calls.append((command, kwargs))
+        with open(candidate_path, "rb") as candidate:
+            assert candidate.read() == b"restic-binary"
+        assert os.access(candidate_path, os.X_OK)
+        return SimpleNamespace(returncode=0, stdout="restic 0.18.1 compiled with go", stderr="")
+
+    real_replace = os.replace
+
+    def fake_replace(source, destination):
+        replacements.append((source, destination))
+        real_replace(source, destination)
+
     monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
     monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
     monkeypatch.setattr(agent_module.requests, "get", fake_get)
+    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(agent_module.os, "replace", fake_replace)
 
     agent = Agent.__new__(Agent)
     Agent._Agent__check_restic_binary(agent)
@@ -743,6 +914,12 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
     assert binary_path.read_bytes() == b"restic-binary"
     assert os.access(binary_path, os.X_OK)
+    assert len(smoke_calls) == 1
+    assert smoke_calls[0][0][1] == "version"
+    assert smoke_calls[0][1]["timeout"] == 5
+    assert replacements[0][1] == str(binary_path)
+    assert os.path.dirname(replacements[0][0]) == str(binary_path.parent)
+    assert list(binary_path.parent.iterdir()) == [binary_path]
     assert calls == [
         "https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2",
         "https://github.com/restic/restic/releases/download/v0.18.1/SHA256SUMS",
@@ -773,3 +950,115 @@ def test_restic_download_rejects_sha256sum_mismatch(tmp_path, monkeypatch):
         assert "checksum mismatch" in str(exc)
     else:
         raise AssertionError("checksum mismatch should fail restic download")
+
+    binary_folder = tmp_path / "bin"
+    assert list(binary_folder.iterdir()) == []
+
+
+def test_existing_restic_binary_requires_expected_version_without_download(tmp_path, monkeypatch):
+    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path.parent.mkdir()
+    binary_path.write_bytes(b"existing-restic")
+    binary_path.chmod(0o755)
+    smoke_calls = []
+
+    def fake_run(command, **kwargs):
+        smoke_calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout="restic 0.18.1 compiled with go", stderr="")
+
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
+    monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
+    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        agent_module.requests,
+        "get",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("network must not be used")),
+    )
+
+    Agent._Agent__check_restic_binary(Agent.__new__(Agent))
+
+    assert smoke_calls == [
+        (
+            [str(binary_path), "version"],
+            {"capture_output": True, "text": True, "timeout": 5, "check": False},
+        )
+    ]
+    assert binary_path.read_bytes() == b"existing-restic"
+
+
+def test_existing_restic_binary_with_wrong_version_is_replaced(tmp_path, monkeypatch):
+    archive_data = bz2.compress(b"replacement-restic")
+    checksum = hashlib.sha256(archive_data).hexdigest()
+    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path.parent.mkdir()
+    binary_path.write_bytes(b"old-restic")
+    binary_path.chmod(0o755)
+
+    class Response:
+        def __init__(self, content=b"", text=""):
+            self.content = content
+            self.text = text
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    def fake_get(url, timeout):
+        if url.endswith("SHA256SUMS"):
+            return Response(text=f"{checksum} restic_0.18.1_linux_amd64.bz2\n")
+        return Response(content=archive_data)
+
+    def fake_run(command, **kwargs):
+        version = "0.17.3" if command[0] == str(binary_path) else "0.18.1"
+        return SimpleNamespace(returncode=0, stdout=f"restic {version} compiled with go", stderr="")
+
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
+    monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
+    monkeypatch.setattr(agent_module.requests, "get", fake_get)
+    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+
+    Agent._Agent__check_restic_binary(Agent.__new__(Agent))
+
+    assert binary_path.read_bytes() == b"replacement-restic"
+    assert list(binary_path.parent.iterdir()) == [binary_path]
+
+
+def test_failed_restic_smoke_test_preserves_existing_binary(tmp_path, monkeypatch):
+    archive_data = bz2.compress(b"broken-replacement")
+    checksum = hashlib.sha256(archive_data).hexdigest()
+    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path.parent.mkdir()
+    binary_path.write_bytes(b"partial-existing-restic")
+    binary_path.chmod(0o755)
+
+    class Response:
+        content = archive_data
+        text = f"{checksum} restic_0.18.1_linux_amd64.bz2\n"
+
+        @staticmethod
+        def raise_for_status():
+            return None
+
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
+    monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
+    monkeypatch.setattr(agent_module.requests, "get", lambda url, timeout: Response())
+    monkeypatch.setattr(
+        agent_module.subprocess,
+        "run",
+        lambda command, **kwargs: SimpleNamespace(
+            returncode=1, stdout="", stderr="invalid executable"
+        ),
+    )
+
+    try:
+        Agent._Agent__check_restic_binary(Agent.__new__(Agent))
+    except AgentExeption as exc:
+        assert "failed version check" in str(exc)
+    else:
+        raise AssertionError("failed smoke test should fail restic download")
+
+    assert binary_path.read_bytes() == b"partial-existing-restic"
+    assert list(binary_path.parent.iterdir()) == [binary_path]

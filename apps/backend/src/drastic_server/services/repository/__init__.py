@@ -1,12 +1,16 @@
 from drastic_server.services.repository.restic import (
-    delete_native_repository,
+    NativeRepositoryQuarantine,
+    delete_quarantined_native_repository,
     ensure_native_repository_initialized,
     generate_native_repository_password,
     generate_native_repository_path,
     init_native_repository,
     native_repository_has_locks,
     native_repository_storage_path,
+    quarantine_native_repository,
+    reconcile_native_repository_quarantine,
     restic_binary_path,
+    restore_quarantined_native_repository,
 )
 from drastic_server.services.repository.secrets import (
     RepositorySecretError,
@@ -27,10 +31,11 @@ from drastic_server.services.repository.secrets import (
 
 __all__ = [
     "RepositorySecretError",
+    "NativeRepositoryQuarantine",
     "agent_repository_assignment",
     "create_user_recovery_key",
     "decrypt_recovery_key",
-    "delete_native_repository",
+    "delete_quarantined_native_repository",
     "ensure_agent_envelopes_from_user_recovery_key",
     "ensure_agent_recovery_envelope",
     "ensure_agent_secret_envelope",
@@ -42,7 +47,10 @@ __all__ = [
     "init_native_repository",
     "native_repository_has_locks",
     "native_repository_storage_path",
+    "quarantine_native_repository",
+    "reconcile_native_repository_quarantine",
     "restic_binary_path",
+    "restore_quarantined_native_repository",
     "repository_password_envelope",
     "reveal_repository_recovery_key",
     "store_agent_restic_access_key",

@@ -50,6 +50,7 @@ Jobs:
 - Python backend tests in `apps/backend`.
 - Python agent tests in `apps/agent`.
 - Python common library tests in `libs/python/common`.
+- MariaDB migration baseline upgrade/downgrade round-trip through `apps/backend/scripts/test-migrations.sh`.
 - Frontend build in `apps/frontend`.
 - Documentation build with MkDocs.
 - Release tooling shell syntax checks.

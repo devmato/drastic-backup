@@ -17,7 +17,7 @@ from drastic_server.models.job import (
     JobSchedule,
     JobType,
 )
-from drastic_server.models.notification import NotificationConfig
+from drastic_server.models.notification import NotificationConfig, NotificationDelivery
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
 from drastic_server.models.secret import AgentSecretEnvelope, UserSecret, UserSecretType
@@ -42,6 +42,7 @@ __all__ = [
     "JobSchedule",
     "JobType",
     "NotificationConfig",
+    "NotificationDelivery",
     "Repository",
     "Retention",
     "UserSecret",

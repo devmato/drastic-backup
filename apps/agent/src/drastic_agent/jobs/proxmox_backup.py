@@ -38,8 +38,26 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
         report.set_data("guests", [guest["vmid"] for guest in guests])
         report.log_message(f"Launching Proxmox backup for {len(guests)} guest(s)")
 
+        completed_guests = []
+        failed_guests = []
         for guest in guests:
-            self._backup_qemu_guest(report, api, driver, guest)
+            vmid = int(guest["vmid"])
+            try:
+                self._backup_qemu_guest(report, api, driver, guest)
+                completed_guests.append(vmid)
+            except Exception as exc:
+                failed_guests.append({"vmid": vmid, "error": str(exc)})
+                report.log_message(f"Proxmox backup failed for VM {vmid}: {exc}")
+
+        report.set_data("completed_guests", completed_guests)
+        report.set_data("failed_guests", failed_guests)
+        if failed_guests:
+            report.set_data(
+                "partial_failure",
+                bool(completed_guests) or bool(report.data.get("partial_failure")),
+            )
+            failed_ids = ", ".join(str(item["vmid"]) for item in failed_guests)
+            raise ProxmoxError(f"Backup failed for Proxmox guest(s): {failed_ids}")
 
     def _backup_qemu_guest(self, report, api, driver, guest):
         vmid = int(guest["vmid"])
@@ -109,8 +127,12 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 callback_pid=True,
                 callback_throttle=500,
             )
-        except Exception:
-            self.finish_artifact(artifact, state=AgentOperationState.failed)
+        except Exception as exc:
+            self.finish_artifact(
+                artifact,
+                state=AgentOperationState.failed,
+                snapshot_id=getattr(exc, "snapshot_id", None),
+            )
             raise
 
         report.process_job_status(status=restic_status, job_id=self.job["id"])
@@ -147,8 +169,13 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 callback_pid=True,
                 callback_throttle=500,
             )
-        except Exception:
-            self.finish_artifact(manifest_artifact, state=AgentOperationState.failed)
+        except Exception as exc:
+            self.finish_artifact(
+                manifest_artifact,
+                state=AgentOperationState.failed,
+                snapshot_id=getattr(exc, "snapshot_id", None),
+            )
+            report.set_data("partial_failure", True)
             raise
 
         report.process_job_status(status=manifest_status, job_id=self.job["id"])

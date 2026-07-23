@@ -23,7 +23,7 @@ docker compose -f docker-compose.yaml --env-file .env.prod up -d
 
 The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. For releases, prefer matching version tags such as `v0.1.0` over `latest`.
+The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. Set both images and `DRASTIC_AGENT_ARTIFACT_TAG` to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 
@@ -72,7 +72,25 @@ DRASTIC_PUBLIC_URL=https://backup.example.net
 
 The public URL is used for generated repository URLs and agent registration responses. The install page uses it when present and otherwise falls back to `window.location.origin`.
 
-The production examples default `DRASTIC_JWT_COOKIE_SECURE=false` so installations that are only reachable through a VPN can still use HTTP. When serving dRastic through HTTPS, set `DRASTIC_JWT_COOKIE_SECURE=true` so browsers only send login cookies over HTTPS.
+The backend host port binds to `127.0.0.1` by default. Keep `DRASTIC_HOST_BACKEND_ADDRESS=127.0.0.1` when the reverse proxy runs on the same host. Set it to a specific private address only when a proxy on another host must connect; avoid `0.0.0.0` unless host firewalling provides the intended restriction.
+
+The proxy must preserve the original `Host`, set `X-Forwarded-Proto` to the client scheme, and support WebSocket upgrades (`Upgrade` and `Connection` headers) on the same routes as normal HTTP traffic. Use proxy timeouts long enough for backup and restore requests. Incorrect forwarded scheme handling can produce HTTP URLs or break secure-cookie authentication.
+
+For example, an Nginx proxy location needs at least:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:5050;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+    proxy_read_timeout 300s;
+}
+```
+
+The HTTPS production examples and generator set `DRASTIC_JWT_COOKIE_SECURE=true`, so browsers only send login cookies over HTTPS. Set it to `false` only for an intentionally HTTP-only trusted deployment, and use an `http://` public URL in that case.
 
 ## Homelab Exposure
 
@@ -90,3 +108,5 @@ docker compose -f docker-compose.agent.yaml --env-file .env.prod up -d
 ```
 
 Database migrations run during backend startup.
+
+The current pre-production release uses a consolidated `init` Alembic baseline for a fresh database. No upgrade migration from older development schemas is provided because no production deployment required compatibility when the baseline was replaced. Recreate old development or test databases; do not point this baseline at an older schema and assume an in-place upgrade is supported.

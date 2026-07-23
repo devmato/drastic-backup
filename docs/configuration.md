@@ -42,10 +42,12 @@ Supported environments are `dev`, `test`, and `prod`. Generate local env files w
 | `DRASTIC_ASSET_CACHE_PATH` | `/opt/drastic-server/asset-cache` | Backend cache path for release assets. |
 | `DRASTIC_PUBLIC_URL` | empty | Optional canonical public URL. The web UI falls back to `window.location.origin` when this is empty. |
 | `DRASTIC_BIND_BACKEND_PORT` | `5050` | Backend listen port inside the container. |
+| `DRASTIC_HOST_BACKEND_ADDRESS` | `127.0.0.1` | Host address on which Compose publishes the backend. Use a specific private address only for a remote reverse proxy. |
 | `DRASTIC_HOST_BACKEND_PORT` | `5050` | Host port exposed by Compose. |
 | `DRASTIC_REST_SERVER_URL` | `http://rest-server:8000` | Internal rest-server URL used by the backend. |
+| `DRASTIC_REST_SERVER_VERSION` | `0.13.0` | Explicit integrated rest-server container version. Review and change intentionally during upgrades. |
 | `DRASTIC_DOCS_SITE_PATH` | `/app/docs-site` | Path to the built documentation site served under `/docs/`. |
-| `DRASTIC_JWT_COOKIE_SECURE` | `false` | Set to `true` when serving dRastic through HTTPS so browsers only send login cookies over HTTPS. Keep `false` for HTTP-only VPN deployments. |
+| `DRASTIC_JWT_COOKIE_SECURE` | `false` (Compose fallback) | Production HTTPS examples set this to `true`. Use `false` only for HTTP-only trusted deployments. |
 
 ## Storage Paths
 

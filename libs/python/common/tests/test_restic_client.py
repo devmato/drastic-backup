@@ -1,11 +1,16 @@
 import os
 import subprocess
+import threading
 from shutil import which
 
 import pytest
 
 from drastic_common.restic.client import ResticApi
-from drastic_common.restic.exceptions import ResticFailedError
+from drastic_common.restic.exceptions import (
+    ResticCancelledError,
+    ResticFailedError,
+    ResticTimeoutError,
+)
 from drastic_common.restic.repository import ResticRepository
 
 
@@ -144,6 +149,23 @@ def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
     assert "cannot export a snapshot in PVE::Storage::LvmThinPlugin" in str(exc_info.value)
 
 
+def test_backup_stdin_from_command_attaches_snapshot_id_to_producer_failure(monkeypatch):
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
+        if cmd[0] == "vzdump":
+            return _FakeProducerProcess(cmd, return_code=2, stderr_chunks=[b"cleanup failed\n"])
+        return _FakeResticProcess(cmd, stdin=stdin)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    with pytest.raises(ResticFailedError) as exc_info:
+        ResticApi(binary_path="restic").backup_stdin_from_command(
+            command=["vzdump", "101", "--stdout"],
+            stdin_filename="archive.vma",
+        )
+
+    assert exc_info.value.snapshot_id == "snap-1"
+
+
 def test_snapshots_builds_command_with_job_uuid_tag(monkeypatch):
     popen_calls = []
 
@@ -254,6 +276,20 @@ def test_forget_prunes_by_default(monkeypatch):
     assert result == [{"remove": [{"id": "snap-1"}]}]
 
 
+def test_prune_builds_separate_command(monkeypatch):
+    popen_calls = []
+
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
+        popen_calls.append(cmd)
+        return _FakeResticProcess(cmd, stdin=stdin)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ResticApi(binary_path="restic").prune()
+
+    assert popen_calls == [["restic", "--json", "prune"]]
+
+
 def test_ls_builds_command_for_recursive_snapshot_path(monkeypatch):
     popen_calls = []
 
@@ -315,8 +351,15 @@ def test_restore_builds_command_with_target_and_include_paths(monkeypatch):
         "/etc/hosts",
         "--include",
         "/var/www",
+        "--overwrite",
+        "never",
     ]
     assert callback_calls[0]["kwargs"] == {"report_uuid": "report-1", "pid": 3301}
+    assert callback_calls[0]["status"] is None
+    assert callback_calls[-1] == {
+        "status": None,
+        "kwargs": {"report_uuid": "report-1", "pid": None},
+    }
     assert result == [
         {"message_type": "status", "files_done": 1},
         {"message_type": "summary", "files_restored": 1},
@@ -330,6 +373,194 @@ def test_restore_rejects_empty_include_paths():
             target="/restore",
             include_paths=[],
         )
+
+
+def test_restore_maps_overwrite_policy_to_restic(monkeypatch):
+    popen_calls = []
+
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
+        popen_calls.append(cmd)
+        return _FakeResticProcess(cmd, stdin=stdin)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+
+    ResticApi(binary_path="restic").restore(
+        snapshot_id="snap-1",
+        target="/restore",
+        include_paths=["/etc/hosts"],
+        overwrite_policy="overwrite",
+    )
+
+    assert popen_calls[0][-2:] == ["--overwrite", "always"]
+
+
+def _write_executable(path, source):
+    path.write_text(f"#!/usr/bin/env python3\n{source}", encoding="utf-8")
+    path.chmod(0o755)
+
+
+def test_cancellation_monitors_silent_process_and_cleans_registry(tmp_path):
+    restic = tmp_path / "restic"
+    _write_executable(restic, "import time\ntime.sleep(60)\n")
+    cancellation_event = threading.Event()
+    api = ResticApi(
+        binary_path=str(restic),
+        cancellation_event=cancellation_event,
+        terminate_grace=0.01,
+    )
+    timer = threading.Timer(0.1, cancellation_event.set)
+    timer.start()
+    try:
+        with pytest.raises(ResticCancelledError):
+            api.snapshots()
+    finally:
+        timer.cancel()
+
+    assert api._processes == {}
+
+
+def test_timeout_monitors_silent_process_and_cleans_registry(tmp_path):
+    restic = tmp_path / "restic"
+    _write_executable(restic, "import time\ntime.sleep(60)\n")
+    api = ResticApi(binary_path=str(restic), timeout=0.1, terminate_grace=0.01)
+
+    with pytest.raises(ResticTimeoutError):
+        api.snapshots()
+
+    assert api._processes == {}
+
+
+def test_pipeline_timeout_stops_producer_and_restic(tmp_path):
+    producer_pid = tmp_path / "producer.pid"
+    restic_pid = tmp_path / "restic.pid"
+    producer = tmp_path / "producer"
+    restic = tmp_path / "restic"
+    _write_executable(
+        producer,
+        f"import os, time\nopen({str(producer_pid)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+    )
+    _write_executable(
+        restic,
+        f"import os, time\nopen({str(restic_pid)!r}, 'w').write(str(os.getpid()))\ntime.sleep(60)\n",
+    )
+    api = ResticApi(binary_path=str(restic), timeout=0.2, terminate_grace=0.01)
+
+    with pytest.raises(ResticTimeoutError):
+        api.backup_stdin_from_command([str(producer)], "backup.data")
+
+    for pid_file in (producer_pid, restic_pid):
+        pid = int(pid_file.read_text(encoding="utf-8"))
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    assert api._processes == {}
+
+
+def test_pipeline_restic_exit_stops_blocking_producer(tmp_path):
+    producer_pid_path = tmp_path / "producer.pid"
+    producer = tmp_path / "producer"
+    restic = tmp_path / "restic"
+    _write_executable(
+        producer,
+        (
+            "import os, signal, time\n"
+            f"open({str(producer_pid_path)!r}, 'w').write(str(os.getpid()))\n"
+            "signal.signal(signal.SIGPIPE, signal.SIG_IGN)\n"
+            "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+            "while True:\n"
+            "    try:\n"
+            "        os.write(1, b'x' * 65536)\n"
+            "    except BrokenPipeError:\n"
+            "        time.sleep(60)\n"
+        ),
+    )
+    _write_executable(
+        restic,
+        (
+            "import os, time\n"
+            f"while not os.path.exists({str(producer_pid_path)!r}):\n"
+            "    time.sleep(0.001)\n"
+            "raise SystemExit(1)\n"
+        ),
+    )
+    api = ResticApi(binary_path=str(restic), terminate_grace=0.01)
+    errors = []
+
+    def run_backup():
+        try:
+            api.backup_stdin_from_command([str(producer)], "backup.data")
+        except Exception as exc:  # noqa: BLE001 - the worker must report every failure
+            errors.append(exc)
+
+    worker = threading.Thread(target=run_backup, daemon=True)
+    worker.start()
+    worker.join(timeout=1.0)
+    completed_without_external_cleanup = not worker.is_alive()
+
+    if not completed_without_external_cleanup and producer_pid_path.exists():
+        os.killpg(int(producer_pid_path.read_text(encoding="utf-8")), 9)
+        worker.join(timeout=1.0)
+
+    assert completed_without_external_cleanup
+    assert len(errors) == 1
+    assert isinstance(errors[0], ResticFailedError)
+    producer_pid = int(producer_pid_path.read_text(encoding="utf-8"))
+    with pytest.raises(ProcessLookupError):
+        os.kill(producer_pid, 0)
+    assert api._processes == {}
+
+
+def test_pipeline_allows_producer_cleanup_after_successful_restic_exit(tmp_path):
+    cleanup_marker = tmp_path / "producer-cleanup"
+    producer = tmp_path / "producer"
+    restic = tmp_path / "restic"
+    _write_executable(
+        producer,
+        (
+            "import os, time\n"
+            "os.write(1, b'backup stream')\n"
+            "os.close(1)\n"
+            "time.sleep(0.1)\n"
+            f"open({str(cleanup_marker)!r}, 'w').write('complete')\n"
+        ),
+    )
+    _write_executable(
+        restic,
+        (
+            "import sys\n"
+            "sys.stdin.buffer.read()\n"
+            "print('{\"message_type\":\"summary\",\"snapshot_id\":\"snap-cleanup\"}')\n"
+        ),
+    )
+
+    result = ResticApi(binary_path=str(restic), terminate_grace=0.01).backup_stdin_from_command(
+        [str(producer)], "backup.data"
+    )
+
+    assert result["snapshot_id"] == "snap-cleanup"
+    assert cleanup_marker.read_text(encoding="utf-8") == "complete"
+
+
+def test_cancel_process_uses_configured_termination_grace():
+    class ManagedProcess:
+        def __init__(self):
+            self.terminate_calls = []
+            self.killed = False
+
+        def terminate(self, grace):
+            self.terminate_calls.append(grace)
+
+        def kill(self):
+            self.killed = True
+
+    ResticApi._processes.clear()
+    process = ManagedProcess()
+    ResticApi._processes[123] = process
+    api = ResticApi(binary_path="restic", terminate_grace=0.25)
+
+    assert api.cancel_process(123) is True
+    assert process.terminate_calls == [0.25]
+    assert process.killed is False
+    assert api.cancel_process(123) is False
 
 
 def test_real_restic_backup_restore_smoke(tmp_path):

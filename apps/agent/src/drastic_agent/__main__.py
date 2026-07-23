@@ -1,6 +1,7 @@
 import atexit
 import logging
 import os
+import signal
 import sys
 
 import click
@@ -35,6 +36,8 @@ def main():
         agent = Agent()
         agent.init_config()
         atexit.register(agent.shutdown)
+        signal.signal(signal.SIGTERM, lambda signum, frame: agent.shutdown())
+        signal.signal(signal.SIGINT, lambda signum, frame: agent.shutdown())
         agent.startup()
     except AgentExeption as e:
         logging.critical(f"Critical error during start: {e}")

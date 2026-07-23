@@ -13,6 +13,11 @@ def is_agent_timeout_response(response):
     return bool((response or {}).get("data", {}).get("timeout"))
 
 
+def is_agent_conflict_response(response):
+    log = str((response or {}).get("log") or "").lower()
+    return "resource is busy" in log or "execution capacity" in log
+
+
 def _load_operation_response(payload):
     response = AgentOperationSchema().load(payload)
     response["log"] = "\n".join(log.get("message", "") for log in response.get("logs", []))
@@ -24,7 +29,7 @@ class AgentService:
     def failed_command_report(log, *, timeout=False):
         response = AgentOperationSchema().load(
             {
-                "state": AgentOperationState.failed,
+                "state": AgentOperationState.running if timeout else AgentOperationState.failed,
                 "type": AgentOperationType.command,
                 "data": {"timeout": timeout},
                 "logs": [{"sequence": 1, "level": "error", "message": log}],
@@ -38,7 +43,7 @@ class AgentService:
         return parse_int_value(current_app.config.get("COMMAND_TIMEOUT_SECONDS"), 60)
 
     @classmethod
-    def send_command(cls, agent, command, await_response=True, **kwargs):
+    def send_command(cls, agent, command, await_response=True, timeout=None, **kwargs):
         command = agent_command_value(command)
         if not agent.online:
             return cls.failed_command_report("Agent is offline")
@@ -51,7 +56,7 @@ class AgentService:
                         {"command": command, "args": kwargs},
                         namespace="/agent",
                         to=agent.session.request_sid,
-                        timeout=cls.command_timeout(),
+                        timeout=timeout or cls.command_timeout(),
                     )
                 )
 
@@ -74,7 +79,7 @@ class AgentService:
 
     @classmethod
     def run_restore(cls, agent, **kwargs):
-        return cls.send_command(agent, AgentCommandName.run_restore, await_response=False, **kwargs)
+        return cls.send_command(agent, AgentCommandName.run_restore, timeout=5, **kwargs)
 
     @classmethod
     def cancel_restore(cls, agent, **kwargs):
@@ -113,7 +118,7 @@ class AgentService:
             repository_id=repository_id,
             operation_uuid=operation_uuid,
             run_options=run_options or {},
-            await_response=False,
+            timeout=5,
         )
 
     @classmethod
@@ -129,8 +134,10 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.delete_job, job_id=job_id)
 
     @classmethod
-    def cancel_job(cls, agent, job_id):
-        return cls.send_command(agent, AgentCommandName.cancel_job, job_id=job_id)
+    def cancel_job(cls, agent, job_id, operation_uuid=None):
+        return cls.send_command(
+            agent, AgentCommandName.cancel_job, job_id=job_id, operation_uuid=operation_uuid
+        )
 
     @classmethod
     def unlock_repository(cls, agent, repository_id, operation_uuid=None):
@@ -139,7 +146,7 @@ class AgentService:
             AgentCommandName.unlock_repository,
             repository_id=repository_id,
             operation_uuid=operation_uuid,
-            await_response=False,
+            timeout=5,
         )
 
     @classmethod
@@ -150,6 +157,7 @@ class AgentService:
             repository_id=repository_id,
             read_data_subset=read_data_subset,
             operation_uuid=operation_uuid,
+            timeout=5,
         )
 
     @classmethod
@@ -202,8 +210,10 @@ class AgentCommand:
     def delete_job(self, job_id):
         return AgentService.delete_job(self.agent, job_id=job_id)
 
-    def cancel_job(self, job_id):
-        return AgentService.cancel_job(self.agent, job_id=job_id)
+    def cancel_job(self, job_id, operation_uuid=None):
+        return AgentService.cancel_job(
+            self.agent, job_id=job_id, operation_uuid=operation_uuid
+        )
 
     def unlock_repository(self, repository_id, operation_uuid=None):
         return AgentService.unlock_repository(

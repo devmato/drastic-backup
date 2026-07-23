@@ -23,5 +23,12 @@ class UserChangePasswordInputSchema(Schema):
     new_password = fields.String(required=True, validate=validate.Length(min=8))
 
 
+class UserRecoveryExportInputSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    password = fields.String(required=True, validate=validate.Length(min=1))
+
+
 class NeedsInitResponseSchema(Schema):
     needs_init = fields.Boolean(required=True)

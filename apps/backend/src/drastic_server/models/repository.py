@@ -17,18 +17,23 @@ class Repository(IdMixin, TimeMixin, db.Model):
     KIND_CUSTOM = RepositoryKind.custom.value
     KIND_NATIVE = RepositoryKind.native.value
 
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("repositories"))
     name = db.Column(db.String(255), nullable=False)
     kind = db.Column(db.String(32), nullable=False, default=KIND_CUSTOM)
     location = db.Column(db.String(255), nullable=False)
-    password_secret_id = db.Column(db.Integer, db.ForeignKey("user_secrets.id"), nullable=True)
+    password_secret_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user_secrets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     password_secret = db.relationship("UserSecret", foreign_keys=[password_secret_id])
     restic_id = db.Column(db.String(255), nullable=True)
-    # agent_id = db.Column(db.Integer, db.ForeignKey('agents.id'), nullable=False)
-    # agent = db.relationship('Agent', foreign_keys=[agent_id], backref=db.backref('repositories') )
-    # environment = db.Column(db.JSON, nullable=False, default=[])
-    _environment = db.Column(db.JSON, nullable=True)
+    _environment = db.Column("encrypted_environment", db.JSON, nullable=True)
 
     @property
     def environment(self):

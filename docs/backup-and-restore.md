@@ -20,7 +20,9 @@ When a job is run manually, dRastic also synchronizes repository access to the s
 
 If repository secret operations are locked, enter your account password in the confirmation dialog. This restores the recovery key in browser memory without leaving the current page.
 
-Agent synchronization hydrates assigned restic access keys into agent memory. Agents do not store restic access keys in their data directory; after an agent process restart, backend sync must complete before repository jobs can access their repositories. If a local restic access key needs to be recreated, the agent requests its existing recovery envelope from the backend and decrypts it locally. The password confirmation dialog is only needed when the backend must create or refresh a user-protected repository secret or a missing agent-specific envelope.
+Agent synchronization stores repository configuration and an agent-encrypted restic access key in the agent data directory; the plaintext key is kept only in memory. After a restart, the agent can decrypt an already synchronized key with its persistent private key without contacting the backend.
+
+This permits an already synchronized schedule to run while the backend is offline only for a custom repository that remains reachable directly from the agent. The local agent identity and encrypted repository key must still be present. Native repositories always use the backend's authenticated restic proxy, so their jobs fail while the backend or proxy path is unavailable. Missing or invalid local key material also requires a successful backend synchronization or reprovisioning before a job can run.
 
 ## Backup Job Types
 
@@ -153,8 +155,8 @@ Actions are a high-trust Homelab feature. Command actions run shell commands on 
 Hooks:
 
 - `start` -- Runs before repository initialization and backup execution.
-- `error` -- Runs when repository initialization or backup execution fails.
-- `success` -- Runs after backup and optional retention finished without failure.
+- `error` -- Runs when repository preparation, a prerequisite, a start action, or backup execution fails.
+- `success` -- Runs after the backup completed and post-backup processing was attempted. A warning from check, retention, or statistics does not suppress this hook.
 - `end` -- Runs at the end of the job regardless of success or failure.
 
 Action modules:
@@ -173,6 +175,16 @@ Docker action properties:
 - `command` -- Command executed in the container when `action` is `command`.
 
 Actions use `DRASTIC_TASK_TIMEOUT_SECONDS` for command execution timeouts.
+
+## Backup Results
+
+Backup reports use these final states:
+
+- `success` -- The backup and all configured checks, retention, repository statistics, and hooks completed successfully.
+- `warning` -- The backup completed, but a post-backup check, retention, statistics update, `success` hook, or post-backup `end` hook failed. Inspect the report because a retention warning can follow partially completed cleanup.
+- `failed` -- Repository preparation, prerequisites, a `start` hook, or the backup itself failed. Partial multi-artifact backups can still contain individually successful snapshots and are marked as partial failures.
+
+A failed post-backup repository check changes the backup result to `warning` and skips retention for that run. Repository statistics plus the `success` and `end` hooks are still attempted. Retention failures also produce a warning rather than changing a completed backup to failed. Hook failures do not prevent the `end` hook from being attempted; failures before backup completion remain failed, while failures after completion are warnings.
 
 ## Create a File Backup Job
 
@@ -207,7 +219,9 @@ Schedules connect a job, repository, and optional retention policy.
 
 Use schedules for recurring backups. Run jobs manually for one-off validation after creating or changing a job.
 
-Agents execute schedules from their last successful synchronization. If the server is unreachable, already synchronized schedules can continue running on the agent; server-side changes take effect after the agent reconnects and synchronizes.
+Agents execute schedules from their last successful synchronization. The agent persistently claims each matching UTC minute slot, so a restart does not run the same schedule slot twice. A slot rejected because execution capacity or the job/repository resource is busy is recorded locally as `skipped` and is not retried. Interrupted claimed or started slots are marked failed after restart.
+
+Scheduling has no catch-up behavior: if the agent was stopped or otherwise missed a cron minute, that occurrence is not run later. Server-side schedule changes take effect only after the next successful synchronization. Offline execution also has the repository limitations described under [Assign a Repository](#assign-a-repository).
 
 Schedules can optionally run a repository check after a successful backup. A basic check reads repository metadata only. Set `read_data` to values such as `1/10`, `5%`, or `100%` when restic should also verify stored data.
 
@@ -223,12 +237,112 @@ Use manual checks from the repository page when validating a new repository, aft
 
 Retention policies define how successful job runs are kept after backups. Keep policies conservative until restores have been validated for the repository.
 
-The agent tracks job runs and their backup artifacts. Retention keeps runs according to the configured `keep_last`, `keep_hourly`, `keep_weekly`, `keep_monthly`, and `keep_yearly` values, then forgets snapshots belonging to pruned runs.
+The agent tracks job runs and their backup artifacts. Retention considers `success` and `warning` runs for `keep_last`, `keep_hourly`, `keep_weekly`, `keep_monthly`, and `keep_yearly`. Successful artifacts from a marked partial failed backup can also be removed, but the failed run itself is not treated as a retained successful run.
 
-Retention runs `restic forget --prune` for removed artifacts, so removed snapshots also free unused repository data. Prune can take longer than metadata-only retention and may hold repository locks while it runs.
+Before forgetting a snapshot, the agent reconciles the local artifact with the repository and requires matching `operation_uuid` and `artifact_uuid` tags. A missing snapshot is recorded as already absent. A snapshot with missing or mismatched tags is skipped and makes the retention report a warning rather than risking deletion of an unrelated snapshot.
+
+Retention runs snapshot `forget` without prune, records the forgotten artifacts, and then runs `prune` separately. If prune fails, a retry runs prune without forgetting the same snapshots again. Prune can take longer and may hold repository locks while it runs.
 
 ## Restores
 
 Restore operations run through the agent. The agent needs access to the selected repository and enough filesystem permissions for the restore target.
 
-Before restoring into production paths, prefer a temporary restore location and validate the restored data.
+The default `fail_if_exists` policy refuses to start when a selected destination already exists. `overwrite` must be requested explicitly, the web UI requires confirmation, and existing files may be replaced. Restore targets and include paths are normalized; the filesystem root, traversal segments, and symlink components in the target path are rejected.
+
+If restic fails after writing has started, the operation remains `failed` and is marked with `partial_failure` and `destination_may_contain_restored_data`. dRastic does not roll back files already written. Inspect or clean the destination before retrying. Before restoring into production paths, prefer a temporary restore location and validate the restored data.
+
+## Create a User Recovery Export
+
+A signed-in user can generate a Recovery Export repeatedly from the user menu after re-entering the account password. The downloaded ZIP contains a standalone `recovery.html` that works offline and includes plaintext repository passwords, provider environment values, and configuration for agents and assignments, repositories, retention policies, jobs and actions, and schedules.
+
+Treat the export as secret material. Store it immediately as an encrypted attachment in Vaultwarden or an equivalent vault, replace older copies after configuration changes, and remove all plaintext local copies and downloads.
+
+The export excludes the account password and hash, the user's internal recovery key, the app master secret, agent secrets, agent encryption keys, private SSH keys, sessions and tokens, operation and log history, and notification secrets. Retain these separate prerequisites and storage where relevant:
+
+- SSH/SFTP access and private key material.
+- Proxmox credentials and required host tools.
+- Native repository storage.
+- MariaDB and other control-plane backups.
+
+The Recovery Export is a manual reconstruction aid. It is not currently an import file and does not replace MariaDB or control-plane backups, native repository storage backups, or the separate prerequisites above.
+
+## Back Up the Control Plane
+
+A recoverable control-plane backup consists of all of the following from the same deployment:
+
+- A MariaDB logical dump.
+- `.env.prod` and any external secret store, especially `DRASTIC_APP_MASTER_SECRET` and database credentials.
+- Native repository storage at `DRASTIC_REST_SERVER_STORAGE_PATH`.
+- Agent data directories at `DRASTIC_AGENT_HOST_DATA_PATH` if existing agent identities should survive recovery.
+- The deployed Compose files and the exact server, agent, artifact, and rest-server versions.
+
+Create a MariaDB dump while the stack is running:
+
+```bash
+mkdir -p control-plane-backup
+docker compose -f docker-compose.yaml --env-file .env.prod exec -T db \
+  sh -c 'exec mariadb-dump --single-transaction --routines --events --triggers -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
+  > control-plane-backup/drastic.sql
+cp .env.prod control-plane-backup/env.prod
+docker compose -f docker-compose.yaml --env-file .env.prod images \
+  > control-plane-backup/images.txt
+```
+
+Protect this directory as secret material. The SQL dump and master secret together expose encrypted control-plane settings, while repository recovery still requires a user's recovery password or a separately retained repository password.
+
+Take a consistent copy or filesystem snapshot of repository and agent storage. Do not copy live repository files while backups, checks, forget, or prune operations are running. The simplest safe procedure is:
+
+```bash
+docker compose -f docker-compose.yaml --env-file .env.prod stop backend rest-server
+sudo tar -C /opt/drastic-server -czf control-plane-backup/restic-storage.tar.gz restic
+sudo tar -C /opt/drastic-agent -czf control-plane-backup/agent-data.tar.gz data
+docker compose -f docker-compose.yaml --env-file .env.prod start rest-server backend
+```
+
+Replace the example paths with `DRASTIC_REST_SERVER_STORAGE_PATH` and `DRASTIC_AGENT_HOST_DATA_PATH`. A storage snapshot taken while the services are stopped is preferable for large repositories. Validate both the SQL dump and archive readability, copy the backup off-host, and test recovery regularly.
+
+## Restore the Control Plane
+
+Restore into an isolated host first. Use the same explicit application release tags and rest-server version that created the backup, then upgrade only after recovery is verified.
+
+1. Restore `.env.prod`, preserving the original `DRASTIC_APP_MASTER_SECRET`, database names, users, and passwords.
+2. Restore repository storage to `DRASTIC_REST_SERVER_STORAGE_PATH` and agent state to each `DRASTIC_AGENT_HOST_DATA_PATH`, with their original ownership and permissions.
+3. Start only MariaDB and wait for it to become healthy.
+4. Import the logical dump.
+5. Start rest-server and backend, then inspect logs and sign in.
+6. Start agents, confirm their existing identities reconnect, run `restic check`, and restore a sample into a temporary directory.
+
+Example database import:
+
+```bash
+docker compose -f docker-compose.yaml --env-file .env.prod up -d db
+docker compose -f docker-compose.yaml --env-file .env.prod exec -T db \
+  sh -c 'exec mariadb -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
+  < control-plane-backup/drastic.sql
+docker compose -f docker-compose.yaml --env-file .env.prod up -d rest-server backend
+```
+
+Import into an empty application database. If the target database already contains data, remove and recreate that database deliberately before importing rather than merging two control planes.
+
+## Emergency Restore Without the Control Plane
+
+Native repositories are ordinary restic repositories stored below `DRASTIC_REST_SERVER_STORAGE_PATH`. The UI, backend, MariaDB, and agent are not required for an emergency restore if you have:
+
+- A complete, consistent copy of the native repository directory.
+- The repository password retained before the incident.
+- A compatible `restic` binary.
+
+The app master secret and SQL dump alone cannot recover a repository password. Retain repository recovery passwords in a separate protected recovery system and test them before an incident.
+
+On a recovery host, identify the repository subdirectory by locating the directory containing restic's `config`, `data`, `index`, `keys`, `locks`, and `snapshots` entries. Mount or copy that repository read-only for inspection, then run restic directly against its filesystem path:
+
+```bash
+export RESTIC_REPOSITORY=/recovery/native-repositories/<repository-directory>
+export RESTIC_PASSWORD_FILE=/recovery/secrets/repository-password
+restic snapshots
+restic check --read-data-subset=5%
+mkdir -p /recovery/restore-target
+restic restore latest --target /recovery/restore-target
+```
+
+Use `restic ls <snapshot-id>` and an explicit snapshot ID when `latest` is ambiguous. Never restore directly over production data until the recovered files have been inspected. If only the rest-server endpoint is available rather than a filesystem copy, use the repository's original REST URL with `RESTIC_REPOSITORY=rest:http://...`, but prefer an isolated copy so emergency investigation cannot mutate the sole backup.

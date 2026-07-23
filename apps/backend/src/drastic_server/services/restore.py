@@ -8,10 +8,16 @@ from drastic_server.models.agent import (
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
 from drastic_server.schemas.repository import RepositorySchema
-from drastic_server.services.agent import AgentService, is_agent_timeout_response
+from drastic_server.services.agent import (
+    AgentService,
+    is_agent_conflict_response,
+    is_agent_timeout_response,
+)
 from drastic_server.services.agent.operation_start import (
     agent_operation_start_response,
+    fail_started_agent_operation,
     start_agent_operation,
+    unknown_agent_operation_dispatch_response,
 )
 from drastic_server.services.exceptions import RestoreServiceException
 from drastic_server.services.repository import agent_repository_assignment
@@ -64,6 +70,22 @@ class RestoreService:
     def _ensure_agent_repository(agent, repository):
         if not any(assigned.id == repository.id for assigned in agent.repositories):
             raise RestoreServiceException("Repository is not assigned to this agent")
+
+    @classmethod
+    def _ensure_snapshot_belongs_to_job(cls, agent, repository, snapshot_id, job):
+        job_tag = cls.job_tag(job)
+        response = AgentService.list_restore_snapshots(
+            agent,
+            repository=cls._repository_payload(repository, agent),
+            tags=[job_tag],
+        )
+        cls._raise_for_agent_failure(response)
+        snapshots = response.get("data", {}).get("snapshots", [])
+        if not any(
+            snapshot.get("id") == snapshot_id and job_tag in (snapshot.get("tags") or [])
+            for snapshot in snapshots
+        ):
+            raise RestoreServiceException("Snapshot does not belong to this job")
 
     @classmethod
     def get_options(cls, user_id, job_id):
@@ -123,6 +145,8 @@ class RestoreService:
         if data["mode"] != RESTORE_MODE_PLAIN_FILE:
             raise RestoreServiceException("Unsupported restore mode")
 
+        cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
+
         operation = start_agent_operation(
             agent=agent,
             job=job,
@@ -137,10 +161,11 @@ class RestoreService:
                 "snapshot_id": data["snapshot_id"],
                 "restore_location": data["restore_location"],
                 "include_paths": data["include_paths"],
+                "overwrite_policy": data["overwrite_policy"],
             },
         )
 
-        AgentService.run_restore(
+        response = AgentService.run_restore(
             agent,
             operation_uuid=operation.uuid,
             job_id=job.id,
@@ -151,7 +176,20 @@ class RestoreService:
             snapshot_id=data["snapshot_id"],
             restore_location=data["restore_location"],
             include_paths=data["include_paths"],
+            overwrite_policy=data["overwrite_policy"],
+            expected_job_tag=cls.job_tag(job),
         )
+        if is_agent_timeout_response(response):
+            return unknown_agent_operation_dispatch_response(
+                operation,
+                "Restore dispatch status unknown",
+            )
+        if response.get("state") != AgentOperationState.success:
+            message = response.get("log", "Could not start restore")
+            fail_started_agent_operation(operation, message)
+            exc = RestoreServiceException(message)
+            exc.conflict = is_agent_conflict_response(response)
+            raise exc
 
         return agent_operation_start_response(operation, "Restore started")
 

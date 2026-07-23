@@ -21,6 +21,8 @@ blp = Blueprint("restores", __name__, url_prefix="/api/restores", description="R
 
 def _handle_restore_error(exc):
     status_code = 504 if isinstance(exc, TimeoutError) else 400
+    if getattr(exc, "conflict", False):
+        status_code = 409
     abort(status_code, message=str(exc))
 
 
@@ -65,7 +67,7 @@ class RestoreStart(MethodView):
     def post(self, data):
         try:
             return RestoreService.start_restore(int(get_jwt_identity()), data)
-        except RestoreServiceException as exc:
+        except (RestoreServiceException, TimeoutError) as exc:
             _handle_restore_error(exc)
 
 

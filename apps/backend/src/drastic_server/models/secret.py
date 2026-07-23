@@ -1,5 +1,7 @@
 import enum
 
+from sqlalchemy.ext.mutable import MutableDict
+
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
@@ -16,12 +18,16 @@ class UserSecret(IdMixin, TimeMixin, db.Model):
 
     TYPE_REPOSITORY_PASSWORD = UserSecretType.repository_password.value
 
-    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     user = db.relationship("User", foreign_keys=[user_id], backref=db.backref("secrets"))
     type = db.Column(db.String(64), nullable=False)
     name = db.Column(db.String(255), nullable=False)
     encrypted_value = db.Column(db.JSON, nullable=False)
-    public_data = db.Column(db.JSON, nullable=False, default=dict)
+    public_data = db.Column(MutableDict.as_mutable(db.JSON), nullable=False, default=dict)
     version = db.Column(db.Integer, nullable=False, default=1)
 
 
@@ -35,13 +41,21 @@ class AgentSecretEnvelope(IdMixin, TimeMixin, db.Model):
         ),
     )
 
-    user_secret_id = db.Column(db.Integer, db.ForeignKey("user_secrets.id"), nullable=False)
+    user_secret_id = db.Column(
+        db.Integer,
+        db.ForeignKey("user_secrets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     user_secret = db.relationship(
         "UserSecret",
         foreign_keys=[user_secret_id],
         backref=db.backref("agent_envelopes", cascade="all, delete-orphan"),
     )
-    agent_id = db.Column(db.Integer, db.ForeignKey("agents.id"), nullable=False)
+    agent_id = db.Column(
+        db.Integer,
+        db.ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     agent = db.relationship(
         "Agent",
         foreign_keys=[agent_id],

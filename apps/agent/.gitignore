@@ -1,5 +1,6 @@
 __pycache__
 *.pyc
+.agent-data/
 .vscode/settings.json
 venv
 data/*

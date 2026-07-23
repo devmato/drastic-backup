@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 from uuid import uuid4
 
 from drastic_server.extensions import db
@@ -10,6 +10,10 @@ from drastic_server.models.agent import (
     AgentOperationState,
 )
 from drastic_server.utils.realtime import emit_job_state, emit_operation_update
+
+DISPATCH_STATUS_KEY = "dispatch_status"
+DISPATCH_STATUS_UPDATED_AT_KEY = "dispatch_status_updated_at"
+DISPATCH_UNKNOWN_RECONCILE_AFTER = timedelta(minutes=15)
 
 
 def start_agent_operation(
@@ -53,7 +57,7 @@ def start_agent_operation(
     return operation
 
 
-def agent_operation_start_response(operation, msg, *, success=True):
+def agent_operation_start_response(operation, msg, *, success=True, dispatch_status="accepted"):
     return {
         "msg": msg,
         "id": operation.id,
@@ -65,7 +69,43 @@ def agent_operation_start_response(operation, msg, *, success=True):
         "type": operation.type.name if operation.type else None,
         "state": operation.state.name if operation.state else None,
         "success": success,
+        "dispatch_status": dispatch_status,
     }
+
+
+def unknown_agent_operation_dispatch_response(operation, msg):
+    operation.data = {
+        **(operation.data or {}),
+        DISPATCH_STATUS_KEY: "unknown",
+        DISPATCH_STATUS_UPDATED_AT_KEY: datetime.now().isoformat(),
+    }
+    db.session.commit()
+    return agent_operation_start_response(operation, msg, dispatch_status="unknown")
+
+
+def reconcile_unknown_agent_operation_dispatches(*, now=None):
+    cutoff = (now or datetime.now()) - DISPATCH_UNKNOWN_RECONCILE_AFTER
+    operations = AgentOperation.query.filter(
+        AgentOperation.state == AgentOperationState.running,
+        AgentOperation.data[DISPATCH_STATUS_KEY].as_string() == "unknown",
+    ).all()
+    reconciled = 0
+    for operation in operations:
+        timestamp = (operation.data or {}).get(DISPATCH_STATUS_UPDATED_AT_KEY)
+        try:
+            dispatch_updated_at = datetime.fromisoformat(timestamp)
+            if dispatch_updated_at > cutoff:
+                continue
+        except (TypeError, ValueError):
+            continue
+
+        fail_started_agent_operation(
+            operation,
+            "Agent did not confirm operation dispatch within 15 minutes",
+        )
+        reconciled += 1
+
+    return reconciled
 
 
 def fail_started_agent_operation(operation, message):

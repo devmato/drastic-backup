@@ -1,4 +1,27 @@
-from marshmallow import EXCLUDE, Schema, fields, validate
+import posixpath
+
+from marshmallow import EXCLUDE, Schema, ValidationError, fields, post_load, validate
+
+
+def normalize_restore_target(value):
+    if "\x00" in value:
+        raise ValidationError("Restore location must not contain NUL bytes")
+    if not value.startswith("/"):
+        raise ValidationError("Restore location must be an absolute POSIX path")
+    if ".." in value.split("/"):
+        raise ValidationError("Restore location must not contain traversal segments")
+    normalized = posixpath.normpath(value)
+    if normalized == "/":
+        raise ValidationError("Restoring to / is not allowed")
+    return normalized
+
+
+def normalize_include_path(value):
+    if "\x00" in value:
+        raise ValidationError("Include paths must not contain NUL bytes")
+    if ".." in value.split("/"):
+        raise ValidationError("Include paths must not contain traversal segments")
+    return posixpath.normpath("/" + value.lstrip("/"))
 
 
 class RestoreOptionsQuerySchema(Schema):
@@ -71,6 +94,18 @@ class RestoreStartInputSchema(Schema):
         required=True,
         validate=validate.Length(min=1),
     )
+    overwrite_policy = fields.String(
+        load_default="fail_if_exists",
+        validate=validate.OneOf(("fail_if_exists", "overwrite")),
+    )
+
+    @post_load
+    def normalize_paths(self, data, **kwargs):
+        data["restore_location"] = normalize_restore_target(data["restore_location"])
+        data["include_paths"] = list(
+            dict.fromkeys(normalize_include_path(path) for path in data["include_paths"])
+        )
+        return data
 
 
 class RestoreStartResponseSchema(Schema):
@@ -84,3 +119,4 @@ class RestoreStartResponseSchema(Schema):
     type = fields.String(required=True)
     state = fields.String(required=True)
     success = fields.Boolean(load_default=True, dump_default=True)
+    dispatch_status = fields.String(required=True)

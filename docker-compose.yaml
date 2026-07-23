@@ -61,7 +61,7 @@ services:
       DRASTIC_BOOTSTRAP_ADMIN_USERNAME: ${DRASTIC_BOOTSTRAP_ADMIN_USERNAME:-}
       DRASTIC_BOOTSTRAP_ADMIN_PASSWORD: ${DRASTIC_BOOTSTRAP_ADMIN_PASSWORD:-}
     ports:
-      - "${DRASTIC_HOST_BACKEND_PORT:-5050}:${DRASTIC_BIND_BACKEND_PORT:-5050}"
+      - "${DRASTIC_HOST_BACKEND_ADDRESS:-127.0.0.1}:${DRASTIC_HOST_BACKEND_PORT:-5050}:${DRASTIC_BIND_BACKEND_PORT:-5050}"
     depends_on:
       db:
         condition: service_healthy
@@ -72,7 +72,7 @@ services:
       - ${DRASTIC_ASSET_CACHE_PATH:-/opt/drastic-server/asset-cache}:${DRASTIC_ASSET_CACHE_PATH:-/opt/drastic-server/asset-cache}
 
   rest-server:
-    image: restic/rest-server:latest
+    image: restic/rest-server:${DRASTIC_REST_SERVER_VERSION:-0.13.0}
     restart: unless-stopped
     environment:
       TZ: ${TZ:-UTC}

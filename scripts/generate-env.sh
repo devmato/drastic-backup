@@ -244,6 +244,8 @@ prompt_server_agent_values() {
     PUBLIC_URL="$REPLY"
     prompt "    Backend bind port" "5050"
     BIND_BACKEND_PORT="$REPLY"
+    prompt "    Host backend bind address" "127.0.0.1"
+    HOST_BACKEND_ADDRESS="$REPLY"
     prompt "    Host backend port" "$BIND_BACKEND_PORT"
     HOST_BACKEND_PORT="$REPLY"
     prompt "    Host database path" "$default_data_root/db"
@@ -312,7 +314,9 @@ DRASTIC_JWT_COOKIE_SAMESITE=Lax
 DRASTIC_JWT_SESSION_COOKIE=false
 
 DRASTIC_BIND_BACKEND_PORT=$BIND_BACKEND_PORT
+DRASTIC_HOST_BACKEND_ADDRESS=$(quote_env_string "$HOST_BACKEND_ADDRESS")
 DRASTIC_HOST_BACKEND_PORT=$HOST_BACKEND_PORT
+DRASTIC_REST_SERVER_VERSION=0.13.0
 DRASTIC_HOST_DB_PATH=$(quote_env_string "$HOST_DB_PATH")
 DRASTIC_REST_SERVER_STORAGE_PATH=$(quote_env_string "$REST_SERVER_STORAGE_PATH")
 
@@ -354,7 +358,7 @@ prompt_prod_values() {
 }
 
 write_prod_file() {
-    write_server_agent_env_file "prod" "production" "false" "false"
+    write_server_agent_env_file "prod" "production" "true" "false"
 }
 
 echo ""

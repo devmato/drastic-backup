@@ -7,12 +7,22 @@ from flask.cli import AppGroup
 from sqlalchemy.exc import IntegrityError
 
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent
+from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.models.user import User
+from drastic_server.services.agent.operation_start import (
+    reconcile_unknown_agent_operation_dispatches,
+)
+from drastic_server.services.agent.operations import (
+    STARTUP_NOTIFICATION_RETRY_LIMIT,
+    AgentOperationService,
+)
+from drastic_server.services.repository import reconcile_native_repository_quarantine
 
 user_cli = AppGroup("user")
 agent_cli = AppGroup("agent")
 seed_cli = AppGroup("seed")
+maintenance_cli = AppGroup("maintenance")
+repository_cli = AppGroup("repository")
 
 
 def _configured_bootstrap_admin() -> tuple[str, str]:
@@ -119,7 +129,32 @@ def seed_bootstrap():
     _seed_bootstrap_admin_if_configured()
 
 
+@maintenance_cli.command("startup")
+def startup_maintenance():
+    deleted_sessions = AgentSession.query.delete()
+    db.session.commit()
+    reconciled_operations = reconcile_unknown_agent_operation_dispatches()
+    restored, deleted = reconcile_native_repository_quarantine()
+    retried_deliveries = AgentOperationService._retry_open_notification_deliveries(
+        limit=STARTUP_NOTIFICATION_RETRY_LIMIT
+    )
+    click.echo(
+        f"Startup maintenance complete: {deleted_sessions} sessions removed, "
+        f"{reconciled_operations} unknown dispatches reconciled, "
+        f"{restored} repositories restored, {deleted} quarantines removed, "
+        f"{retried_deliveries} notification deliveries retried"
+    )
+
+
+@repository_cli.command("reconcile-quarantine")
+def repository_reconcile_quarantine():
+    restored, deleted = reconcile_native_repository_quarantine()
+    click.echo(f"Reconciled repository quarantine: {restored} restored, {deleted} removed")
+
+
 def register_cli(app: Flask) -> None:
     app.cli.add_command(user_cli)
     app.cli.add_command(agent_cli)
     app.cli.add_command(seed_cli)
+    app.cli.add_command(maintenance_cli)
+    app.cli.add_command(repository_cli)

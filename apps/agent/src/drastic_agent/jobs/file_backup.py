@@ -31,8 +31,12 @@ class FileBackupJobHandler(BackupJobHandler):
                 callback_pid=True,
                 callback_throttle=500,
             )
-        except Exception:
-            self.finish_artifact(artifact, state=AgentOperationState.failed)
+        except Exception as exc:
+            self.finish_artifact(
+                artifact,
+                state=AgentOperationState.failed,
+                snapshot_id=getattr(exc, "snapshot_id", None),
+            )
             raise
 
         report.process_job_status(status=restic_status, job_id=self.job["id"])

@@ -1,10 +1,8 @@
-from datetime import datetime
 from uuid import uuid4
 
 from drastic_agent.agent.database import (
     actions,
     agent_operation_artifacts,
-    agent_operations,
     retentions,
 )
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
@@ -34,17 +32,38 @@ class BackupJobHandler:
 
     def run(self):
         running_job = AgentReport.get_report(job_id=self.job["id"])
-        self.operation = self._start_operation()
-        report = AgentReport.job_report(
-            self.job["id"],
-            self.repository_id,
-            operation_uuid=self.operation["uuid"],
+        report = AgentReport.backup_operation(
+            job_id=self.job["id"],
+            repository_id=self.repository_id,
+            operation_uuid=self.operation_uuid,
+            schedule_id=self.run_options.get("schedule_id"),
+            retention_id=self.retention_id,
+            source=(
+                AgentOperationSource.schedule
+                if self.run_options.get("schedule_id")
+                else AgentOperationSource.manual
+            ),
         )
-        report.uuid = self.operation["uuid"]
-        report.source = AgentOperationSource[self.operation.get("source") or "manual"]
-        report.schedule_id = self.operation.get("schedule_id")
-        report.retention_id = self.operation.get("retention_id")
+        self.operation = report.history_operation
         self._sync_operation(report)
+
+        hook_actions = {}
+        for hook_name in ("start", "error", "success", "end"):
+            try:
+                hook_actions[hook_name] = actions.find(
+                    job_id=self.job["id"], hook=hook_name
+                )
+            except Exception as exc:
+                hook_actions[hook_name] = []
+                report.log_message(
+                    f"Could not load {hook_name} actions: {exc}",
+                    final_state=AgentOperationState.failed,
+                )
+
+        start_actions = hook_actions["start"]
+        error_actions = hook_actions["error"]
+        success_actions = hook_actions["success"]
+        end_actions = hook_actions["end"]
 
         if running_job:
             report.log_message(
@@ -54,6 +73,7 @@ class BackupJobHandler:
             self._finish_operation(AgentOperationState.failed, report)
             return report.finish()
 
+        backup_completed = False
         try:
             self.repository = self.agent.set_repository(self.repository_id)
         except Exception as exc:
@@ -61,103 +81,133 @@ class BackupJobHandler:
                 f"Could not prepare repository {self.repository_id}: {exc}",
                 final_state=AgentOperationState.failed,
             )
+            self._execute_actions_safely(report, error_actions, "error", post_backup=False)
+            self._execute_actions_safely(report, end_actions, "end", post_backup=False)
             self._finish_operation(AgentOperationState.failed, report)
             return report.finish()
-
-        start_actions = actions.find(job_id=self.job["id"], hook="start")
-        error_actions = actions.find(job_id=self.job["id"], hook="error")
-        success_actions = actions.find(job_id=self.job["id"], hook="success")
-        end_actions = actions.find(job_id=self.job["id"], hook="end")
 
         report.log_message(
             f"Starting job {self.job['id']} on repository {self.repository['location']}"
         )
 
-        self.agent.execute_actions(report=report, actions=start_actions)
-        self._ensure_repository_initialized(report)
-
-        if report.final_state == AgentOperationState.failed:
-            self.agent.execute_actions(report=report, actions=error_actions)
-            self.agent.execute_actions(report=report, actions=end_actions)
-            self._finish_operation(AgentOperationState.failed, report)
-            return report.finish()
-
         try:
-            self.run_backup(report)
-        except ResticError as exc:
-            report.log_message(f"Error during backup: {exc}", final_state=AgentOperationState.failed)
-            self.agent.execute_actions(report=report, actions=error_actions)
-            self.agent.execute_actions(report=report, actions=end_actions)
-            self._finish_operation(AgentOperationState.failed, report)
-            return report.finish()
-        except Exception as exc:
-            report.log_message(
-                f"Unexpected error during backup: {exc}", final_state=AgentOperationState.failed
-            )
-            self.agent.execute_actions(report=report, actions=error_actions)
-            self.agent.execute_actions(report=report, actions=end_actions)
-            self._finish_operation(AgentOperationState.failed, report)
-            return report.finish()
-
-        self._run_post_backup_check(report)
-        if report.final_state == AgentOperationState.failed:
-            self.agent.execute_actions(report=report, actions=error_actions)
-            self.agent.execute_actions(report=report, actions=end_actions)
-            self._finish_operation(AgentOperationState.failed, report)
-            return report.finish()
-
-        retention = retentions.find_one(id=self.retention_id) if self.retention_id else None
-        if retention:
-            retention_report = self.agent.cmd_run_retention(
-                retention_id=retention["id"],
-                repository_id=self.repository["id"],
-                job_id=self.job["id"],
-                    current_operation_uuid=self.operation["uuid"],
+            if report.final_state != AgentOperationState.failed:
+                try:
+                    self.agent.execute_actions(report=report, actions=start_actions)
+                except Exception as exc:
+                    report.log_message(
+                        f"Failed to execute start actions: {exc}",
+                        final_state=AgentOperationState.failed,
+                    )
+            if report.final_state not in {
+                AgentOperationState.success,
+                AgentOperationState.cancelled,
+            }:
+                report.log_message(
+                    "Backup prerequisites or start actions failed; backup will not be started",
+                    final_state=AgentOperationState.failed,
                 )
-            report.append_logs(retention_report.log_list)
 
-            if retention_report.state == AgentOperationState.failed:
-                report.final_state = AgentOperationState.warning
+            if report.final_state == AgentOperationState.success:
+                self._ensure_repository_initialized(report)
 
-        repository_report = self.agent.cmd_get_repository_stats(repository_id=self.repository["id"])
-        report.append_logs(repository_report.log_list)
-        if repository_report.state == AgentOperationState.failed:
-            report.final_state = AgentOperationState.warning
+            if report.final_state == AgentOperationState.success:
+                try:
+                    self.run_backup(report)
+                    backup_completed = self._has_completed_snapshot()
+                except ResticError as exc:
+                    report.log_message(
+                        f"Error during backup: {exc}",
+                        final_state=AgentOperationState.failed,
+                    )
+                except Exception as exc:
+                    report.log_message(
+                        f"Unexpected error during backup: {exc}",
+                        final_state=AgentOperationState.failed,
+                    )
 
-        if report.final_state != AgentOperationState.failed:
-            self.agent.execute_actions(report=report, actions=success_actions)
+            if report.final_state == AgentOperationState.failed:
+                self._execute_actions_safely(report, error_actions, "error", post_backup=False)
+            elif backup_completed and report.final_state in {
+                AgentOperationState.success,
+                AgentOperationState.warning,
+            }:
+                try:
+                    self._run_post_backup(report, success_actions)
+                except Exception as exc:
+                    report.log_message(
+                        f"Unexpected post-backup error: {exc}",
+                        final_state=AgentOperationState.warning,
+                    )
+        finally:
+            self._execute_actions_safely(
+                report,
+                end_actions,
+                "end",
+                post_backup=backup_completed,
+            )
 
-        self.agent.execute_actions(report=report, actions=end_actions)
+        if backup_completed:
+            report.downgrade_failure_to_warning()
+
         report.log_message(f"Job finished with state: {report.final_state.name}")
         self._finish_operation(report.final_state, report)
         return report.finish()
 
-    def _start_operation(self):
-        now = datetime.now()
-        operation = {
-            "uuid": self.operation_uuid or str(uuid4()),
-            "type": "backup",
-            "source": "schedule" if self.run_options.get("schedule_id") else "manual",
-            "job_id": self.job["id"],
-            "repository_id": self.repository_id,
-            "schedule_id": self.run_options.get("schedule_id"),
-            "retention_id": self.retention_id,
-            "state": AgentOperationState.running.name,
-            "started": now.isoformat(),
-            "ended": None,
-            "data": {},
-        }
-        operation_id = agent_operations.insert(operation)
-        operation["id"] = operation_id
-        return operation
+    def _run_post_backup(self, report, success_actions):
+        check_succeeded = self._run_post_backup_check(report)
+
+        if check_succeeded:
+            try:
+                retention = retentions.find_one(id=self.retention_id) if self.retention_id else None
+                if retention:
+                    retention_report = self.agent.cmd_run_retention(
+                        retention_id=retention["id"],
+                        repository_id=self.repository["id"],
+                        job_id=self.job["id"],
+                        current_operation_uuid=self.operation["uuid"],
+                    )
+                    report.append_logs(retention_report.log_list)
+                    if retention_report.state != AgentOperationState.success:
+                        report.final_state = AgentOperationState.warning
+            except Exception as exc:
+                report.log_message(
+                    f"Retention failed after backup: {exc}",
+                    final_state=AgentOperationState.warning,
+                )
+
+        try:
+            repository_report = self.agent.cmd_get_repository_stats(
+                repository_id=self.repository["id"]
+            )
+            report.append_logs(repository_report.log_list)
+            if repository_report.state != AgentOperationState.success:
+                report.final_state = AgentOperationState.warning
+        except Exception as exc:
+            report.log_message(
+                f"Repository statistics failed after backup: {exc}",
+                final_state=AgentOperationState.warning,
+            )
+
+        self._execute_actions_safely(report, success_actions, "success", post_backup=True)
+
+    def _execute_actions_safely(self, report, hook_actions, hook_name, post_backup):
+        try:
+            self.agent.execute_actions(report=report, actions=hook_actions)
+        except Exception as exc:
+            report.log_message(
+                f"Failed to execute {hook_name} actions: {exc}",
+                final_state=(
+                    AgentOperationState.warning
+                    if post_backup
+                    else AgentOperationState.failed
+                ),
+            )
 
     def _finish_operation(self, state, report):
         if not self.operation:
             return
-
-        self.operation["state"] = state.name if hasattr(state, "name") else str(state)
-        self.operation["ended"] = datetime.now().isoformat()
-        agent_operations.update(self.operation, ["id"])
+        report.final_state = state
         self._sync_operation(report)
 
     def _sync_operation(self, report):
@@ -167,10 +217,10 @@ class BackupJobHandler:
         for key in {"uuid", "job_id", "repository_id", "schedule_id", "retention_id"}:
             if key in self.operation:
                 setattr(report, key, self.operation.get(key))
-        report.artifacts = [
+        report.set_artifacts(
             self._artifact_payload(artifact)
             for artifact in agent_operation_artifacts.find(operation_id=self.operation["id"])
-        ]
+        )
         report.sent = False
 
     def _artifact_payload(self, artifact):
@@ -182,6 +232,13 @@ class BackupJobHandler:
             "data": artifact.get("data") or {},
             "forgotten_at": artifact.get("forgotten_at"),
         }
+
+    def _has_completed_snapshot(self):
+        return any(
+            artifact.get("state") == AgentOperationState.success.name
+            and artifact.get("snapshot_id")
+            for artifact in agent_operation_artifacts.find(operation_id=self.operation["id"])
+        )
 
     def start_artifact(self, artifact_key, data=None):
         artifact = {
@@ -253,7 +310,7 @@ class BackupJobHandler:
     def _run_post_backup_check(self, report):
         config = self.run_options.get("repository_check") or {}
         if not config.get("enabled"):
-            return
+            return True
 
         read_data = str(config.get("read_data") or "").strip() or None
         read_data_subset = None if read_data == "100%" else read_data
@@ -269,14 +326,15 @@ class BackupJobHandler:
                 read_data=read_data_full,
                 read_data_subset=read_data_subset,
             )
-        except ResticError as exc:
+        except Exception as exc:
             report.log_message(
                 f"Repository check failed after backup: {exc}",
-                final_state=AgentOperationState.failed,
+                final_state=AgentOperationState.warning,
             )
-            return
+            return False
 
         report.log_message("Repository check finished successfully")
+        return True
 
     def run_backup(self, report):
         raise NotImplementedError

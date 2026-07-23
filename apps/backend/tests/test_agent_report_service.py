@@ -1,5 +1,6 @@
 from datetime import datetime
 
+import pytest
 from flask import Flask
 
 from drastic_server import models as _models  # noqa: F401
@@ -8,12 +9,15 @@ from drastic_server.models.agent import (
     Agent,
     AgentOperation,
     AgentOperationArtifact,
+    AgentOperationLog,
+    AgentOperationLogLevel,
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
 )
-from drastic_server.models.job import Job, JobType
+from drastic_server.models.job import Job, JobSchedule, JobType
 from drastic_server.models.repository import Repository
+from drastic_server.models.retention import Retention
 from drastic_server.models.secret import AgentSecretEnvelope, UserSecret
 from drastic_server.models.user import User
 from drastic_server.services.agent import AgentRequestService, operation_start
@@ -54,6 +58,7 @@ def test_agent_operation_upserts_logs_and_artifacts(monkeypatch):
                 type=JobType.file,
                 config={"paths": [], "exclude_patterns": []},
             )
+            agent.repositories.append(repository)
             db.session.add_all([user, agent, repository, job])
             db.session.commit()
 
@@ -110,13 +115,17 @@ def test_started_agent_operation_is_updated_by_agent_report(monkeypatch):
     app = _build_app()
     emitted_job_ids = []
     emitted_operation_ids = []
-    monkeypatch.setattr(operation_start, "emit_job_state", lambda job: emitted_job_ids.append(job.id))
+    monkeypatch.setattr(
+        operation_start, "emit_job_state", lambda job: emitted_job_ids.append(job.id)
+    )
     monkeypatch.setattr(
         operation_start,
         "emit_operation_update",
         lambda operation: emitted_operation_ids.append(operation.id),
     )
-    monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: emitted_job_ids.append(job.id))
+    monkeypatch.setattr(
+        agent_operations, "emit_job_state", lambda job: emitted_job_ids.append(job.id)
+    )
     monkeypatch.setattr(
         agent_operations,
         "emit_operation_update",
@@ -182,6 +191,123 @@ def test_started_agent_operation_is_updated_by_agent_report(monkeypatch):
             db.drop_all()
 
 
+def test_agent_cannot_modify_another_agents_existing_operation(monkeypatch):
+    app = _build_app()
+    monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("password")
+            agent = Agent(user=user, secret="agent-secret")
+            other_agent = Agent(user=user, secret="other-secret")
+            repository = Repository(
+                user=user,
+                name="Repo",
+                kind=Repository.KIND_CUSTOM,
+                location="rest:http://repo.test/repo",
+            )
+            other_repository = Repository(
+                user=user,
+                name="Other repo",
+                kind=Repository.KIND_CUSTOM,
+                location="rest:http://repo.test/other",
+            )
+            job = Job(agent=agent, name="Files", type=JobType.file, config={"paths": []})
+            other_job = Job(
+                agent=other_agent, name="Other", type=JobType.file, config={"paths": []}
+            )
+            operation = AgentOperation(
+                uuid="operation-terminal",
+                agent=agent,
+                job=job,
+                repository=repository,
+                type=AgentOperationType.backup,
+                state=AgentOperationState.success,
+                source=AgentOperationSource.manual,
+                data={"owner": "original"},
+            )
+            log = AgentOperationLog(
+                operation=operation,
+                sequence=1,
+                level=AgentOperationLogLevel.info,
+                message="original log",
+            )
+            artifact = AgentOperationArtifact(
+                operation=operation,
+                uuid="artifact-original",
+                artifact_key="default",
+                snapshot_id="snapshot-original",
+                state="success",
+                data={"owner": "original"},
+            )
+            db.session.add_all(
+                [
+                    user,
+                    agent,
+                    other_agent,
+                    repository,
+                    other_repository,
+                    job,
+                    other_job,
+                    operation,
+                    log,
+                    artifact,
+                ]
+            )
+            db.session.commit()
+
+            with pytest.raises(PermissionError, match="does not belong"):
+                AgentRequestService(other_agent).operation(
+                    {
+                        "uuid": operation.uuid,
+                        "type": "restore",
+                        "state": "running",
+                        "source": "triggered",
+                        "job_id": other_job.id,
+                        "repository_id": other_repository.id,
+                        "data": {
+                            "owner": "attacker",
+                            "forgotten_artifacts": [
+                                {
+                                    "uuid": artifact.uuid,
+                                    "forgotten_at": "2026-05-10T11:00:30",
+                                }
+                            ],
+                        },
+                        "logs": [{"sequence": 1, "level": "error", "message": "attacker log"}],
+                        "artifacts": [
+                            {
+                                "uuid": artifact.uuid,
+                                "artifact_key": "default",
+                                "state": "failed",
+                                "data": {"owner": "attacker"},
+                            }
+                        ],
+                    }
+                )
+
+            db.session.refresh(operation)
+            db.session.refresh(log)
+            db.session.refresh(artifact)
+            assert operation.agent_id == agent.id
+            assert operation.job_id == job.id
+            assert operation.repository_id == repository.id
+            assert operation.type == AgentOperationType.backup
+            assert operation.source == AgentOperationSource.manual
+            assert operation.state == AgentOperationState.success
+            assert operation.data == {"owner": "original"}
+            assert log.message == "original log"
+            assert artifact.state == "success"
+            assert artifact.data == {"owner": "original"}
+            assert artifact.forgotten_at is None
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
 def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
     app = _build_app()
 
@@ -238,12 +364,16 @@ def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
             assert service.store_repository_agent_key(repository.id, {"new": "agent-envelope"}) == {
                 "ok": True
             }
-            assignment = db.session.execute(
-                _models.agent_repositories.select().where(
-                    _models.agent_repositories.c.agent_id == agent.id,
-                    _models.agent_repositories.c.repository_id == repository.id,
+            assignment = (
+                db.session.execute(
+                    _models.agent_repositories.select().where(
+                        _models.agent_repositories.c.agent_id == agent.id,
+                        _models.agent_repositories.c.repository_id == repository.id,
+                    )
                 )
-            ).mappings().first()
+                .mappings()
+                .first()
+            )
             assert assignment["encrypted_restic_access_key"] == {"new": "agent-envelope"}
             assert assignment["provisioned"] is True
         finally:
@@ -290,6 +420,7 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
                 snapshot_id="snapshot-1",
                 state="success",
             )
+            agent.repositories.append(repository)
             db.session.add_all([user, agent, repository, job, operation, artifact])
             db.session.commit()
 
@@ -318,6 +449,199 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
             db.session.refresh(artifact)
 
             assert artifact.forgotten_at.isoformat() == "2026-05-10T11:00:30"
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
+@pytest.mark.parametrize(
+    "foreign_reference",
+    ["job", "repository", "schedule", "retention", "parent"],
+)
+def test_new_operation_rejects_cross_agent_references(monkeypatch, foreign_reference):
+    app = _build_app()
+    monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+
+    with app.app_context():
+        db.create_all()
+        try:
+            owner_user = User(name="owner")
+            owner_user.set_initial_password("password")
+            reporter_user = User(name="reporter")
+            reporter_user.set_initial_password("password")
+            owner = Agent(user=owner_user, secret="owner-secret")
+            reporter = Agent(user=reporter_user, secret="reporter-secret")
+            repository = Repository(
+                user=owner_user,
+                name="Owner repo",
+                kind=Repository.KIND_CUSTOM,
+                location="rest:http://repo.test/owner",
+            )
+            job = Job(agent=owner, name="Owner job", type=JobType.file, config={"paths": []})
+            retention = Retention(user=owner_user, name="Owner retention", keep_last=1)
+            schedule = JobSchedule(
+                job=job,
+                repository=repository,
+                retention=retention,
+                cron_string="0 0 * * *",
+            )
+            parent = AgentOperation(
+                uuid="owner-parent",
+                agent=owner,
+                type=AgentOperationType.command,
+                state=AgentOperationState.success,
+                source=AgentOperationSource.manual,
+            )
+            owner.repositories.append(repository)
+            db.session.add_all(
+                [
+                    owner_user,
+                    reporter_user,
+                    owner,
+                    reporter,
+                    repository,
+                    job,
+                    retention,
+                    schedule,
+                    parent,
+                ]
+            )
+            db.session.commit()
+
+            payload = {
+                "uuid": f"cross-agent-{foreign_reference}",
+                "type": "command",
+                "state": "success",
+                "source": "manual",
+                "logs": [],
+            }
+            if foreign_reference == "job":
+                payload["job_id"] = job.id
+            elif foreign_reference == "repository":
+                payload["repository_id"] = repository.id
+            elif foreign_reference == "schedule":
+                payload["schedule_id"] = schedule.id
+            elif foreign_reference == "retention":
+                payload["retention_id"] = retention.id
+            else:
+                payload["parent_operation_uuid"] = parent.uuid
+
+            with pytest.raises(PermissionError):
+                AgentRequestService(reporter).operation(payload)
+
+            assert AgentOperation.query.filter_by(uuid=payload["uuid"]).first() is None
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
+def test_new_operation_accepts_deleted_references_and_links_late_parent(monkeypatch):
+    app = _build_app()
+    monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("password")
+            agent = Agent(user=user, secret="agent-secret")
+            db.session.add_all([user, agent])
+            db.session.commit()
+
+            child_id = AgentRequestService(agent).operation(
+                {
+                    "uuid": "offline-child",
+                    "type": "repository_check",
+                    "state": "success",
+                    "source": "triggered",
+                    "job_id": 99901,
+                    "repository_id": 99902,
+                    "schedule_id": 99903,
+                    "retention_id": 99904,
+                    "parent_operation_uuid": "offline-parent",
+                    "data": {"result": "ok"},
+                    "logs": [],
+                }
+            )
+
+            child = db.session.get(AgentOperation, child_id)
+            assert child.job_id is None
+            assert child.repository_id is None
+            assert child.schedule_id is None
+            assert child.retention_id is None
+            assert child.parent_operation_id is None
+
+            parent_id = AgentRequestService(agent).operation(
+                {
+                    "uuid": "offline-parent",
+                    "type": "backup",
+                    "state": "success",
+                    "source": "manual",
+                    "data": {},
+                    "logs": [],
+                }
+            )
+
+            db.session.refresh(child)
+            assert child.parent_operation_id == parent_id
+            assert child.data == {"result": "ok"}
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
+def test_agent_cannot_mark_another_agents_artifact_forgotten(monkeypatch):
+    app = _build_app()
+    monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("password")
+            owner = Agent(user=user, secret="owner-secret")
+            reporter = Agent(user=user, secret="reporter-secret")
+            operation = AgentOperation(
+                uuid="owner-operation",
+                agent=owner,
+                type=AgentOperationType.backup,
+                state=AgentOperationState.success,
+                source=AgentOperationSource.manual,
+            )
+            artifact = AgentOperationArtifact(
+                uuid="owner-artifact",
+                operation=operation,
+                artifact_key="default",
+                state="success",
+            )
+            db.session.add_all([user, owner, reporter, operation, artifact])
+            db.session.commit()
+
+            with pytest.raises(PermissionError, match="Artifact"):
+                AgentRequestService(reporter).operation(
+                    {
+                        "uuid": "reporter-retention",
+                        "type": "retention",
+                        "state": "success",
+                        "source": "manual",
+                        "data": {
+                            "forgotten_artifacts": [
+                                {
+                                    "uuid": artifact.uuid,
+                                    "forgotten_at": "2026-05-10T11:00:30",
+                                }
+                            ]
+                        },
+                        "logs": [],
+                    }
+                )
+
+            db.session.refresh(artifact)
+            assert artifact.forgotten_at is None
+            assert AgentOperation.query.filter_by(uuid="reporter-retention").first() is None
         finally:
             db.session.remove()
             db.drop_all()

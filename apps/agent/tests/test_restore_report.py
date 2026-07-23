@@ -29,6 +29,19 @@ def test_restore_status_uses_restore_specific_metrics():
     assert "bytes_processed" not in report.data
 
 
+def test_restore_status_removes_finished_process_pid():
+    report = AgentReport.restore_report(
+        report_uuid="restore-report-pid",
+        job_id=7,
+        repository_id=3,
+    )
+
+    AgentReport.process_restore_status(None, report_uuid=report.uuid, pid=123)
+    AgentReport.process_restore_status(None, report_uuid=report.uuid, pid=None)
+
+    assert "pid" not in report.data
+
+
 def test_save_queue_marks_all_pending_reports_failed(tmp_path, monkeypatch):
     monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
     report_1 = AgentReport.job_report(job_id=1, repository_id=2)

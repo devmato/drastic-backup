@@ -1,7 +1,10 @@
 import json
 
+import pytest
+
 import drastic_agent.jobs.proxmox_backup as proxmox_backup_module
 from drastic_agent.jobs.proxmox_backup import ProxmoxBackupJobHandler
+from drastic_common.restic.exceptions import ResticFailedError
 
 
 class _FakeReport:
@@ -121,3 +124,65 @@ def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch):
     assert artifacts[0]["snapshot_id"] == "backup-snap"
     assert artifacts[1]["snapshot_id"] == "manifest-snap"
     assert all("snapshot" not in message.lower() for message in report.messages)
+
+
+def test_manifest_failure_keeps_successful_archive_artifact_visible():
+    fake_driver = _FakeDriver()
+    agent = _FakeAgent()
+
+    def fail_manifest(**kwargs):
+        raise RuntimeError("manifest failed")
+
+    agent.resticapi.backup_stdin = fail_manifest
+    handler = ProxmoxBackupJobHandler(
+        agent=agent,
+        job={"id": 7, "uuid": "job-uuid-7", "config": {}},
+        repository_id=1,
+    )
+    handler.operation = {"id": 1, "uuid": "operation-uuid-1"}
+    artifacts = []
+    handler.start_artifact = lambda artifact_key, data=None: artifacts.append(
+        {
+            "id": len(artifacts) + 1,
+            "uuid": f"artifact-{len(artifacts) + 1}",
+            "artifact_key": artifact_key,
+            "data": data or {},
+        }
+    ) or artifacts[-1]
+    handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs) or artifact
+    report = _FakeReport()
+
+    with pytest.raises(RuntimeError, match="manifest failed"):
+        handler._backup_qemu_guest(report, _FakeApi(), fake_driver, fake_driver.list_supported_guests(None)[0])
+
+    assert artifacts[0]["snapshot_id"] == "backup-snap"
+    assert artifacts[1]["state"].name == "failed"
+    assert report.data["partial_failure"] is True
+
+
+def test_failed_archive_artifact_keeps_snapshot_id():
+    fake_driver = _FakeDriver()
+
+    def fail_archive(**kwargs):
+        raise ResticFailedError("producer failed", snapshot_id="partial-snap")
+
+    fake_driver.export_qemu_backup_to_restic = fail_archive
+    handler = ProxmoxBackupJobHandler(
+        agent=_FakeAgent(),
+        job={"id": 7, "uuid": "job-uuid-7", "config": {}},
+        repository_id=1,
+    )
+    handler.operation = {"id": 1, "uuid": "operation-uuid-1"}
+    artifacts = []
+    handler.start_artifact = lambda artifact_key, data=None: artifacts.append(
+        {"uuid": "artifact-1", "artifact_key": artifact_key, "data": data or {}}
+    ) or artifacts[-1]
+    handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs) or artifact
+
+    with pytest.raises(ResticFailedError, match="producer failed"):
+        handler._backup_qemu_guest(
+            _FakeReport(), _FakeApi(), fake_driver, fake_driver.list_supported_guests(None)[0]
+        )
+
+    assert artifacts[0]["state"].name == "failed"
+    assert artifacts[0]["snapshot_id"] == "partial-snap"

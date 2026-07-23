@@ -37,6 +37,9 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+drastic_server = ["templates/**/*.html"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",

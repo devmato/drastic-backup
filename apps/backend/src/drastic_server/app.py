@@ -5,7 +5,6 @@ import logging
 from pathlib import Path
 
 from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
-from sqlalchemy.exc import OperationalError, ProgrammingError
 
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.cli import register_cli
@@ -16,7 +15,6 @@ from drastic_server.env_loader import (
     parse_int_value,
 )
 from drastic_server.extensions import db, jwt, migrate, smorest_api, socketio
-from drastic_server.models.agent import AgentSession
 from drastic_server.models.user import User
 from drastic_server.services.agent import (
     AgentArtifactError,
@@ -89,20 +87,11 @@ def create_app(config_object=None):
     _register_docs_routes(app)
     _register_spa_routes(app)
 
-    with app.app_context():
-        # Delete orphaned agent sessions
-        try:
-            AgentSession.query.delete()
-            db.session.commit()
-        # Catch programming error if table doesn't exist
-        except (OperationalError, ProgrammingError):
-            pass
-
     # JWT user lookup callback
     @jwt.user_lookup_loader
     def user_lookup_callback(_jwt_header, jwt_data):
         identity = jwt_data["sub"]
-        return User.query.get(int(identity))
+        return db.session.get(User, int(identity))
 
     return app
 

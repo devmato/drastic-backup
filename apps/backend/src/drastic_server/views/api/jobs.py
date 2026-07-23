@@ -39,10 +39,16 @@ from drastic_server.schemas.job import (
     ScheduleCreateInputSchema,
     ScheduleUpdateInputSchema,
 )
-from drastic_server.services.agent import AgentCommand, is_agent_timeout_response
+from drastic_server.services.agent import (
+    AgentCommand,
+    is_agent_conflict_response,
+    is_agent_timeout_response,
+)
 from drastic_server.services.agent.operation_start import (
     agent_operation_start_response,
+    fail_started_agent_operation,
     start_agent_operation,
+    unknown_agent_operation_dispatch_response,
 )
 from drastic_server.services.job import (
     assign_agent_repository,
@@ -64,6 +70,8 @@ def _abort_recovery_key_error(exc):
 
 def _abort_agent_command_failure(response):
     status_code = 504 if is_agent_timeout_response(response) else 400
+    if is_agent_conflict_response(response):
+        status_code = 409
     abort(status_code, message=response.get("log", "Error"))
 
 
@@ -222,12 +230,20 @@ class JobOperationRun(MethodView):
             log_message="Backup job queued",
             data={"options": run_options},
         )
-        AgentCommand(agent=job.agent).run_job(
+        response = AgentCommand(agent=job.agent).run_job(
             job_id=job.id,
             repository_id=repository_id,
             operation_uuid=operation.uuid,
             run_options=run_options,
         )
+        if is_agent_timeout_response(response):
+            return unknown_agent_operation_dispatch_response(
+                operation,
+                "Backup dispatch status unknown",
+            )
+        if response.get("state") != AgentOperationState.success:
+            fail_started_agent_operation(operation, response.get("log", "Could not start backup"))
+            _abort_agent_command_failure(response)
         return agent_operation_start_response(operation, "Backup job started")
 
 
@@ -241,14 +257,18 @@ class JobCancel(MethodView):
             Job.query.join(Agent).filter(Job.id == job_id, Agent.user_id == user_id).first_or_404()
         )
 
-        AgentCommand(job.agent).cancel_job(job_id=job.id)
+        operation_uuid = (
+            job.last_operation.uuid
+            if job.last_operation and job.last_operation.state == AgentOperationState.running
+            else None
+        )
+        response = AgentCommand(job.agent).cancel_job(
+            job_id=job.id, operation_uuid=operation_uuid
+        )
+        if response.get("state") != AgentOperationState.success:
+            _abort_agent_command_failure(response)
 
-        if job.last_operation and job.last_operation.state == AgentOperationState.running:
-            job.last_operation.state = AgentOperationState.failed
-            db.session.commit()
-            emit_job_state(job)
-
-        return {"msg": "Job canceled"}
+        return {"msg": "Job cancellation requested"}
 
 
 @blp.route("/<int:job_id>/status")

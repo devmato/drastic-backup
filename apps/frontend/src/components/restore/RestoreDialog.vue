@@ -66,11 +66,27 @@
               </q-btn>
             </template>
           </q-input>
+
+          <q-option-group
+            class="q-mt-md"
+            v-model="overwritePolicy"
+            type="radio"
+            :options="overwriteOptions"
+          />
+          <q-checkbox
+            v-if="overwritePolicy === 'overwrite'"
+            v-model="overwriteConfirmed"
+            label="I understand that existing files at the restore destination may be replaced"
+          />
+          <q-banner v-if="isCrossAgentRestore" class="q-mt-md bg-orange-1 text-orange-10">
+            Cross-agent restore: this snapshot was created by a different agent.
+            <q-checkbox v-model="crossAgentConfirmed" label="Restore it to the selected agent" />
+          </q-banner>
         </q-card-section>
 
         <q-card-actions class="q-px-lg q-pb-lg q-pt-none" align="right">
           <q-btn flat label="Cancel" :disable="submitting" v-close-popup />
-          <q-btn label="Start Restore" type="submit" color="primary" :loading="submitting" :disable="includePaths.length === 0" />
+          <q-btn label="Start Restore" type="submit" color="primary" :loading="submitting" :disable="!canSubmit" />
         </q-card-actions>
       </q-form>
     </q-card>
@@ -114,6 +130,9 @@ const restoreLocation = ref('/tmp/drastic-restore')
 const loadingSnapshots = ref(false)
 const submitting = ref(false)
 const showTargetBrowserDialog = ref(false)
+const overwritePolicy = ref('fail_if_exists')
+const overwriteConfirmed = ref(false)
+const crossAgentConfirmed = ref(false)
 
 const dialogVisible = computed({
   get: () => props.modelValue,
@@ -125,6 +144,14 @@ const repositoryOptions = computed(() => props.repositories.map(repo => ({ label
 const modeOptions = [{ label: 'Plain file restore', value: 'plain_file' }]
 const canLoadSnapshots = computed(() => Boolean(props.job?.id && selectedAgentId.value && selectedRepositoryId.value))
 const snapshotOptions = computed(() => snapshots.value.map(snapshot => ({ label: snapshotLabel(snapshot), value: snapshot.id })))
+const isCrossAgentRestore = computed(() => Boolean(selectedAgentId.value && props.job?.agent_id && selectedAgentId.value !== props.job.agent_id))
+const canSubmit = computed(() => includePaths.value.length > 0
+  && (overwritePolicy.value !== 'overwrite' || overwriteConfirmed.value)
+  && (!isCrossAgentRestore.value || crossAgentConfirmed.value))
+const overwriteOptions = [
+  { label: 'Fail if selected files already exist (recommended)', value: 'fail_if_exists' },
+  { label: 'Overwrite existing files', value: 'overwrite' },
+]
 
 function resetDialog() {
   selectedAgentId.value = props.job?.agent_id || null
@@ -135,6 +162,9 @@ function resetDialog() {
   includePaths.value = []
   restoreLocation.value = '/tmp/drastic-restore'
   showTargetBrowserDialog.value = false
+  overwritePolicy.value = 'fail_if_exists'
+  overwriteConfirmed.value = false
+  crossAgentConfirmed.value = false
 }
 
 async function loadSnapshots() {
@@ -172,6 +202,7 @@ async function submitRestore() {
       snapshot_id: selectedSnapshotId.value,
       restore_location: restoreLocation.value,
       include_paths: includePaths.value,
+      overwrite_policy: overwritePolicy.value,
     })
     emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job.id })
     dialogVisible.value = false
@@ -195,10 +226,8 @@ watch(() => props.modelValue, async value => {
   await loadSnapshots()
 })
 
-watch(selectedSnapshotId, value => {
-  if (!value) {
-    includePaths.value = []
-  }
+watch(selectedSnapshotId, () => {
+  includePaths.value = []
 })
 
 watch([selectedAgentId, selectedRepositoryId], async () => {
@@ -206,7 +235,12 @@ watch([selectedAgentId, selectedRepositoryId], async () => {
   snapshots.value = []
   selectedSnapshotId.value = null
   includePaths.value = []
+  crossAgentConfirmed.value = false
   await loadSnapshots()
+})
+
+watch(overwritePolicy, () => {
+  overwriteConfirmed.value = false
 })
 
 defineOptions({ name: 'RestoreDialog' })

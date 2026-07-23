@@ -4,6 +4,7 @@ import drastic_agent.jobs.base as base_module
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
+from drastic_agent.jobs.registry import get_job_handler
 from drastic_common.restic.exceptions import ResticError
 
 
@@ -37,12 +38,20 @@ class _FakeAgent:
 
 class _Handler(BackupJobHandler):
     def run_backup(self, report):
-        return None
+        artifact = self.start_artifact("default")
+        self.finish_artifact(artifact, snapshot_id="snapshot-1")
 
 
 class _FailingBackupHandler(BackupJobHandler):
     def run_backup(self, report):
         raise ResticError("backup failed")
+
+
+class _TrackingBackupHandler(BackupJobHandler):
+    backup_calls = 0
+
+    def run_backup(self, report):
+        self.backup_calls += 1
 
 
 class _FakeActions:
@@ -177,6 +186,17 @@ def test_backup_job_uses_server_operation_uuid(monkeypatch):
     assert handler.operation["uuid"] == "server-operation-uuid"
 
 
+def test_job_registry_forwards_server_operation_uuid():
+    handler = get_job_handler(
+        agent=object(),
+        job={"id": 1, "type": "file"},
+        repository_id=2,
+        operation_uuid="server-operation-uuid",
+    )
+
+    assert handler.operation_uuid == "server-operation-uuid"
+
+
 def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -200,28 +220,52 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
     assert report.data["check"] == {"message_type": "summary", "errors": 0}
 
 
-def test_post_backup_check_failure_fails_job_and_skips_stats(monkeypatch):
+def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
-    monkeypatch.setattr(base_module, "actions", _FakeActions())
-    monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class CheckFailingAgent(_CheckingAgent):
+        retention_calls = 0
+        stats_calls = 0
+
+        @classmethod
+        def execute_actions(cls, report, actions):
+            hook_calls.append(actions[0]["hook"])
+
+        @classmethod
+        def cmd_run_retention(cls, **kwargs):
+            cls.retention_calls += 1
+            return _SuccessfulReport()
+
+        @classmethod
+        def cmd_get_repository_stats(cls, repository_id):
+            cls.stats_calls += 1
+            return _SuccessfulReport()
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    monkeypatch.setattr(base_module, "retentions", _ConfiguredRetentions())
     resticapi = _CheckingResticApi(check_error=ResticError("check failed"))
 
-    class StatsShouldNotRunAgent(_CheckingAgent):
-        @staticmethod
-        def cmd_get_repository_stats(repository_id):
-            raise AssertionError("stats should not run after failed check")
-
     handler = _Handler(
-        StatsShouldNotRunAgent(resticapi),
+        CheckFailingAgent(resticapi),
         {"id": 1, "uuid": "job-uuid-1"},
         repository_id=2,
+        retention_id=3,
         run_options={"repository_check": {"enabled": True, "read_data": None}},
     )
 
     report = handler.run()
 
-    assert report.final_state == AgentReportState.failed
+    assert report.final_state == AgentReportState.warning
+    assert CheckFailingAgent.retention_calls == 0
+    assert CheckFailingAgent.stats_calls == 1
+    assert hook_calls == ["start", "success", "end"]
     assert any("Repository check failed after backup" in line for line in report.log_list)
 
 
@@ -247,6 +291,191 @@ def test_backup_failure_skips_retention(monkeypatch):
 
     assert report.final_state == AgentReportState.failed
     assert any("Error during backup" in line for line in report.log_list)
+
+
+def test_start_hook_failure_prevents_backup_and_runs_error_and_end(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class HookAgent(_CheckingAgent):
+        @staticmethod
+        def execute_actions(report, actions):
+            hook = actions[0]["hook"]
+            hook_calls.append(hook)
+            if hook == "start":
+                report.log_message("start failed", final_state=AgentReportState.warning)
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    handler = _TrackingBackupHandler(
+        HookAgent(_CheckingResticApi()),
+        {"id": 1, "uuid": "job-uuid-1"},
+        repository_id=2,
+    )
+
+    report = handler.run()
+
+    assert handler.backup_calls == 0
+    assert hook_calls == ["start", "error", "end"]
+    assert report.final_state == AgentReportState.failed
+
+
+def test_success_hook_failure_is_warning_and_end_hook_still_runs(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class HookAgent(_CheckingAgent):
+        @staticmethod
+        def execute_actions(report, actions):
+            hook = actions[0]["hook"]
+            hook_calls.append(hook)
+            if hook == "success":
+                raise RuntimeError("success hook failed")
+            if hook == "end":
+                report.log_message("end hook failed", final_state=AgentReportState.failed)
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    handler = _Handler(
+        HookAgent(_CheckingResticApi()),
+        {"id": 1, "uuid": "job-uuid-1"},
+        repository_id=2,
+    )
+
+    report = handler.run()
+
+    assert hook_calls == ["start", "success", "end"]
+    assert report.final_state == AgentReportState.warning
+
+
+def test_error_hook_exception_does_not_prevent_end_hook(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class HookAgent(_CheckingAgent):
+        @staticmethod
+        def execute_actions(report, actions):
+            hook = actions[0]["hook"]
+            hook_calls.append(hook)
+            if hook == "error":
+                raise RuntimeError("error hook failed")
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    handler = _FailingBackupHandler(
+        HookAgent(_CheckingResticApi()),
+        {"id": 1, "uuid": "job-uuid-1"},
+        repository_id=2,
+    )
+
+    report = handler.run()
+
+    assert hook_calls == ["start", "error", "end"]
+    assert report.final_state == AgentReportState.failed
+
+
+def test_repository_preparation_failure_runs_error_and_end_but_not_start(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class RepositoryFailingAgent:
+        @staticmethod
+        def set_repository(repository_id):
+            raise RuntimeError("repository unavailable")
+
+        @staticmethod
+        def execute_actions(report, actions):
+            hook_calls.append(actions[0]["hook"])
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    handler = _TrackingBackupHandler(
+        RepositoryFailingAgent(),
+        {"id": 1, "uuid": "job-uuid-1"},
+        repository_id=2,
+    )
+
+    report = handler.run()
+
+    assert handler.backup_calls == 0
+    assert hook_calls == ["error", "end"]
+    assert report.final_state == AgentReportState.failed
+    assert any("Could not prepare repository" in line for line in report.log_list)
+
+
+def test_cancelled_backup_only_runs_end_hook(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    hook_calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook}]
+
+    class CancelledHandler(BackupJobHandler):
+        def run_backup(self, report):
+            report.log_message("cancelled", final_state=AgentReportState.cancelled)
+
+    class CancelledAgent(_CheckingAgent):
+        retention_calls = 0
+        stats_calls = 0
+
+        @classmethod
+        def execute_actions(cls, report, actions):
+            hook_calls.append(actions[0]["hook"])
+
+        @classmethod
+        def cmd_run_retention(cls, **kwargs):
+            cls.retention_calls += 1
+            return _SuccessfulReport()
+
+        @classmethod
+        def cmd_get_repository_stats(cls, repository_id):
+            cls.stats_calls += 1
+            return _SuccessfulReport()
+
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    monkeypatch.setattr(base_module, "retentions", _ConfiguredRetentions())
+    resticapi = _CheckingResticApi()
+    handler = CancelledHandler(
+        CancelledAgent(resticapi),
+        {"id": 1, "uuid": "job-uuid-1"},
+        repository_id=2,
+        retention_id=3,
+        run_options={"repository_check": {"enabled": True}},
+    )
+
+    report = handler.run()
+
+    assert report.final_state == AgentReportState.cancelled
+    assert resticapi.check_calls == []
+    assert CancelledAgent.retention_calls == 0
+    assert CancelledAgent.stats_calls == 0
+    assert hook_calls == ["start", "end"]
 
 
 if __name__ == "__main__":

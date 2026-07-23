@@ -18,22 +18,50 @@ jobs:
         include:
           - component: backend
             workdir: apps/backend
+            python-version: "3.13"
+          - component: backend-py311
+            workdir: apps/backend
+            python-version: "3.11"
           - component: agent
             workdir: apps/agent
+            python-version: "3.11"
           - component: common
             workdir: libs/python/common
+            python-version: "3.11"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
       - uses: astral-sh/setup-uv@v5
       - name: Install dependencies
         working-directory: ${{ matrix.workdir }}
-        run: uv sync --frozen --dev
+        run: uv sync --frozen --dev --python ${{ matrix.python-version }}
+      - name: Install restic for integration test
+        if: matrix.component == 'agent' || matrix.component == 'common'
+        run: sudo apt-get update && sudo apt-get install --yes restic
+      - name: Lint
+        working-directory: ${{ matrix.workdir }}
+        run: uv run --python ${{ matrix.python-version }} ruff check src tests
       - name: Test
         working-directory: ${{ matrix.workdir }}
-        run: uv run pytest
+        run: uv run --python ${{ matrix.python-version }} pytest
+
+  migrations:
+    name: MariaDB Migrations
+    runs-on: docker
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: astral-sh/setup-uv@v5
+      - name: Install dependencies
+        working-directory: apps/backend
+        run: uv sync --frozen --dev --python 3.13
+      - name: Verify migration roundtrip
+        working-directory: apps/backend
+        run: ./scripts/test-migrations.sh
 
   frontend:
     name: Frontend
@@ -74,3 +102,4 @@ jobs:
           bash -n scripts/release.sh
           bash -n scripts/build-agent-artifact.sh
           bash -n scripts/generate-env.sh
+          bash -n apps/backend/scripts/test-migrations.sh

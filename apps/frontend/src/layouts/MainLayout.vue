@@ -30,6 +30,10 @@
               <q-item-section avatar><q-icon name="key" /></q-item-section>
               <q-item-section><q-item-label>Change Password</q-item-label></q-item-section>
             </q-item>
+            <q-item clickable v-close-popup @click="openRecoveryExportDialog">
+              <q-item-section avatar><q-icon name="folder_zip" /></q-item-section>
+              <q-item-section><q-item-label>Download Recovery Export</q-item-label></q-item-section>
+            </q-item>
             <q-separator />
             <q-item clickable v-close-popup @click="logout()">
               <q-item-section avatar><q-icon name="lock" /></q-item-section>
@@ -144,6 +148,65 @@
       </q-card>
     </q-dialog>
 
+    <q-dialog v-model="recoveryExportDialogOpen" persistent>
+      <q-card class="db-dialog-card-sm">
+        <q-card-section>
+          <div class="text-h6">Download Recovery Export</div>
+          <div class="text-caption text-grey-7">
+            Create an offline recovery package for this installation.
+          </div>
+        </q-card-section>
+
+        <q-form ref="recoveryExportForm" @submit="submitRecoveryExport">
+          <q-card-section class="q-gutter-md">
+            <q-banner rounded class="bg-orange-1 text-orange-10">
+              <div class="text-weight-bold">
+                This ZIP and its recovery.html file contain plaintext repository passwords and provider credentials.
+              </div>
+              <div class="q-mt-sm">
+                Move the export directly into encrypted storage such as Vaultwarden. Do not leave it in Downloads.
+              </div>
+            </q-banner>
+
+            <div class="text-body2 text-grey-8">
+              External SSH keys, Proxmox storage and configuration, and native storage dependencies are not included.
+              Preserve anything required by those systems separately.
+            </div>
+
+            <q-input
+              outlined
+              autofocus
+              v-model="recoveryExportPassword"
+              :type="showRecoveryExportPassword ? 'text' : 'password'"
+              label="Current Account Password"
+              autocomplete="current-password"
+              lazy-rules
+              :rules="[val => !!val || 'Required']"
+              :disable="recoveryExportSubmitting"
+            >
+              <template #prepend><q-icon name="lock" /></template>
+              <template #append>
+                <q-icon
+                  :name="showRecoveryExportPassword ? 'visibility_off' : 'visibility'"
+                  class="cursor-pointer"
+                  @click="showRecoveryExportPassword = !showRecoveryExportPassword"
+                />
+              </template>
+            </q-input>
+
+            <q-banner v-if="recoveryExportError" dense rounded class="bg-red-1 text-red-10">
+              {{ recoveryExportError }}
+            </q-banner>
+          </q-card-section>
+
+          <q-card-actions align="right">
+            <q-btn flat label="Cancel" :disable="recoveryExportSubmitting" @click="closeRecoveryExportDialog" />
+            <q-btn label="Download ZIP" type="submit" color="primary" :loading="recoveryExportSubmitting" />
+          </q-card-actions>
+        </q-form>
+      </q-card>
+    </q-dialog>
+
     <ReauthenticationDialog />
   </q-layout>
 </template>
@@ -176,6 +239,12 @@ const changeCurrentPassword = ref('')
 const changeNewPassword = ref('')
 const changeConfirmPassword = ref('')
 const showChangePasswords = ref(false)
+const recoveryExportDialogOpen = ref(false)
+const recoveryExportSubmitting = ref(false)
+const recoveryExportError = ref('')
+const recoveryExportForm = ref(null)
+const recoveryExportPassword = ref('')
+const showRecoveryExportPassword = ref(false)
 
 function queuedLoad(loader) {
   let inFlight = false
@@ -266,6 +335,43 @@ async function submitChangePassword() {
       : getApiErrorMessage(error, 'Password change failed')
   } finally {
     changePasswordSubmitting.value = false
+  }
+}
+
+function resetRecoveryExportDialog() {
+  recoveryExportPassword.value = ''
+  recoveryExportError.value = ''
+  showRecoveryExportPassword.value = false
+  recoveryExportForm.value?.resetValidation?.()
+}
+
+function openRecoveryExportDialog() {
+  resetRecoveryExportDialog()
+  recoveryExportDialogOpen.value = true
+}
+
+function closeRecoveryExportDialog() {
+  if (recoveryExportSubmitting.value) {
+    return
+  }
+  recoveryExportDialogOpen.value = false
+  resetRecoveryExportDialog()
+}
+
+async function submitRecoveryExport() {
+  recoveryExportError.value = ''
+  recoveryExportSubmitting.value = true
+  try {
+    await userStore.downloadRecoveryExport(recoveryExportPassword.value)
+    recoveryExportDialogOpen.value = false
+    resetRecoveryExportDialog()
+    $q.notify({ message: 'Recovery export downloaded', color: 'green', position: 'top' })
+  } catch (error) {
+    recoveryExportError.value = error?.response?.status === 401
+      ? 'Current password is wrong'
+      : getApiErrorMessage(error, 'Recovery export failed')
+  } finally {
+    recoveryExportSubmitting.value = false
   }
 }
 

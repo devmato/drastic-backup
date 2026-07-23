@@ -15,9 +15,10 @@ dRastic Backup is designed for trusted Homelab use, not as a multi-tenant enterp
 - Use HTTPS through a reverse proxy.
 - Keep the UI/API on a private network, VPN, or trusted Homelab segment.
 - Complete the first admin setup before exposing the service beyond localhost or the trusted network.
-- Use versioned server and agent image tags for release deployments.
+- Use the same explicit release tag for server images, agent images, and native agent artifacts; never mix release tags or use `latest` in production.
 - Back up `.env.prod` or your secret store together with the database and repository storage.
-- The examples keep `DRASTIC_JWT_COOKIE_SECURE=false` for HTTP-only VPN deployments. Set it to `true` when serving the UI/API through HTTPS.
+- Keep the default backend publication on `127.0.0.1` and expose it through a correctly configured HTTPS reverse proxy.
+- Production HTTPS examples set `DRASTIC_JWT_COOKIE_SECURE=true`. Disable it only for an intentionally HTTP-only trusted deployment.
 
 ## Secrets
 

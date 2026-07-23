@@ -5,7 +5,15 @@ from drastic_server.models.mixins import IdMixin, TimeMixin
 # Rentention policy
 class Retention(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'retentions'
-    user_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
+    __table_args__ = (
+        db.UniqueConstraint("user_id", "name", name="uq_retentions_user_id_name"),
+    )
+
+    user_id = db.Column(
+        db.Integer,
+        db.ForeignKey('users.id', ondelete="CASCADE"),
+        nullable=False,
+    )
     user = db.relationship('User', foreign_keys=[user_id], backref=db.backref('retentions') )
     name = db.Column(db.String(255), nullable=False)
     keep_last = db.Column(db.Integer, nullable=True)

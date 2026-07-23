@@ -22,7 +22,7 @@ docker compose -f docker-compose.agent.yaml --env-file .env.prod up -d
 
 Important agent paths:
 
-- `DRASTIC_AGENT_HOST_DATA_PATH` -- Persistent agent identity, secret, agent SSH identity, and SSH `known_hosts` data. Restic access keys are hydrated into memory after backend sync and are not stored here.
+- `DRASTIC_AGENT_HOST_DATA_PATH` -- Persistent agent identity, private key, secret, agent SSH identity, SSH `known_hosts`, synchronized configuration, operation state, and agent-encrypted restic access keys. Plaintext restic access keys are kept only in memory.
 - `DRASTIC_AGENT_HOST_ROOT_PATH` -- Host path mounted read-only to `/mnt/host` inside the agent.
 
 The default root path is `/`, which allows file jobs to reference host paths via `/mnt/host/...`.
@@ -164,7 +164,7 @@ After registration, the agent stores its generated credentials and keypair in it
 
 Protect the agent data directory as sensitive local state. Native and Docker installs set the data directory to `0700` and the local `config.ini` to `0600` where supported. If this directory is copied, the copy can authenticate as the same agent until that agent is removed or rotated.
 
-When a repository is assigned or used, the server can provision repository access through the agent public key. After startup sync, the agent keeps local restic access keys in memory so scheduled jobs can run without an active browser login. If the agent process restarts, backend sync is required again before repository jobs can access their repositories.
+When a repository is assigned or used, the server can provision repository access through the agent public key. The encrypted access key is persisted locally and can be decrypted again after an agent restart. This supports offline scheduled jobs only when a custom repository remains directly reachable; native repositories still require the backend restic proxy. Preserve and protect the agent data directory, because losing the local identity or encrypted key requires backend reprovisioning.
 
 For SSH/SFTP repositories, the agent uses its own local SSH identity. Copy the agent SSH public key from the agent properties dialog and install it on the target host. The agent keeps a local `known_hosts` file in its data directory and trusts new hosts on first use. Reset only the affected agent's known hosts from the agent properties **Actions** tab when a target host key changes.
 

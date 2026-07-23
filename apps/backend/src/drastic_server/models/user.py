@@ -13,11 +13,16 @@ from drastic_server.models.mixins import IdMixin, TimeMixin
 
 class User(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'users'
-    name = db.Column(db.String(120), unique=True)
+    name = db.Column(db.String(120), nullable=False, unique=True)
     email = db.Column(db.String(120), unique=True)
-    password = db.Column(db.String(120), nullable=True)
-    encrypted_recovery_key = db.Column(db.JSON, nullable=True)
-    sessions = db.relationship("UserSession", back_populates="user", cascade="all, delete-orphan")
+    password = db.Column(db.String(120), nullable=False)
+    encrypted_recovery_key = db.Column(db.JSON, nullable=False)
+    sessions = db.relationship(
+        "UserSession",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        passive_deletes=True,
+    )
 
     def check_password(self, password: str) -> bool:
         if not self.password:

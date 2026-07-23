@@ -6,6 +6,7 @@ from uuid import uuid4
 from cron_descriptor import get_description
 from sqlalchemy import Enum
 from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy.ext.mutable import MutableDict
 
 from drastic_common.agent.enums import AgentJobActionModule, AgentJobType
 from drastic_server.extensions import db
@@ -19,7 +20,12 @@ class Job(IdMixin, TimeMixin, db.Model):
     __tablename__ = "jobs"
     uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     name = db.Column(db.String(255), nullable=False)
-    agent_id = db.Column(db.Integer, db.ForeignKey("agents.id"), nullable=False)
+    agent_id = db.Column(
+        db.Integer,
+        db.ForeignKey("agents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     type = db.Column(Enum(JobType, native_enum=False, length=255), nullable=False)
     _config = db.Column("config", db.JSON, nullable=False, default=lambda: {"data": {}})
     agent = db.relationship("Agent", foreign_keys=[agent_id], backref=db.backref("jobs"))
@@ -66,7 +72,12 @@ class Job(IdMixin, TimeMixin, db.Model):
 
 class JobAction(IdMixin, TimeMixin, db.Model):
     __tablename__ = "job_actions"
-    job_id = db.Column(db.Integer, db.ForeignKey("jobs.id"), nullable=False)
+    job_id = db.Column(
+        db.Integer,
+        db.ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     job = db.relationship(
         "Job",
         foreign_keys=[job_id],
@@ -77,7 +88,7 @@ class JobAction(IdMixin, TimeMixin, db.Model):
     module = db.Column(Enum(JobActionModuleEnum, native_enum=False, length=255), nullable=False)
 
     hook = db.Column(db.String(255), nullable=False)
-    data = db.Column(db.JSON, default={}, nullable=False)
+    data = db.Column(MutableDict.as_mutable(db.JSON), default=dict, nullable=False)
 
     def data_getter(self, key):
         if self.data and key in self.data:
@@ -115,7 +126,12 @@ class JobAction(IdMixin, TimeMixin, db.Model):
 
 class JobSchedule(IdMixin, TimeMixin, db.Model):
     __tablename__ = "job_schedules"
-    job_id = db.Column(db.Integer, db.ForeignKey("jobs.id"), nullable=False)
+    job_id = db.Column(
+        db.Integer,
+        db.ForeignKey("jobs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     job = db.relationship(
         "Job",
         foreign_keys=[job_id],
@@ -125,11 +141,15 @@ class JobSchedule(IdMixin, TimeMixin, db.Model):
     repository_id = db.Column(db.Integer, db.ForeignKey("repositories.id"), nullable=False)
     repository = db.relationship("Repository", foreign_keys=[repository_id], backref="schedules")
 
-    retention_id = db.Column(db.Integer, db.ForeignKey("retentions.id"), nullable=True)
+    retention_id = db.Column(
+        db.Integer,
+        db.ForeignKey("retentions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     retention = db.relationship("Retention", backref="job_schedules")
 
-    enabled = db.Column(db.Boolean, default=False)
-    advanced = db.Column(db.Boolean, default=False)
+    enabled = db.Column(db.Boolean, nullable=False, default=False)
+    advanced = db.Column(db.Boolean, nullable=False, default=False)
     _config = db.Column("config", db.JSON, nullable=False, default=lambda: {"data": {}})
 
     cron_string = db.Column(db.String(255), nullable=False)

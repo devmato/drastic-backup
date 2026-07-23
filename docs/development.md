@@ -121,6 +121,17 @@ uv sync --frozen --dev
 uv run pytest
 ```
 
+The current Alembic history is a new `init` baseline for fresh databases. It intentionally does not provide an upgrade path from earlier development schemas because there were no production deployments to preserve when the baseline was replaced. Recreate an old development or test database instead of stamping or upgrading it to this baseline.
+
+Verify the baseline against a disposable MariaDB container:
+
+```bash
+cd apps/backend
+./scripts/test-migrations.sh
+```
+
+The script checks migration heads and history, upgrades a fresh database, runs Alembic's schema check, downgrades to `base`, and repeats the upgrade and check. Docker must be available.
+
 Run lint checks for modified backend files:
 
 ```bash

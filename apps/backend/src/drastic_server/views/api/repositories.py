@@ -1,10 +1,17 @@
+from flask import current_app
 from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_smorest import Blueprint, abort
 from sqlalchemy.exc import IntegrityError
 
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent, AgentOperationState, AgentOperationType, AgentSession
+from drastic_server.models.agent import (
+    Agent,
+    AgentOperation,
+    AgentOperationState,
+    AgentOperationType,
+    AgentSession,
+)
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.schemas.agent import AgentOperationStartResponseSchema
@@ -18,19 +25,25 @@ from drastic_server.schemas.repository import (
     UnlockAgentResponseSchema,
     UnlockInputSchema,
 )
-from drastic_server.services.agent import AgentCommand, is_agent_timeout_response
+from drastic_server.services.agent import (
+    AgentCommand,
+    is_agent_conflict_response,
+    is_agent_timeout_response,
+)
 from drastic_server.services.agent.operation_start import (
     agent_operation_start_response,
     fail_started_agent_operation,
     start_agent_operation,
+    unknown_agent_operation_dispatch_response,
 )
 from drastic_server.services.repository import (
     RepositorySecretError,
-    delete_native_repository,
+    delete_quarantined_native_repository,
     ensure_user_agent_recovery_envelopes,
     generate_native_repository_password,
     generate_native_repository_path,
-    native_repository_has_locks,
+    quarantine_native_repository,
+    restore_quarantined_native_repository,
     reveal_repository_recovery_key,
     store_recovery_key,
     validate_user_recovery_key,
@@ -200,24 +213,44 @@ class RepositoryDetail(MethodView):
                 message="Can't remove repository used by schedules. Remove those schedules first.",
             )
 
-        if repository.kind == Repository.KIND_NATIVE:
-            repository_path = repository.repository_path
-            if repository_path and native_repository_has_locks(repository_path):
-                abort(409, message="Native repository is currently locked or in use")
-
-            try:
+        quarantine = None
+        try:
+            if repository.kind == Repository.KIND_NATIVE:
+                running_operation = AgentOperation.query.filter(
+                    AgentOperation.repository_id == repository.id,
+                    AgentOperation.state == AgentOperationState.running,
+                ).first()
+                if running_operation is not None:
+                    abort(409, message="Repository has a running operation")
+                repository_path = repository.repository_path
                 if repository_path:
-                    delete_native_repository(repository_path)
-            except RuntimeError as exc:
-                abort(409, message=str(exc))
+                    quarantine = quarantine_native_repository(repository_path)
 
-        password_secret = repository.password_secret
-        repository.agents = []
-        db.session.delete(repository)
-        db.session.flush()
-        if password_secret:
-            db.session.delete(password_secret)
-        db.session.commit()
+            password_secret = repository.password_secret
+            repository.agents = []
+            db.session.delete(repository)
+            db.session.flush()
+            if password_secret:
+                db.session.delete(password_secret)
+            db.session.commit()
+        except RuntimeError as exc:
+            db.session.rollback()
+            if quarantine is not None:
+                restore_quarantined_native_repository(quarantine)
+            abort(409, message=str(exc))
+        except Exception:
+            db.session.rollback()
+            if quarantine is not None:
+                restore_quarantined_native_repository(quarantine)
+            raise
+
+        if quarantine is not None:
+            try:
+                delete_quarantined_native_repository(quarantine)
+            except (OSError, RuntimeError) as exc:
+                current_app.logger.error(
+                    "Could not purge quarantined native repository (%s)", type(exc).__name__
+                )
 
         return {"msg": "Repository deleted"}
 
@@ -249,10 +282,19 @@ class RepositoryUnlock(MethodView):
             msg="Repository unlock started",
             log_message="Repository unlock queued",
         )
-        AgentCommand(agent=agent).unlock_repository(
+        response = AgentCommand(agent=agent).unlock_repository(
             repository_id=repository.id,
             operation_uuid=operation.uuid,
         )
+        if is_agent_timeout_response(response):
+            return unknown_agent_operation_dispatch_response(
+                operation,
+                "Repository unlock dispatch status unknown",
+            )
+        if response.get("state") != AgentOperationState.success:
+            message = response.get("log", "Could not start repository unlock")
+            fail_started_agent_operation(operation, message)
+            abort(409 if is_agent_conflict_response(response) else 400, message=message)
 
         return agent_operation_start_response(operation, "Repository unlock started")
 
@@ -292,14 +334,15 @@ class RepositoryCheck(MethodView):
             operation_uuid=operation.uuid,
         )
         if is_agent_timeout_response(response):
-            message = response.get("log", "Agent request timed out")
-            fail_started_agent_operation(operation, message)
-            abort(504, message=message)
+            return unknown_agent_operation_dispatch_response(
+                operation,
+                "Repository check dispatch status unknown",
+            )
 
         if response.get("state") != AgentOperationState.success:
             message = response.get("log", "Could not start repository check")
             fail_started_agent_operation(operation, message)
-            abort(400, message=message)
+            abort(409 if is_agent_conflict_response(response) else 400, message=message)
 
         return agent_operation_start_response(operation, "Repository check started")
 

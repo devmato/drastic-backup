@@ -46,3 +46,7 @@ File jobs back up selected filesystem paths from the agent host. Proxmox jobs us
 Only create jobs for data the agent can actually access. Docker agents typically mount the host filesystem read-only under `/mnt/host`.
 
 Run repository checks manually when validating storage, or enable a post-backup repository check on schedules when the extra runtime is acceptable.
+
+## Notifications
+
+Notifications are queued after an operation report has been committed, so a provider failure does not change the operation result. Each matching operation state and notification configuration creates at most one persistent delivery. Failed deliveries remain pending and are retried when later agent operation reports are processed; there is no independent timed retry worker, so delivery is not guaranteed while no further reports arrive.

@@ -4,6 +4,58 @@ import { api } from 'boot/axios'
 import { disconnectAppSocket } from 'src/utils/socket'
 import { isAuthError, isRecoveryKeyError } from 'src/utils/auth'
 
+const RECOVERY_EXPORT_FALLBACK_FILENAME = 'drastic-backup-recovery-export.zip'
+
+function getRecoveryExportFilename(contentDisposition) {
+  const encodedFilename = contentDisposition?.match(/filename\*\s*=\s*(?:UTF-8'')?([^;]+)/i)?.[1]
+  const regularFilename = contentDisposition?.match(/filename\s*=\s*(?:"([^"]+)"|([^;]+))/i)
+  let filename = encodedFilename || regularFilename?.[1] || regularFilename?.[2] || ''
+
+  filename = filename.trim().replace(/^"|"$/g, '')
+  if (encodedFilename) {
+    try {
+      filename = decodeURIComponent(filename)
+    } catch {
+      return RECOVERY_EXPORT_FALLBACK_FILENAME
+    }
+  }
+
+  filename = filename
+    .split(/[\\/]/)
+    .pop()
+    ?.replace(/[\u0000-\u001f\u007f<>:"|?*]/g, '_')
+    .replace(/^\.+/, '')
+    .trim()
+
+  if (!filename) {
+    return RECOVERY_EXPORT_FALLBACK_FILENAME
+  }
+
+  return filename.toLowerCase().endsWith('.zip') ? filename : `${filename}.zip`
+}
+
+async function normalizeBlobApiError(error) {
+  const data = error?.response?.data
+  if (typeof Blob === 'undefined' || !(data instanceof Blob)) {
+    return
+  }
+
+  try {
+    const text = await data.text()
+    if (!text.trim()) {
+      return
+    }
+
+    try {
+      error.response.data = JSON.parse(text)
+    } catch {
+      error.response.data = { msg: text }
+    }
+  } catch {
+    // Keep the original error when the response body cannot be read.
+  }
+}
+
 export const useUserStore = defineStore('user', () => {
 
   const user = ref(null)
@@ -62,6 +114,31 @@ export const useUserStore = defineStore('user', () => {
     })
     clearSessionState()
     return response.data
+  }
+
+  async function downloadRecoveryExport(password) {
+    let response
+    try {
+      response = await api.post('/user/recovery-export', { password }, { responseType: 'blob' })
+    } catch (error) {
+      await normalizeBlobApiError(error)
+      throw error
+    }
+
+    const filename = getRecoveryExportFilename(response.headers?.['content-disposition'])
+    const objectUrl = URL.createObjectURL(response.data)
+    const link = document.createElement('a')
+    link.href = objectUrl
+    link.download = filename
+    link.style.display = 'none'
+    document.body.appendChild(link)
+
+    try {
+      link.click()
+    } finally {
+      link.remove()
+      URL.revokeObjectURL(objectUrl)
+    }
   }
 
   function clearReauthRequest() {
@@ -193,6 +270,7 @@ export const useUserStore = defineStore('user', () => {
     fetchAuthStatus,
     initializeUser,
     changePassword,
+    downloadRecoveryExport,
     requestReauth,
     confirmReauth,
     cancelReauth,
