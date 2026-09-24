@@ -11,8 +11,3 @@ services:
     env_file:
       - path: .env
         required: false
-    environment:
-      TZ: ${TZ:-UTC}
-      DRASTIC_SERVER: ${DRASTIC_SERVER:-}
-      DRASTIC_USER: ${DRASTIC_USER:-}
-      DRASTIC_PASSWORD: ${DRASTIC_PASSWORD:-}
