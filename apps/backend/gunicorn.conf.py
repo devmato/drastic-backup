@@ -1,21 +1,17 @@
 import os
 
+from drastic_server.config import DefaultConfig, env_int
 
-def _env_int(name: str, default: int) -> int:
-    value = str(os.environ.get(name, default)).strip()
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
-bind = f"0.0.0.0:{_env_int('DRASTIC_BIND_BACKEND_PORT', 5050)}"
-workers = max(1, _env_int("DRASTIC_GUNICORN_WORKERS", 1))
+bind = f"0.0.0.0:{env_int('DRASTIC_BIND_BACKEND_PORT', DefaultConfig.BIND_BACKEND_PORT)}"
+workers = env_int("DRASTIC_GUNICORN_WORKERS", DefaultConfig.GUNICORN_WORKERS)
 worker_class = "gthread"
-threads = max(1, _env_int("DRASTIC_GUNICORN_THREADS", 16))
-timeout = max(30, _env_int("DRASTIC_GUNICORN_TIMEOUT", 300))
-graceful_timeout = max(30, _env_int("DRASTIC_GUNICORN_GRACEFUL_TIMEOUT", 60))
-keepalive = max(1, _env_int("DRASTIC_GUNICORN_KEEPALIVE", 5))
+threads = env_int("DRASTIC_GUNICORN_THREADS", DefaultConfig.GUNICORN_THREADS)
+timeout = max(30, env_int("DRASTIC_GUNICORN_TIMEOUT", DefaultConfig.GUNICORN_TIMEOUT))
+graceful_timeout = max(
+    30,
+    env_int("DRASTIC_GUNICORN_GRACEFUL_TIMEOUT", DefaultConfig.GUNICORN_GRACEFUL_TIMEOUT),
+)
+keepalive = env_int("DRASTIC_GUNICORN_KEEPALIVE", DefaultConfig.GUNICORN_KEEPALIVE)
 accesslog = "-"
 errorlog = "-"
-loglevel = os.environ.get("DRASTIC_GUNICORN_LOG_LEVEL", "info")
+loglevel = os.environ.get("DRASTIC_GUNICORN_LOG_LEVEL", DefaultConfig.GUNICORN_LOG_LEVEL)

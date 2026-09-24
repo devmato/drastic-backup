@@ -13,6 +13,7 @@ from flask import current_app
 
 from drastic_common.restic import ResticApi, ResticRepository
 from drastic_common.restic.exceptions import ResticError
+from drastic_server.config import DefaultConfig
 from drastic_server.utils.urls import normalize_restic_repository_path
 
 
@@ -38,7 +39,9 @@ def restic_binary_path() -> str:
 
 def init_native_repository(repository_path: str, password: str) -> dict:
     normalized_path = normalize_restic_repository_path(repository_path)
-    internal_base_url = str(current_app.config.get("REST_SERVER_URL") or "http://rest-server:8000").rstrip("/")
+    internal_base_url = str(
+        current_app.config.get("REST_SERVER_URL") or DefaultConfig.REST_SERVER_URL
+    ).rstrip("/")
     repository = ResticRepository(
         location=f"rest:{internal_base_url}/{normalized_path}",
         password=password,
@@ -56,7 +59,9 @@ def ensure_native_repository_initialized(repository_path: str, password: str) ->
             raise
 
     normalized_path = normalize_restic_repository_path(repository_path)
-    internal_base_url = str(current_app.config.get("REST_SERVER_URL") or "http://rest-server:8000").rstrip("/")
+    internal_base_url = str(
+        current_app.config.get("REST_SERVER_URL") or DefaultConfig.REST_SERVER_URL
+    ).rstrip("/")
     repository = ResticRepository(
         location=f"rest:{internal_base_url}/{normalized_path}",
         password=password,

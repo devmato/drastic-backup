@@ -1,22 +1,19 @@
-import os
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
 
-
-def _env_int(name, default):
-    try:
-        value = int(os.environ.get(name, default))
-    except (TypeError, ValueError):
-        return default
-    return value if value > 0 else default
+from drastic_agent.config import DefaultConfig, env_int
 
 
 class ExecutionManager:
     """Bounded executor with atomic resource admission and cancellation lookup."""
 
     def __init__(self, max_workers=None, max_pending=None):
-        self.max_workers = max_workers or _env_int("DRASTIC_AGENT_MAX_WORKERS", 2)
-        self.max_pending = max_pending or _env_int("DRASTIC_AGENT_MAX_PENDING", 8)
+        self.max_workers = max_workers or env_int(
+            "DRASTIC_AGENT_MAX_WORKERS", DefaultConfig.AGENT_MAX_WORKERS
+        )
+        self.max_pending = max_pending or env_int(
+            "DRASTIC_AGENT_MAX_PENDING", DefaultConfig.AGENT_MAX_PENDING
+        )
         self._executor = ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="agent")
         self._lock = Lock()
         self._admitted = 0

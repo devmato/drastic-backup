@@ -4,15 +4,18 @@ from pathlib import Path
 from watchfiles import PythonFilter
 from watchfiles.run import run_process
 
+from drastic_agent.config import DefaultConfig
+
 
 def _parse_debounce_ms() -> int:
-    configured = str(os.getenv("DRASTIC_AGENT_HOT_RELOAD_DEBOUNCE_MS") or "2500").strip()
+    configured = os.environ.get(
+        "DRASTIC_AGENT_HOT_RELOAD_DEBOUNCE_MS",
+        DefaultConfig.AGENT_HOT_RELOAD_DEBOUNCE_MS,
+    )
     try:
-        debounce_ms = int(configured)
+        return max(int(str(configured).strip()), 0)
     except ValueError:
-        debounce_ms = 2500
-
-    return max(debounce_ms, 0)
+        return DefaultConfig.AGENT_HOT_RELOAD_DEBOUNCE_MS
 
 
 def main() -> int:

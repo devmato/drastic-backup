@@ -7,6 +7,7 @@ import sys
 import click
 
 from drastic_agent.agent import Agent, AgentExeption
+from drastic_agent.config import DefaultConfig, env_value
 
 
 @click.group(invoke_without_command=True)
@@ -17,7 +18,7 @@ def cli(ctx):
 
 
 def main():
-    env_name = str(os.environ.get("DRASTIC_ENV") or "dev").strip().lower()
+    env_name = env_value("DRASTIC_ENV", DefaultConfig.ENV).lower()
     log_levels = {
         "DEBUG": logging.DEBUG,
         "INFO": logging.INFO,

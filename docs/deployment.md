@@ -13,21 +13,23 @@ Create a production environment file:
 ./scripts/generate-env.sh prod
 ```
 
-Alternatively copy `.env.prod.example` to `.env.prod` manually. Edit `.env.prod` and set production values for secrets, database credentials, public URL, storage paths, image names, and release artifact settings. Back it up with the database and repository storage.
+Alternatively copy `.env.example` to `.env` manually. Edit `.env` and set production values for secrets, database credentials, public URL, storage paths and image names. In Arcane, paste these values into the project's **Environment Configuration (.env)** editor. Back it up with the database and repository storage.
+
+Existing deployments should create `.env` from the current `.env.example` and copy their server values from `.env.prod`. Do not rename the old file unchanged: remove `MARIADB_ROOT_PASSWORD` and keep agent credentials and Proxmox secrets only in the agent host's `.env`.
 
 Start the server stack:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod up -d
+docker compose -f docker-compose.yaml up -d
 ```
 
 The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. Set both images and `DRASTIC_AGENT_ARTIFACT_TAG` to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
+The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. Set both images to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 
-Native agent artifacts are loaded from public GitHub, Forgejo, or Gitea releases. GitHub releases provide Linux amd64 and arm64 artifacts. The backend caches each requested artifact under `DRASTIC_ASSET_CACHE_PATH` on first access and serves subsequent requests from that local cache.
+Native agents install directly from Git using a private Python runtime. Select the matching release tag with installer `--ref`; see [Agent Installation](agent-installation.md). No backend artifact cache is needed.
 
 ## Agent Installation
 
@@ -41,10 +43,11 @@ The native installer stores agent files under `/opt/drastic-agent`, installs a w
 
 ## Agent Stack
 
-For Docker-based agents, use the same `.env.prod` style configuration or a host-specific environment file:
+For Docker-based agents, copy the dedicated host configuration template:
 
 ```bash
-docker compose -f docker-compose.agent.yaml --env-file .env.prod up -d
+cp .env.agent.example .env
+docker compose -f docker-compose.agent.yaml up -d
 ```
 
 The agent talks to the server through `DRASTIC_SERVER`.
@@ -55,7 +58,6 @@ The server stack uses host paths for persistent data:
 
 - `DRASTIC_HOST_DB_PATH` -- MariaDB data.
 - `DRASTIC_REST_SERVER_STORAGE_PATH` -- Native restic repositories.
-- `DRASTIC_ASSET_CACHE_PATH` -- Cached release assets served by the backend.
 
 The agent stack uses host paths for agent state and backup source access:
 
@@ -101,10 +103,10 @@ dRastic Backup is intended for trusted Homelab environments. Prefer running it b
 Pull the new images and recreate the Compose stack:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod pull
-docker compose -f docker-compose.yaml --env-file .env.prod up -d
-docker compose -f docker-compose.agent.yaml --env-file .env.prod pull
-docker compose -f docker-compose.agent.yaml --env-file .env.prod up -d
+docker compose -f docker-compose.yaml pull
+docker compose -f docker-compose.yaml up -d
+docker compose -f docker-compose.agent.yaml pull
+docker compose -f docker-compose.agent.yaml up -d
 ```
 
 Database migrations run during backend startup.

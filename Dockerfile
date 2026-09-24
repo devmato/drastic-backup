@@ -38,8 +38,8 @@ COPY apps/backend/pyproject.toml apps/backend/uv.lock apps/backend/README.md ./
 RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 RUN uv sync --frozen --no-dev --no-install-project
 
-COPY .env.default /app/.env.default
 COPY apps/backend/ ./
+COPY scripts/install-drastic-agent.sh src/drastic_server/services/agent/install.sh
 RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 RUN uv sync --frozen --no-dev
 

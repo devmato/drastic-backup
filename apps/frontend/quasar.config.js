@@ -97,11 +97,6 @@ module.exports = configure(function (/* ctx */) {
           changeOrigin: true,
           pathRewrite: { '^/api': '/api' }
         },
-        '/agents': {
-          target: apiProxyTarget,
-          changeOrigin: true,
-          pathRewrite: { '^/agents': '/agents' }
-        },
         '/install': {
           target: apiProxyTarget,
           changeOrigin: true,

@@ -1,15 +1,7 @@
-import os
 import subprocess
 from threading import Lock
 
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        parsed = int(str(os.environ.get(name, default)).strip())
-    except (TypeError, ValueError):
-        return default
-
-    return parsed if parsed > 0 else default
+from drastic_agent.config import DefaultConfig, env_int
 
 
 class AgentAction:
@@ -20,7 +12,7 @@ class AgentAction:
         report.log_message(f"Executing command {command} on agent...")
         cmd = subprocess.run(
             command,
-            timeout=_env_int("DRASTIC_TASK_TIMEOUT_SECONDS", 600),
+            timeout=env_int("DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS),
             shell=True,
             check=True,
             capture_output=True,
@@ -29,7 +21,7 @@ class AgentAction:
 
     @staticmethod
     def docker(report, docker_client, container, action, command, **kwargs):
-        timeout = _env_int("DRASTIC_TASK_TIMEOUT_SECONDS", 600)
+        timeout = env_int("DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS)
         api = getattr(docker_client, "api", None)
         with AgentAction._docker_timeout_lock:
             previous_timeout = getattr(api, "timeout", None)

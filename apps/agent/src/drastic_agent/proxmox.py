@@ -6,6 +6,8 @@ import time
 
 import requests
 
+from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
+
 
 class ProxmoxError(Exception):
     pass
@@ -13,17 +15,19 @@ class ProxmoxError(Exception):
 
 class ProxmoxApiClient:
     def __init__(self):
-        self.base_url = str(
-            os.environ.get("DRASTIC_PROXMOX_API_URL") or "https://127.0.0.1:8006/api2/json"
-        ).rstrip("/")
+        self.base_url = env_value("DRASTIC_PROXMOX_API_URL", DefaultConfig.PROXMOX_API_URL).rstrip(
+            "/"
+        )
         self.token_id = str(os.environ.get("DRASTIC_PROXMOX_TOKEN_ID") or "").strip()
         self.token_secret = str(os.environ.get("DRASTIC_PROXMOX_TOKEN_SECRET") or "").strip()
         self.node_override = str(os.environ.get("DRASTIC_PROXMOX_NODE") or "").strip()
-        self.verify_tls = str(
-            os.environ.get("DRASTIC_PROXMOX_VERIFY_TLS") or "false"
-        ).strip().lower() in {"1", "true", "yes", "on"}
-        self.command_timeout = _env_int("DRASTIC_COMMAND_TIMEOUT_SECONDS", 60)
-        self.task_timeout = _env_int("DRASTIC_TASK_TIMEOUT_SECONDS", 600)
+        self.verify_tls = env_flag("DRASTIC_PROXMOX_VERIFY_TLS", DefaultConfig.PROXMOX_VERIFY_TLS)
+        self.command_timeout = env_int(
+            "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS
+        )
+        self.task_timeout = env_int(
+            "DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS
+        )
         self._node = None
 
     @property
@@ -145,15 +149,6 @@ class ProxmoxApiClient:
                 raise ProxmoxError(f"Timed out while waiting for Proxmox task {upid}")
 
             time.sleep(poll_interval)
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        parsed = int(str(os.environ.get(name, default)).strip())
-    except (TypeError, ValueError):
-        return default
-
-    return parsed if parsed > 0 else default
 
 
 class ProxmoxGuestDriver:

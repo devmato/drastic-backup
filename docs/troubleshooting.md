@@ -10,7 +10,7 @@ Check required production variables first:
 Check container logs:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod logs backend
+docker compose -f docker-compose.yaml logs backend
 ```
 
 ## Database Connection Fails
@@ -24,7 +24,7 @@ For the default Compose stack, the database host should be `db`, not `127.0.0.1`
 Check the agent logs:
 
 ```bash
-docker compose -f docker-compose.agent.yaml --env-file .env.prod logs agent
+docker compose -f docker-compose.agent.yaml logs agent
 ```
 
 Verify:
@@ -70,7 +70,7 @@ Native repository deletion first moves unlocked storage into a private quarantin
 Inspect backend startup logs for the reconciliation counts or run the maintenance command explicitly:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod exec backend \
+docker compose -f docker-compose.yaml exec backend \
   uv run flask --app run.py repository reconcile-quarantine
 ```
 

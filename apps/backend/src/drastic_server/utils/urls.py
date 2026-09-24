@@ -5,7 +5,7 @@ from urllib.parse import urlparse, urlunparse
 
 from flask import current_app, has_request_context, request
 
-from drastic_server.env_loader import parse_int_value
+from drastic_server.config import DefaultConfig, parse_int_value
 
 _RESTIC_MARKER = "/restic/"
 
@@ -16,7 +16,7 @@ def configured_public_url(config: Mapping[str, Any] | None = None) -> str:
     if explicit:
         return explicit
 
-    port = parse_int_value(source.get("HOST_BACKEND_PORT"), 5050)
+    port = parse_int_value(source.get("HOST_BACKEND_PORT"), DefaultConfig.HOST_BACKEND_PORT)
     return f"http://127.0.0.1:{port}"
 
 

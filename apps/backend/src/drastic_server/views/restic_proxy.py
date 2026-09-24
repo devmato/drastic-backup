@@ -6,7 +6,7 @@ import bcrypt
 import requests
 from flask import Blueprint, Response, current_app, jsonify, request, stream_with_context
 
-from drastic_server.env_loader import parse_int_value
+from drastic_server.config import DefaultConfig, parse_int_value
 from drastic_server.models.agent import Agent
 from drastic_server.models.repository import Repository
 
@@ -74,10 +74,13 @@ def proxy_restic(proxy_path: str):
     upstream_path = f"/{normalized_proxy_path}"
     if has_trailing_slash:
         upstream_path = f"{upstream_path}/"
-    upstream_url = f"{str(current_app.config.get('REST_SERVER_URL') or 'http://rest-server:8000').rstrip('/')}{upstream_path}"
+    upstream_url = f"{str(current_app.config.get('REST_SERVER_URL') or DefaultConfig.REST_SERVER_URL).rstrip('/')}{upstream_path}"
 
     try:
-        proxy_timeout = parse_int_value(current_app.config.get("REST_PROXY_TIMEOUT_SECONDS"), 300)
+        proxy_timeout = parse_int_value(
+            current_app.config.get("REST_PROXY_TIMEOUT_SECONDS"),
+            DefaultConfig.REST_PROXY_TIMEOUT_SECONDS,
+        )
         upstream = requests.request(
             method=request.method,
             url=upstream_url,

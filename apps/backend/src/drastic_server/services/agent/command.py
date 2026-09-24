@@ -3,7 +3,7 @@ from flask_socketio import call, emit
 from socketio.exceptions import TimeoutError
 
 from drastic_common.agent.commands import AgentCommandName, agent_command_value
-from drastic_server.env_loader import parse_int_value
+from drastic_server.config import DefaultConfig, parse_int_value
 from drastic_server.models.agent import AgentOperationState, AgentOperationType
 from drastic_server.schemas.agent import AgentOperationSchema
 from drastic_server.schemas.job import JobSchema
@@ -40,7 +40,10 @@ class AgentService:
 
     @staticmethod
     def command_timeout():
-        return parse_int_value(current_app.config.get("COMMAND_TIMEOUT_SECONDS"), 60)
+        return parse_int_value(
+            current_app.config.get("COMMAND_TIMEOUT_SECONDS"),
+            DefaultConfig.COMMAND_TIMEOUT_SECONDS,
+        )
 
     @classmethod
     def send_command(cls, agent, command, await_response=True, timeout=None, **kwargs):

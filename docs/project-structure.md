@@ -68,11 +68,12 @@ Important paths:
 
 ## Environment Files
 
-- `.env.default` -- Shared defaults.
-- `.env.dev` -- Tracked local development defaults.
+- `.env.example` -- Server configuration template for Compose and Arcane.
+- `.env.agent.example` -- Standalone Docker agent configuration template.
+- `.env` -- Active deployment configuration, not committed.
+- `.env.dev` -- Tracked, ready-to-run local development configuration.
 - `.env.dev.override` -- Optional local overrides, not committed.
 - `.env.test.example` -- Test environment template.
-- `.env.prod.example` -- Production environment template.
 
 ## Generated Output
 

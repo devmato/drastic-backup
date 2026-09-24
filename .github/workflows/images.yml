@@ -1,10 +1,9 @@
-name: Agent Image
+name: Images
 
 on:
   push:
     branches:
       - develop
-      - main
     tags:
       - "v*"
   workflow_dispatch:
@@ -15,17 +14,27 @@ permissions:
 
 jobs:
   publish:
-    name: Publish Agent Image
+    name: Publish ${{ matrix.image }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: drastic-backup-server
+            dockerfile: Dockerfile
+          - image: drastic-backup-agent
+            dockerfile: apps/agent/Dockerfile
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - name: Publish image
         env:
+          IMAGE_NAME: ${{ matrix.image }}
+          DOCKERFILE: ${{ matrix.dockerfile }}
           CONTAINER_REGISTRY: ghcr.io
           CONTAINER_IMAGE_NAMESPACE: devmato
           CONTAINER_PLATFORMS: linux/amd64,linux/arm64
           CONTAINER_USERNAME: ${{ github.actor }}
           CONTAINER_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
-        run: scripts/ci/publish-docker-image.sh drastic-backup-agent apps/agent/Dockerfile .
+        run: scripts/ci/publish-docker-image.sh "$IMAGE_NAME" "$DOCKERFILE" .

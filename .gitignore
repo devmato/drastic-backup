@@ -60,14 +60,13 @@ docs-site/
 # -----------------------------
 **/.env
 **/.env.*
-!**/.env.default
+!**/.env.example
 !**/.env.dev
 !**/.env.dev.example
 !**/.env.override.example
 !**/.env.dev.override.example
 !**/.env.test.example
-!**/.env.prod.example
-!**/.env.prod.override.example
+!**/.env.agent.example
 **/*token*.txt
 **/o365_token.txt
 

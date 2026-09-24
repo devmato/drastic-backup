@@ -38,7 +38,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-drastic_server = ["templates/**/*.html"]
+drastic_server = ["templates/**/*.html", "services/agent/*.sh"]
 
 [dependency-groups]
 dev = [

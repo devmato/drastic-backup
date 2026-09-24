@@ -45,6 +45,7 @@ from drastic_agent.agent.execution import ExecutionManager
 from drastic_agent.agent.operation_store import operation_store
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.agent.schemas import AgentReportSchema
+from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
 from drastic_agent.jobs.registry import get_job_handler
 from drastic_agent.proxmox import ProxmoxApiClient, ProxmoxError, get_proxmox_guest_driver
 from drastic_agent.services.restore import RestoreService
@@ -69,7 +70,7 @@ from drastic_common.ssh_keys import generate_ssh_keypair
 
 
 def _agent_data_dir() -> str:
-    return os.environ.get("DRASTIC_AGENT_DATA_DIR", "/app/data")
+    return env_value("DRASTIC_AGENT_DATA_DIR", DefaultConfig.AGENT_DATA_DIR)
 
 
 def _agent_data_path(*parts: str) -> str:
@@ -113,23 +114,6 @@ def _build_managed_restic_location(server_url: str | None, repository_path: str)
         return str(repository_path or "")
 
     return f"rest:{effective_server_url}/restic/{normalized_path}"
-
-
-def _env_flag(name: str, default: bool = False) -> bool:
-    value = str(os.environ.get(name) or "").strip().lower()
-    if not value:
-        return default
-
-    return value in {"1", "true", "yes", "on"}
-
-
-def _env_int(name: str, default: int) -> int:
-    try:
-        parsed = int(str(os.environ.get(name, default)).strip())
-    except (TypeError, ValueError):
-        return default
-
-    return parsed if parsed > 0 else default
 
 
 def _encode_config_secret(value: str) -> str:
@@ -367,7 +351,7 @@ class Agent:
         self.__resticapi = ResticApi(
             binary_path=binary_path,
             cancellation_event=shutdown_event,
-            timeout=_env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400),
+            timeout=env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", DefaultConfig.RESTIC_TIMEOUT_SECONDS),
         )
 
     def __download_restic_binary(self, binary_folder, binary_name, binary_path):
@@ -648,7 +632,9 @@ class Agent:
                     "request",
                     {"action": __action, "args": arguments},
                     namespace="/agent",
-                    timeout=_env_int("DRASTIC_COMMAND_TIMEOUT_SECONDS", 60),
+                    timeout=env_int(
+                        "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS
+                    ),
                 )
             except Exception as exc:
                 logging.warning(f"Agent request '{__action}' failed: {exc}")
@@ -985,7 +971,9 @@ class Agent:
         return self.__execute_actions(actions=actions, report=report)
 
     def __wait_for_report_pid(self, report):
-        timeout = _env_int("DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS", 30)
+        timeout = env_int(
+            "DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS", DefaultConfig.CANCEL_WAIT_TIMEOUT_SECONDS
+        )
         deadline = monotonic() + timeout
         while "pid" not in report.data and monotonic() < deadline:
             sleep(1)
@@ -1445,11 +1433,14 @@ class Agent:
 
     @property
     def managed_repo_rewrite_enabled(self) -> bool:
-        return _env_flag("DRASTIC_AGENT_REWRITE_MANAGED_REPO_URLS")
+        return env_flag(
+            "DRASTIC_AGENT_REWRITE_MANAGED_REPO_URLS",
+            DefaultConfig.AGENT_REWRITE_MANAGED_REPO_URLS,
+        )
 
     @property
     def env_name(self) -> str:
-        return str(os.environ.get("DRASTIC_ENV") or "dev").strip().lower()
+        return env_value("DRASTIC_ENV", DefaultConfig.ENV).lower()
 
     @property
     def authdata(self):

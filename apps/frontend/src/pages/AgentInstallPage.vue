@@ -10,8 +10,8 @@
       <div class="text-h5">Add Agent</div>
       </div>
       <div class="text-body2 text-grey-7 q-mt-sm">
-        Install a native agent, download platform artifacts, or run the Docker agent. Install
-        snippets and artifact URLs can be copied directly for the selected target.
+        Install the Linux agent directly from Git or run the Docker agent.
+        Copy the install snippet for the selected target.
       </div>
     </div>
 
@@ -47,6 +47,7 @@
 
           <q-card-section class="col-auto q-pt-none">
             <q-tabs
+              :class="$q.dark.isActive ? 'text-grey-3' : 'text-grey-9'"
               :model-value="selectedActionId(card)"
               dense
               no-caps
@@ -69,24 +70,13 @@
                 <div class="text-body2 text-grey-7 q-mt-xs">{{ action.note }}</div>
                 <q-card flat bordered class="q-mt-sm">
                   <q-card-section class="row items-center q-pa-sm">
-                    <div class="text-caption text-grey-7">{{ action.type === 'asset' ? 'Artifact URL' : 'Install snippet' }}</div>
+                    <div class="text-caption text-grey-7">Install snippet</div>
                     <q-space />
                     <q-btn dense flat color="primary" icon="content_copy" label="Copy" no-caps @click="copyAction(action)" />
-                    <q-btn
-                      v-if="action.type === 'asset'"
-                      dense
-                      flat
-                      color="primary"
-                      icon="download"
-                      label="Download"
-                      no-caps
-                      :href="artifactUrl(action.target)"
-                      target="_blank"
-                    />
                   </q-card-section>
                   <q-separator />
                   <q-card-section class="q-pa-none">
-                    <pre class="db-code-block db-code-block--wrap q-ma-none">{{ buildActionSnippet(action) }}</pre>
+                    <pre class="db-code-block db-code-block--wrap text-dark q-ma-none">{{ buildActionSnippet(action) }}</pre>
                   </q-card-section>
                 </q-card>
               </q-tab-panel>
@@ -117,7 +107,6 @@ const showDevelopTab = computed(() => ['dev', 'test'].includes(userStore.environ
 const publicBaseUrl = computed(() => (installOptions.value.server_url || window.location.origin).replace(/\/$/, ''))
 
 const platformCards = computed(() => {
-  const nativeTargets = installOptions.value.targets.filter((target) => target.deployment === 'native')
   const dockerTargets = installOptions.value.targets.filter((target) => target.deployment === 'docker')
 
   return [
@@ -131,19 +120,9 @@ const platformCards = computed(() => {
           id: 'linux-setup',
           label: 'Setup Script',
           type: 'setup',
-          description: 'Recommended Linux setup script',
-          note: 'Installs the agent as a systemd service and asks for credentials if needed.',
+          description: 'Install from Git',
+          note: 'Installs a private Python runtime and systemd service under /opt/drastic-agent. Requires git, curl and root or sudo. Prompts for registration credentials.',
         },
-        ...nativeTargets
-          .filter((target) => target.os === 'linux')
-          .map((target) => ({
-            id: target.id,
-            label: `${archLabel(target.arch)} .tar.gz`,
-            type: 'asset',
-            description: `Manual Linux ${archLabel(target.arch)} asset download`,
-            note: 'Downloads the cached release artifact and starts the agent manually.',
-            target,
-          })),
         ...(showDevelopTab.value
           ? [
               {
@@ -181,40 +160,6 @@ const platformCards = computed(() => {
         },
       ],
     },
-    /* Windows and macOS cards stay hidden until native install flows are ready.
-    {
-      id: 'windows',
-      title: 'Windows',
-      icon: 'fa-brands fa-windows',
-      chips: ['Manual', 'amd64'],
-      actions: nativeTargets
-        .filter((target) => target.os === 'windows')
-        .map((target) => ({
-          id: target.id,
-          label: `${archLabel(target.arch)} .zip`,
-          type: 'asset',
-          description: `Manual Windows ${archLabel(target.arch)} asset download`,
-          note: 'Downloads the cached release artifact. A Windows service installer is planned.',
-          target,
-        })),
-    },
-    {
-      id: 'darwin',
-      title: 'macOS',
-      icon: 'fa-brands fa-apple',
-      chips: ['Manual', 'Intel'],
-      actions: nativeTargets
-        .filter((target) => target.os === 'darwin')
-        .map((target) => ({
-          id: target.id,
-          label: 'Intel .tar.gz',
-          type: 'asset',
-          description: 'Manual macOS Intel asset download',
-          note: 'Downloads the cached release artifact. A launchd service installer is planned.',
-          target,
-        })),
-    },
-    */
   ]
 })
 
@@ -243,44 +188,11 @@ function buildActionSnippet(action) {
     return buildDevelopSnippet()
   }
 
-  if (action.type === 'asset') {
-    return artifactUrl(action.target)
-  }
-
-  return buildManualAssetSnippet(action.target)
+  return ''
 }
 
 function buildDevelopSnippet() {
   return './scripts/dev.sh agent-local'
-}
-
-function buildManualAssetSnippet(target) {
-  const serverUrl = publicBaseUrl.value
-
-  if (target.os === 'windows') {
-    return [
-      '$ErrorActionPreference = "Stop"',
-      `Invoke-WebRequest -Uri ${quotePowerShell(artifactUrl(target))} -OutFile "drastic-agent.zip"`,
-      'Expand-Archive -Force "drastic-agent.zip" -DestinationPath .',
-      '$agentDir = Get-ChildItem -Directory -Filter "drastic-agent-*" | Select-Object -First 1',
-      'Set-Location $agentDir.FullName',
-      `$env:DRASTIC_SERVER=${quotePowerShell(serverUrl)}`,
-      '$env:DRASTIC_USER="<your-username>"',
-      '$env:DRASTIC_PASSWORD="<your-password>"',
-      '.\\drastic-agent.exe',
-    ].join('\n')
-  }
-
-  return [
-    `curl -fL ${quoteShell(artifactUrl(target))} -o drastic-agent.tar.gz`,
-    'tar -xzf drastic-agent.tar.gz',
-    'cd drastic-agent-*',
-    'chmod +x drastic-agent',
-    `export DRASTIC_SERVER=${quoteShell(serverUrl)}`,
-    "export DRASTIC_USER='<your-username>'",
-    "export DRASTIC_PASSWORD='<your-password>'",
-    './drastic-agent',
-  ].join('\n')
 }
 
 function buildDockerRunSnippet(image) {
@@ -337,30 +249,16 @@ function setupScriptUrl() {
   return `${publicBaseUrl.value}/install`
 }
 
-function artifactUrl(target) {
-  return `${publicBaseUrl.value}/agents/${target.os}/${target.arch}`
-}
-
-function archLabel(arch) {
-  return arch === 'amd64' ? 'x86_64' : arch
-}
-
 function quoteShell(value) {
   return `'${String(value || '').replaceAll("'", "'\\''")}'`
-}
-
-function quotePowerShell(value) {
-  return `"${String(value || '').replaceAll('`', '``').replaceAll('"', '`"')}"`
 }
 
 async function copyAction(action) {
   try {
     await copyToClipboard(buildActionSnippet(action))
-    const item = action.type === 'asset' ? 'URL' : 'snippet'
-    $q.notify({ message: `${action.label} ${item} copied`, color: 'green', position: 'top' })
+    $q.notify({ message: `${action.label} snippet copied`, color: 'green', position: 'top' })
   } catch {
-    const item = action.type === 'asset' ? 'URL' : 'snippet'
-    $q.notify({ message: `Could not copy ${item}`, color: 'red', position: 'top' })
+    $q.notify({ message: 'Could not copy snippet', color: 'red', position: 'top' })
   }
 }
 

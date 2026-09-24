@@ -21,14 +21,11 @@ prepare_dev_mountpoints() {
         "$PROJECT_ROOT/apps/backend/storage/rest-server" \
         "$PROJECT_ROOT/apps/backend/import" \
         "$PROJECT_ROOT/apps/backend/data" \
-        "$PROJECT_ROOT/apps/backend/data/asset-cache" \
         "$AGENT_LOCAL_DATA_DIR"
 }
 
 clear_backend_dev_data() {
-    rm -rf \
-        "$PROJECT_ROOT/apps/backend/storage/rest-server" \
-        "$PROJECT_ROOT/apps/backend/data/asset-cache"
+    rm -rf "$PROJECT_ROOT/apps/backend/storage/rest-server"
 
     prepare_dev_mountpoints
 }
@@ -87,7 +84,7 @@ Optionen fuer up/restart:
 
 Optionen fuer agent-local:
   --debug         Host-Agent explizit mit DEBUG starten
-  --env <name>    Env-Dateien fuer dev/test/prod laden (Default: aktuelles DRASTIC_ENV oder dev)
+  --env <name>    dev laedt .env.dev, test/prod laden .env
   --env-file <p>  Zusaetzliche Env-Datei nach den Standarddateien laden
   --data-dir <p>  Datenverzeichnis fuer den lokalen Agent setzen
   --server <url>  DRASTIC_SERVER explizit setzen
@@ -300,12 +297,12 @@ cmd_agent_local() {
     parse_agent_local_flags "$@"
 
     local env_name="${AGENT_LOCAL_ENV:-dev}"
-    local env_file="$PROJECT_ROOT/.env.${env_name}"
-    local override_env_file="$PROJECT_ROOT/.env.${env_name}.override"
-
-    load_env_file "$PROJECT_ROOT/.env.default"
-    load_env_file "$env_file"
-    load_env_file "$override_env_file"
+    if [[ "$env_name" == "dev" ]]; then
+        load_env_file "$PROJECT_ROOT/.env.dev"
+        load_env_file "$PROJECT_ROOT/.env.dev.override"
+    else
+        load_env_file "$PROJECT_ROOT/.env"
+    fi
 
     if [[ -n "$AGENT_LOCAL_ENV_FILE" ]]; then
         load_env_file "$AGENT_LOCAL_ENV_FILE"

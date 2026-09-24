@@ -2,9 +2,11 @@ import os
 
 import dataset
 
+from drastic_agent.config import DefaultConfig, env_value
+
 
 def _agent_data_dir() -> str:
-    return os.environ.get("DRASTIC_AGENT_DATA_DIR", "/app/data")
+    return env_value("DRASTIC_AGENT_DATA_DIR", DefaultConfig.AGENT_DATA_DIR)
 
 
 os.makedirs(_agent_data_dir(), exist_ok=True)

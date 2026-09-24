@@ -30,9 +30,6 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [dependency-groups]
-build = [
-    "pyinstaller>=6.11.0",
-]
 dev = [
     "pytest>=8.4.2",
     "ruff>=0.14.9",

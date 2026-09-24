@@ -59,7 +59,7 @@ The matching Forgejo workflow remains under `.forgejo/workflows/test.yml` and ex
 
 ## Container Publishing
 
-Server and agent image workflows publish container images on branch pushes, release tags, and manual dispatch depending on the workflow.
+`.github/workflows/images.yml` publishes server and agent images as separate matrix jobs on `develop` pushes, `v*` tags, and manual dispatch. `main` is tested but does not trigger an image build: the release tag points to the same commit, so building on both would duplicate the release images. Automatic image tags include `develop` for integration and `vX.Y.Z`, `X.Y.Z`, and `latest` for releases.
 
 GitHub publishes the default images to GitHub Container Registry:
 
@@ -68,35 +68,23 @@ ghcr.io/devmato/drastic-backup-server
 ghcr.io/devmato/drastic-backup-agent
 ```
 
-The GitHub workflows use `GITHUB_TOKEN` with `packages: write` permission and do not require additional secrets for GHCR publishing in the `devmato/drastic-backup` repository. GHCR server and agent image tags are published as multi-arch manifests for `linux/amd64` and `linux/arm64`.
+The GitHub workflow uses `GITHUB_TOKEN` with `packages: write` permission and does not require additional secrets for GHCR publishing in the `devmato/drastic-backup` repository. GHCR server and agent image tags are published as multi-arch manifests for `linux/amd64` and `linux/arm64`.
 
-Forgejo-compatible publishing remains available through `.forgejo/workflows/server-image.yml` and `.forgejo/workflows/agent-image.yml`. Required Forgejo variables and secrets:
+Forgejo-compatible publishing remains available through `.forgejo/workflows/images.yml`, with the same triggers and separate server/agent matrix jobs. Required Forgejo variables and secrets:
 
 - `CONTAINER_REGISTRY` -- Registry host, for example `forgejo.example.net`.
 - `CONTAINER_IMAGE_NAMESPACE` -- Optional image namespace. Defaults to the owner/repository style namespace when omitted by the publishing script.
 - `CONTAINER_USERNAME` -- Optional secret for registry username.
 - `CONTAINER_PASSWORD` -- Optional secret for registry password.
-- `FORGEJO_TOKEN` -- Secret used as fallback registry password and for release asset uploads.
+- `FORGEJO_TOKEN` -- Secret used as fallback registry password.
 
-## Agent Artifact
+## Native Agent
 
-The GitHub agent artifact workflow builds Linux amd64 and arm64 archives for release distribution and attaches them to GitHub releases on `v*` tags. Artifact names follow the backend artifact template, for example `drastic-agent-linux-amd64-v0.1.0.tar.gz` and `drastic-agent-linux-arm64-v0.1.0.tar.gz`. Forgejo agent artifact publishing remains amd64-only.
+Native Linux agents install directly from Git with `scripts/install-drastic-agent.sh`. The installer uses the committed lockfile and a private Python runtime; no PyInstaller archives or release-asset upload jobs are built. Lifecycle tests run with the agent tests, and CI checks installer shell syntax and Python compilation.
 
-Native installers download public release assets through the backend cache. The backend builds release download URLs in this form for GitHub, Forgejo, and Gitea:
+`.github/workflows/release.yml` retains GitHub release publication and generated release notes for `v*` tags, without attaching native agent archives.
 
-```text
-<base-url>/<owner>/<repo>/releases/download/<tag>/<asset-name>
-```
-
-When `DRASTIC_AGENT_ARTIFACT_TAG` is empty, the backend derives the tag from its package version, for example backend version `0.1.0` resolves to release tag `v0.1.0`.
-
-The build helper is:
-
-```bash
-./scripts/build-agent-artifact.sh
-```
-
-GitHub release assets are uploaded with the GitHub release workflow. Forgejo release assets are still supported by the Forgejo-specific CI helper under `scripts/ci/`.
+Both GitHub and Forgejo retain their server and agent Docker-image builds. Official GHCR images continue to support `linux/amd64` and `linux/arm64`.
 
 ## Git Hosting
 

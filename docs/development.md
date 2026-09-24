@@ -69,11 +69,11 @@ Override the server URL explicitly:
 ./scripts/dev.sh agent-local --env prod --server https://backup.example.net --data-dir /var/lib/drastic-agent
 ```
 
-`agent-local` loads `.env.default`, `.env.<name>`, `.env.<name>.override`, and then an optional `--env-file`.
+`agent-local` loads `.env.dev` and optional `.env.dev.override` for `dev`. For `test` and `prod` it loads `.env`. An explicit `--env-file` is loaded last.
 
 ## Test Native Installer From Git
 
-For installer and systemd testing without release artifacts, start the development stack without the Docker agent and install a native agent from a concrete git commit:
+For installer and systemd testing, start the development stack without the Docker agent and install a native agent from a concrete Git commit:
 
 ```bash
 ./scripts/dev.sh up --no-agent
@@ -81,18 +81,15 @@ For installer and systemd testing without release artifacts, start the developme
 
 ```bash
 curl -fsSL http://127.0.0.1:5050/install | bash -s -- \
-  --action install \
-  --source git \
-  --version <commit-sha> \
+  --ref <commit-sha> \
   --user admin \
-  --password admin \
-  --no-start
+  --password admin
 ```
 
-The target host needs `git`, `uv`, Python, and systemd. The `/install` endpoint bootstraps `/opt/drastic-agent/agentctl`, which can later update or uninstall the local native agent without fetching the bootstrap script again:
+The target host needs `git`, `curl`, systemd and root or sudo access. Python and `uv` are installed privately under `/opt/drastic-agent`. For uncommitted changes, use `bash scripts/install-drastic-agent.sh --source "$PWD" --ref develop --server http://127.0.0.1:5050`. Manage the installed agent locally:
 
 ```bash
-sudo drastic-agent update --source git --version <commit-sha> --no-start
+sudo drastic-agent update --ref <commit-sha>
 ```
 
 ```bash

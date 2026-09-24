@@ -4,25 +4,21 @@ import hmac
 import logging
 from pathlib import Path
 
-from flask import Flask, Response, abort, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, send_file, send_from_directory
 
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.cli import register_cli
-from drastic_server.env_loader import (
-    apply_drastic_environment_config,
-    apply_runtime_environment_defaults,
+from drastic_server.config import (
+    DefaultConfig,
+    apply_environment_config,
     default_dev_cors_origins,
     parse_int_value,
+    validate_config,
 )
 from drastic_server.extensions import db, jwt, migrate, smorest_api, socketio
 from drastic_server.models.user import User
 from drastic_server.services.agent import (
-    AgentArtifactError,
-    AgentArtifactNotFoundError,
-    agent_artifact_path,
-    agent_git_repository,
     render_linux_agent_install_script,
-    render_linux_agentctl_script,
 )
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.socketio.namespaces import agent as _agent_namespace  # noqa: F401
@@ -39,24 +35,27 @@ def cleanup_app():
 
 
 def create_app(config_object=None):
-    apply_runtime_environment_defaults()
     app = Flask(__name__)
+    app.config.from_object(DefaultConfig)
 
     atexit.register(cleanup_app)
 
     if config_object:
         app.config.from_object(config_object)
 
-    apply_drastic_environment_config(app.config)
+    apply_environment_config(app.config)
+    validate_config(app.config)
 
     _derive_application_secrets(app)
     _derive_settings_encryption_key(app)
-    app.config["BIND_BACKEND_PORT"] = parse_int_value(app.config.get("BIND_BACKEND_PORT"), 5050)
+    app.config["BIND_BACKEND_PORT"] = parse_int_value(
+        app.config.get("BIND_BACKEND_PORT"), DefaultConfig.BIND_BACKEND_PORT
+    )
     app.config["HOST_BACKEND_PORT"] = parse_int_value(
         app.config.get("HOST_BACKEND_PORT"), app.config["BIND_BACKEND_PORT"]
     )
     app.config["BIND_DEV_FRONTEND_PORT"] = parse_int_value(
-        app.config.get("BIND_DEV_FRONTEND_PORT"), 9050
+        app.config.get("BIND_DEV_FRONTEND_PORT"), DefaultConfig.BIND_DEV_FRONTEND_PORT
     )
     app.config["HOST_DEV_FRONTEND_PORT"] = parse_int_value(
         app.config.get("HOST_DEV_FRONTEND_PORT"), app.config["BIND_DEV_FRONTEND_PORT"]
@@ -83,7 +82,6 @@ def create_app(config_object=None):
     # Register CLI commands
     register_cli(app)
     _register_install_route(app)
-    _register_agent_artifact_routes(app)
     _register_docs_routes(app)
     _register_spa_routes(app)
 
@@ -102,31 +100,9 @@ def _register_install_route(app: Flask) -> None:
         from drastic_server.utils.urls import public_server_url
 
         return Response(
-            render_linux_agent_install_script(public_server_url()),
+            render_linux_agent_install_script(public_server_url(), app.config["AGENT_GIT_REPOSITORY"]),
             content_type="text/x-shellscript; charset=utf-8",
         )
-
-    @app.get("/agentctl")
-    def serve_agent_lifecycle_manager():
-        from drastic_server.utils.urls import public_server_url
-
-        return Response(
-            render_linux_agentctl_script(public_server_url(), agent_git_repository(app.config)),
-            content_type="text/x-shellscript; charset=utf-8",
-        )
-
-
-def _register_agent_artifact_routes(app: Flask) -> None:
-    @app.get("/agents/<string:os_name>/<string:arch>")
-    def serve_agent_artifact(os_name: str, arch: str):
-        try:
-            artifact_path = agent_artifact_path(app.config, os_name, arch, request.args.get("version"))
-        except AgentArtifactNotFoundError as exc:
-            abort(404, description=str(exc))
-        except AgentArtifactError as exc:
-            abort(502, description=str(exc))
-
-        return send_file(artifact_path, as_attachment=True, download_name=artifact_path.name)
 
 
 def _register_spa_routes(app: Flask) -> None:
@@ -178,15 +154,6 @@ def _derive_application_secrets(app: Flask) -> None:
         app.config["JWT_SECRET_KEY"] = explicit_jwt_secret
     else:
         app.config["JWT_SECRET_KEY"] = _derive_secret(master_secret, b"drastic:jwt-signing")
-
-    app.config.setdefault("JWT_TOKEN_LOCATION", ["cookies"])
-    app.config.setdefault("JWT_REFRESH_TOKEN_EXPIRES", 60 * 60 * 24 * 30)
-    app.config.setdefault("JWT_SESSION_COOKIE", False)
-    app.config.setdefault("JWT_COOKIE_SECURE", False)
-    app.config.setdefault("JWT_COOKIE_SAMESITE", "Lax")
-    app.config.setdefault("JWT_COOKIE_CSRF_PROTECT", True)
-    app.config.setdefault("JWT_REFRESH_COOKIE_PATH", "/api/auth")
-    app.config.setdefault("JWT_ACCESS_COOKIE_PATH", "/")
 
 
 def _derive_settings_encryption_key(app: Flask) -> None:

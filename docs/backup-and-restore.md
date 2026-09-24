@@ -271,20 +271,20 @@ The Recovery Export is a manual reconstruction aid. It is not currently an impor
 A recoverable control-plane backup consists of all of the following from the same deployment:
 
 - A MariaDB logical dump.
-- `.env.prod` and any external secret store, especially `DRASTIC_APP_MASTER_SECRET` and database credentials.
+- `.env` and any external secret store, especially `DRASTIC_APP_MASTER_SECRET` and database credentials.
 - Native repository storage at `DRASTIC_REST_SERVER_STORAGE_PATH`.
 - Agent data directories at `DRASTIC_AGENT_HOST_DATA_PATH` if existing agent identities should survive recovery.
-- The deployed Compose files and the exact server, agent, artifact, and rest-server versions.
+- The deployed Compose files and the exact server, agent image or native Git ref, and rest-server versions.
 
 Create a MariaDB dump while the stack is running:
 
 ```bash
 mkdir -p control-plane-backup
-docker compose -f docker-compose.yaml --env-file .env.prod exec -T db \
-  sh -c 'exec mariadb-dump --single-transaction --routines --events --triggers -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
+docker compose -f docker-compose.yaml exec -T db \
+  sh -c 'exec mariadb-dump --single-transaction --routines --events --triggers -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' \
   > control-plane-backup/drastic.sql
-cp .env.prod control-plane-backup/env.prod
-docker compose -f docker-compose.yaml --env-file .env.prod images \
+cp .env control-plane-backup/env
+docker compose -f docker-compose.yaml images \
   > control-plane-backup/images.txt
 ```
 
@@ -293,10 +293,10 @@ Protect this directory as secret material. The SQL dump and master secret togeth
 Take a consistent copy or filesystem snapshot of repository and agent storage. Do not copy live repository files while backups, checks, forget, or prune operations are running. The simplest safe procedure is:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod stop backend rest-server
+docker compose -f docker-compose.yaml stop backend rest-server
 sudo tar -C /opt/drastic-server -czf control-plane-backup/restic-storage.tar.gz restic
 sudo tar -C /opt/drastic-agent -czf control-plane-backup/agent-data.tar.gz data
-docker compose -f docker-compose.yaml --env-file .env.prod start rest-server backend
+docker compose -f docker-compose.yaml start rest-server backend
 ```
 
 Replace the example paths with `DRASTIC_REST_SERVER_STORAGE_PATH` and `DRASTIC_AGENT_HOST_DATA_PATH`. A storage snapshot taken while the services are stopped is preferable for large repositories. Validate both the SQL dump and archive readability, copy the backup off-host, and test recovery regularly.
@@ -305,7 +305,7 @@ Replace the example paths with `DRASTIC_REST_SERVER_STORAGE_PATH` and `DRASTIC_A
 
 Restore into an isolated host first. Use the same explicit application release tags and rest-server version that created the backup, then upgrade only after recovery is verified.
 
-1. Restore `.env.prod`, preserving the original `DRASTIC_APP_MASTER_SECRET`, database names, users, and passwords.
+1. Restore `.env`, preserving the original `DRASTIC_APP_MASTER_SECRET`, database names, users, and passwords.
 2. Restore repository storage to `DRASTIC_REST_SERVER_STORAGE_PATH` and agent state to each `DRASTIC_AGENT_HOST_DATA_PATH`, with their original ownership and permissions.
 3. Start only MariaDB and wait for it to become healthy.
 4. Import the logical dump.
@@ -315,11 +315,11 @@ Restore into an isolated host first. Use the same explicit application release t
 Example database import:
 
 ```bash
-docker compose -f docker-compose.yaml --env-file .env.prod up -d db
-docker compose -f docker-compose.yaml --env-file .env.prod exec -T db \
-  sh -c 'exec mariadb -u root -p"$MARIADB_ROOT_PASSWORD" "$MARIADB_DATABASE"' \
+docker compose -f docker-compose.yaml up -d db
+docker compose -f docker-compose.yaml exec -T db \
+  sh -c 'exec mariadb -u"$MARIADB_USER" -p"$MARIADB_PASSWORD" "$MARIADB_DATABASE"' \
   < control-plane-backup/drastic.sql
-docker compose -f docker-compose.yaml --env-file .env.prod up -d rest-server backend
+docker compose -f docker-compose.yaml up -d rest-server backend
 ```
 
 Import into an empty application database. If the target database already contains data, remove and recreate that database deliberately before importing rather than merging two control planes.

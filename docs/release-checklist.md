@@ -20,9 +20,9 @@ Run this checklist before tagging a Homelab release.
 16. Force a post-backup check failure and verify the backup is `warning`, retention is skipped, and statistics plus `success` and `end` hooks are still attempted. Verify pre-backup failures remain `failed` and successful post-backup steps produce `success`.
 17. Verify retention skips a snapshot with mismatched artifact tags, reports a warning, and performs separate forget and prune steps without repeating forget after a prune retry.
 18. Verify restore defaults to `fail_if_exists`, explicit overwrite requires confirmation, and an interrupted started restore is failed with partial-destination markers.
-19. Confirm server image, agent image, and native agent artifact use the same explicit release tag and none use `latest`.
+19. Confirm server image, agent image, and native agent Git ref use the same explicit release tag. Verify native install, update rollback and uninstall; Docker-image publishing must cover both supported architectures.
 20. Confirm `DRASTIC_REST_SERVER_VERSION` is an explicit tested version.
-21. Render `docker compose -f docker-compose.yaml --env-file .env.prod config` and verify the backend publishes only on the intended host address.
+21. Render `docker compose -f docker-compose.yaml config` and verify the backend publishes only on the intended host address.
 22. Test HTTPS login and logout through the reverse proxy with secure cookies enabled.
 23. Test an agent WebSocket connection through the proxy and verify `Host` and `X-Forwarded-Proto` are preserved.
 24. Create a MariaDB logical dump, save the production environment/secret store, and verify the documented control-plane restore procedure in an isolated environment.

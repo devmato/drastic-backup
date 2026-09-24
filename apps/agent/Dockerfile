@@ -24,8 +24,5 @@ RUN uv sync --frozen --no-dev
 # Set excecution rights for run script
 RUN chmod +x /app/run.sh
 
-# Set envvar DRASTIC_DOCKER for correct binary download
-ENV DRASTIC_DOCKER=true
-
 # Set start script
 CMD ["sh", "/app/run.sh"]
