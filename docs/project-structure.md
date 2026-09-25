@@ -68,7 +68,7 @@ Important paths:
 
 ## Environment Files
 
-- `.env.example` -- Server configuration template for Compose and Arcane.
+- `.env.example` -- Server configuration template for Compose.
 - `.env.agent.example` -- Standalone Docker agent configuration template.
 - `.env` -- Active deployment configuration, not committed.
 - `.env.dev` -- Tracked, ready-to-run local development configuration.

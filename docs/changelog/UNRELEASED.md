@@ -10,4 +10,4 @@
 - Retention reconciles snapshot tags conservatively and separates forget from prune. Restores default to collision-safe behavior and mark partial destinations after an interrupted started restore.
 - Failed notifications remain pending for retry on later operation reports, and interrupted native repository deletion is reconciled through quarantine.
 - Alembic now uses a fresh-database baseline. No upgrade path from earlier development schemas is supplied because there were no production deployments to migrate; the MariaDB migration round-trip is covered by `apps/backend/scripts/test-migrations.sh`.
-- Application defaults now live in code for identical Docker and native-agent behavior. Production and Arcane deployments use a single `.env`; migrate server values from an existing `.env.prod` using the current `.env.example`.
+- Application defaults now live in code for identical Docker and native-agent behavior. Production deployments use a single `.env`; migrate server values from an existing `.env.prod` using the current `.env.example`.

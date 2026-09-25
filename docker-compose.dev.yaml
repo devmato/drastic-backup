@@ -31,10 +31,7 @@ services:
       - path: .env.dev.override
         required: false
     environment:
-      TZ: ${TZ:-UTC}
       HOME: /tmp
-      DRASTIC_REST_SERVER_URL: http://rest-server:8000
-      DRASTIC_REST_SERVER_DATA_DIRECTORY: /data
       DRASTIC_DOCS_SITE_PATH: /tmp/drastic-docs-site
       DRASTIC_HOST_BACKEND_PORT: ${DRASTIC_HOST_BACKEND_PORT:-5050}
       DRASTIC_BIND_BACKEND_PORT: ${DRASTIC_BIND_BACKEND_PORT:-5050}
@@ -61,7 +58,6 @@ services:
     volumes:
       - .:/workspace
     environment:
-      TZ: ${TZ:-UTC}
       HOME: /tmp
       DRASTIC_BIND_BACKEND_PORT: ${DRASTIC_BIND_BACKEND_PORT:-5050}
       DRASTIC_BIND_DEV_FRONTEND_PORT: ${DRASTIC_BIND_DEV_FRONTEND_PORT:-9050}

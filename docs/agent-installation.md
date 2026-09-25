@@ -22,7 +22,7 @@ docker compose -f docker-compose.agent.yaml up -d
 
 Important agent paths:
 
-- `DRASTIC_AGENT_HOST_DATA_PATH` -- Persistent agent identity, private key, secret, agent SSH identity, SSH `known_hosts`, synchronized configuration, operation state, and agent-encrypted restic access keys. Plaintext restic access keys are kept only in memory.
+- `DRASTIC_AGENT_HOST_DATA_PATH` -- Defaults to `/opt/drastic-agent/data`. Persistent agent identity, private key, secret, agent SSH identity, SSH `known_hosts`, synchronized configuration, operation state, and agent-encrypted restic access keys. Plaintext restic access keys are kept only in memory.
 - `DRASTIC_AGENT_HOST_ROOT_PATH` -- Host path mounted read-only to `/mnt/host` inside the agent.
 
 The default root path is `/`, which allows file jobs to reference host paths via `/mnt/host/...`.

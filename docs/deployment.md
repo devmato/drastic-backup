@@ -13,7 +13,7 @@ Create a production environment file:
 ./scripts/generate-env.sh prod
 ```
 
-Alternatively copy `.env.example` to `.env` manually. Edit `.env` and set production values for secrets, database credentials, public URL, storage paths and image names. In Arcane, paste these values into the project's **Environment Configuration (.env)** editor. Back it up with the database and repository storage.
+Alternatively copy `.env.example` to `.env` manually. Set secrets, database credentials, public URL and matching image tags; set host paths and ports only if their documented defaults do not fit. Back it up with the database and repository storage.
 
 Existing deployments should create `.env` from the current `.env.example` and copy their server values from `.env.prod`. Do not rename the old file unchanged: remove `MARIADB_ROOT_PASSWORD` and keep agent credentials and Proxmox secrets only in the agent host's `.env`.
 
@@ -25,7 +25,7 @@ docker compose -f docker-compose.yaml up -d
 
 The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The production stack uses published images from `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE`. Official GHCR images are published for `linux/amd64` and `linux/arm64`. Docker-based agent snippets use `DRASTIC_AGENT_IMAGE` directly, so target hosts must be able to pull that image from the configured registry. Set both images to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
+The production stack requires `DRASTIC_SERVER_IMAGE`; the agent stack requires `DRASTIC_AGENT_IMAGE`, which the server also uses for Docker-based agent snippets. Official GHCR images are published for `linux/amd64` and `linux/arm64`, so target hosts must be able to pull that image from the configured registry. Set both images to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 
@@ -54,15 +54,15 @@ The agent talks to the server through `DRASTIC_SERVER`.
 
 ## Runtime Data
 
-The server stack uses host paths for persistent data:
+The server stack uses host paths for persistent data (defaults shown):
 
-- `DRASTIC_HOST_DB_PATH` -- MariaDB data.
-- `DRASTIC_REST_SERVER_STORAGE_PATH` -- Native restic repositories.
+- `DRASTIC_HOST_DB_PATH` -- `/opt/drastic-server/db`, MariaDB data.
+- `DRASTIC_REST_SERVER_STORAGE_PATH` -- `/opt/drastic-server/restic`, native restic repositories.
 
-The agent stack uses host paths for agent state and backup source access:
+The agent stack uses host paths for agent state and backup source access (defaults shown):
 
-- `DRASTIC_AGENT_HOST_DATA_PATH` -- Agent registration and runtime state.
-- `DRASTIC_AGENT_HOST_ROOT_PATH` -- Read-only source path mounted to `/mnt/host`.
+- `DRASTIC_AGENT_HOST_DATA_PATH` -- `/opt/drastic-agent/data`, agent registration and runtime state.
+- `DRASTIC_AGENT_HOST_ROOT_PATH` -- `/`, read-only source path mounted to `/mnt/host`.
 
 ## Reverse Proxy
 

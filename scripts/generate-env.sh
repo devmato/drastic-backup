@@ -79,6 +79,12 @@ build_setting_line() {
     printf '%s=%s\n' "$key" "$(quote_env_string "$value")"
 }
 
+write_override() {
+    if [ "$2" != "$3" ]; then
+        build_setting_line "$1" "$2" >> "$TARGET_FILE"
+    fi
+}
+
 derive_agent_image() {
     local server_image="$1"
     local image_without_tag="$server_image"
@@ -239,7 +245,11 @@ prompt_server_values() {
     BIND_BACKEND_PORT="$REPLY"
     prompt "    Host backend bind address" "127.0.0.1"
     HOST_BACKEND_ADDRESS="$REPLY"
-    prompt "    Host backend port" "$BIND_BACKEND_PORT"
+    local default_host_port="$BIND_BACKEND_PORT"
+    if [ "$TARGET_ENV" = "test" ]; then
+        default_host_port="5051"
+    fi
+    prompt "    Host backend port" "$default_host_port"
     HOST_BACKEND_PORT="$REPLY"
     prompt "    Host database path" "$default_data_root/db"
     HOST_DB_PATH="$REPLY"
@@ -263,33 +273,30 @@ write_server_env_file() {
 ${FILE_CONTEXT_LINE_1}
 ${FILE_CONTEXT_LINE_2}
 
-DRASTIC_ENV=$env_name
-TZ=$(quote_env_string "$ENV_TZ")
-
 DRASTIC_SERVER_IMAGE=$(quote_env_string "$SERVER_IMAGE")
 DRASTIC_AGENT_IMAGE=$(quote_env_string "$AGENT_IMAGE")
-DRASTIC_AGENT_GIT_REPOSITORY=$(quote_env_string "$AGENT_GIT_REPOSITORY")
 
-MARIADB_DATABASE=$(quote_env_string "$MARIADB_DATABASE_VALUE")
-MARIADB_USER=$(quote_env_string "$MARIADB_USER_VALUE")
 MARIADB_PASSWORD=$(quote_env_string "$MARIADB_PASSWORD_VALUE")
 
 DRASTIC_SQLALCHEMY_DATABASE_URI=$(quote_env_string "mysql+pymysql://${MARIADB_USER_VALUE}:${MARIADB_PASSWORD_VALUE}@db:3306/${MARIADB_DATABASE_VALUE}?charset=utf8mb4")
 DRASTIC_APP_MASTER_SECRET=$(quote_env_string "$APP_MASTER_SECRET")
 DRASTIC_PUBLIC_URL=$(quote_env_string "$PUBLIC_URL")
-DRASTIC_TESTING=$testing
 DRASTIC_JWT_COOKIE_SECURE=$secure_cookies
-
-DRASTIC_BIND_BACKEND_PORT=$BIND_BACKEND_PORT
-DRASTIC_HOST_BACKEND_ADDRESS=$(quote_env_string "$HOST_BACKEND_ADDRESS")
-DRASTIC_HOST_BACKEND_PORT=$HOST_BACKEND_PORT
-DRASTIC_REST_SERVER_VERSION=0.13.0
-DRASTIC_HOST_DB_PATH=$(quote_env_string "$HOST_DB_PATH")
-DRASTIC_REST_SERVER_STORAGE_PATH=$(quote_env_string "$REST_SERVER_STORAGE_PATH")
 
 DRASTIC_BOOTSTRAP_ADMIN_USERNAME=$(quote_env_string "$BOOTSTRAP_ADMIN_USERNAME")
 DRASTIC_BOOTSTRAP_ADMIN_PASSWORD=$(quote_env_string "$BOOTSTRAP_ADMIN_PASSWORD")
 EOF
+    write_override "DRASTIC_ENV" "$env_name" "prod"
+    write_override "TZ" "$ENV_TZ" "UTC"
+    write_override "DRASTIC_AGENT_GIT_REPOSITORY" "$AGENT_GIT_REPOSITORY" "https://github.com/devmato/drastic-backup.git"
+    write_override "MARIADB_DATABASE" "$MARIADB_DATABASE_VALUE" "drastic"
+    write_override "MARIADB_USER" "$MARIADB_USER_VALUE" "drastic"
+    write_override "DRASTIC_TESTING" "$testing" "false"
+    write_override "DRASTIC_BIND_BACKEND_PORT" "$BIND_BACKEND_PORT" "5050"
+    write_override "DRASTIC_HOST_BACKEND_ADDRESS" "$HOST_BACKEND_ADDRESS" "127.0.0.1"
+    write_override "DRASTIC_HOST_BACKEND_PORT" "$HOST_BACKEND_PORT" "5050"
+    write_override "DRASTIC_HOST_DB_PATH" "$HOST_DB_PATH" "/opt/drastic-server/db"
+    write_override "DRASTIC_REST_SERVER_STORAGE_PATH" "$REST_SERVER_STORAGE_PATH" "/opt/drastic-server/restic"
 }
 
 prompt_test_values() {
