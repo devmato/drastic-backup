@@ -18,7 +18,7 @@ services:
       retries: 10
 
   backend:
-    image: ${DRASTIC_SERVER_IMAGE:?DRASTIC_SERVER_IMAGE is required}
+    image: ${DRASTIC_SERVER_IMAGE:-ghcr.io/devmato/drastic-backup-server:latest}
     restart: unless-stopped
     env_file:
       - path: .env

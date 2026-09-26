@@ -6,9 +6,9 @@ Agents are high-trust components. A native agent usually runs as `root`, and a D
 
 ## Docker Agent
 
-Use the install snippets in the web UI under **Agents > Add Agent**. Docker snippets use `DRASTIC_AGENT_IMAGE` directly and do not require a project checkout on the target host. Official GHCR agent images support `linux/amd64` and `linux/arm64`.
+Use the install snippets in the web UI under **Agents > Add Agent**. Docker snippets use the default GHCR `latest` image or the server's `DRASTIC_AGENT_IMAGE` override and do not require a project checkout on the target host. Official GHCR agent images support `linux/amd64` and `linux/arm64`.
 
-If you still run the standalone Compose file, create an environment file from the production example and configure at least the server URL, login credentials, and agent image:
+If you still run the standalone Compose file, create an environment file from the production example and configure the server URL and initial registration credentials:
 
 ```bash
 cp .env.agent.example .env

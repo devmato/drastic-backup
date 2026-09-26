@@ -1,6 +1,6 @@
 services:
   agent:
-    image: ${DRASTIC_AGENT_IMAGE:?DRASTIC_AGENT_IMAGE is required}
+    image: ${DRASTIC_AGENT_IMAGE:-ghcr.io/devmato/drastic-backup-agent:latest}
     restart: unless-stopped
     extra_hosts:
       - host.docker.internal:host-gateway

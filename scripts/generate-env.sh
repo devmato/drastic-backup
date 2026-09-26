@@ -102,15 +102,6 @@ derive_agent_image() {
     fi
 }
 
-repository_version_tag() {
-    local version_file="$REPO_ROOT/VERSION"
-    if [ -f "$version_file" ]; then
-        printf 'v%s' "$(tr -d '[:space:]' < "$version_file")"
-    else
-        printf 'v0.1.0'
-    fi
-}
-
 generate_random_hex() {
     local bytes="${1:-32}"
     if command -v openssl >/dev/null 2>&1; then
@@ -273,9 +264,6 @@ write_server_env_file() {
 ${FILE_CONTEXT_LINE_1}
 ${FILE_CONTEXT_LINE_2}
 
-DRASTIC_SERVER_IMAGE=$(quote_env_string "$SERVER_IMAGE")
-DRASTIC_AGENT_IMAGE=$(quote_env_string "$AGENT_IMAGE")
-
 MARIADB_PASSWORD=$(quote_env_string "$MARIADB_PASSWORD_VALUE")
 
 DRASTIC_SQLALCHEMY_DATABASE_URI=$(quote_env_string "mysql+pymysql://${MARIADB_USER_VALUE}:${MARIADB_PASSWORD_VALUE}@db:3306/${MARIADB_DATABASE_VALUE}?charset=utf8mb4")
@@ -286,6 +274,8 @@ DRASTIC_JWT_COOKIE_SECURE=$secure_cookies
 DRASTIC_BOOTSTRAP_ADMIN_USERNAME=$(quote_env_string "$BOOTSTRAP_ADMIN_USERNAME")
 DRASTIC_BOOTSTRAP_ADMIN_PASSWORD=$(quote_env_string "$BOOTSTRAP_ADMIN_PASSWORD")
 EOF
+    write_override "DRASTIC_SERVER_IMAGE" "$SERVER_IMAGE" "ghcr.io/devmato/drastic-backup-server:latest"
+    write_override "DRASTIC_AGENT_IMAGE" "$AGENT_IMAGE" "ghcr.io/devmato/drastic-backup-agent:latest"
     write_override "DRASTIC_ENV" "$env_name" "prod"
     write_override "TZ" "$ENV_TZ" "UTC"
     write_override "DRASTIC_AGENT_GIT_REPOSITORY" "$AGENT_GIT_REPOSITORY" "https://github.com/devmato/drastic-backup.git"
@@ -303,7 +293,7 @@ prompt_test_values() {
     hr
     echo "  Test environment"
     echo ""
-    prompt_server_values "https://backup-test.example.net" "ghcr.io/devmato/drastic-backup-server:$(repository_version_tag)" "/opt/drastic-test"
+    prompt_server_values "https://backup-test.example.net" "ghcr.io/devmato/drastic-backup-server:latest" "/opt/drastic-test"
 }
 
 write_test_file() {
@@ -314,7 +304,7 @@ prompt_prod_values() {
     hr
     echo "  Production environment"
     echo ""
-    prompt_server_values "https://backup.example.net" "ghcr.io/devmato/drastic-backup-server:$(repository_version_tag)" "/opt/drastic-server"
+    prompt_server_values "https://backup.example.net" "ghcr.io/devmato/drastic-backup-server:latest" "/opt/drastic-server"
 }
 
 write_prod_file() {

@@ -13,7 +13,7 @@ Create a production environment file:
 ./scripts/generate-env.sh prod
 ```
 
-Alternatively copy `.env.example` to `.env` manually. Set secrets, database credentials, public URL and matching image tags; set host paths and ports only if their documented defaults do not fit. Back it up with the database and repository storage.
+Alternatively copy `.env.example` to `.env` manually. Set secrets, database credentials and the public URL; set images, host paths and ports only if their documented defaults do not fit. Back it up with the database and repository storage.
 
 Existing deployments should create `.env` from the current `.env.example` and copy their server values from `.env.prod`. Do not rename the old file unchanged: remove `MARIADB_ROOT_PASSWORD` and keep agent credentials and Proxmox secrets only in the agent host's `.env`.
 
@@ -25,7 +25,7 @@ docker compose -f docker-compose.yaml up -d
 
 The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The production stack requires `DRASTIC_SERVER_IMAGE`; the agent stack requires `DRASTIC_AGENT_IMAGE`, which the server also uses for Docker-based agent snippets. Official GHCR images are published for `linux/amd64` and `linux/arm64`, so target hosts must be able to pull that image from the configured registry. Set both images to the same explicit release tag, such as `v0.1.0`; do not mix releases or deploy `latest`. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
+The server and Docker agent use the published GHCR `latest` images by default; `latest` is updated only for releases, not `develop` pushes. Official images support `linux/amd64` and `linux/arm64`. To pin a version or roll back, set `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE` to the same explicit release tag (for example `v0.1.0`), including `DRASTIC_AGENT_IMAGE` on the server for Docker install snippets. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 

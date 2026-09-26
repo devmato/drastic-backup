@@ -17,7 +17,6 @@ Supported environments are `dev`, `test`, and `prod`. Generate local env files w
 | `DRASTIC_APP_MASTER_SECRET` | Master secret used to derive Flask, JWT, and settings-encryption keys when explicit Flask/JWT secrets are not set. |
 | `DRASTIC_SQLALCHEMY_DATABASE_URI` | MariaDB connection string for the backend. |
 | `MARIADB_PASSWORD` | MariaDB user password; keep it in sync with the backend connection string. Use URL-safe characters (the generator uses random hex). |
-| `DRASTIC_SERVER_IMAGE` | Explicit server release image; Compose does not use `latest` as a fallback. |
 
 ## Environment Files
 
@@ -37,8 +36,8 @@ Compose loads `.env` into dRastic application containers through `env_file`. Val
 | Variable | Default | Purpose |
 | --- | --- | --- |
 | `DRASTIC_ENV` | `prod` | Active environment name. Development tooling sets `dev` explicitly. |
-| `DRASTIC_SERVER_IMAGE` | required | Explicit release image used by production Compose. |
-| `DRASTIC_AGENT_IMAGE` | required for agent Compose | Explicit matching release image used by Docker install snippets and agent Compose. Set it on the server too. |
+| `DRASTIC_SERVER_IMAGE` | `ghcr.io/devmato/drastic-backup-server:latest` | Server image used by production Compose; override to pin a release. |
+| `DRASTIC_AGENT_IMAGE` | `ghcr.io/devmato/drastic-backup-agent:latest` | Agent image used by agent Compose and Docker install snippets; override on both hosts when pinning a release. |
 | `DRASTIC_AGENT_GIT_REPOSITORY` | `https://github.com/devmato/drastic-backup.git` | Git repository used by the native pipe installer. Select its branch/tag/commit with installer `--ref`. |
 | `DRASTIC_PUBLIC_URL` | empty | Canonical URL for agents and managed repository URLs. Without it, the UI uses the browser origin, but background-generated URLs fall back to `127.0.0.1`. Set it for remote agents. |
 | `MARIADB_DATABASE`, `MARIADB_USER` | `drastic` | MariaDB database and user. If changed, update `DRASTIC_SQLALCHEMY_DATABASE_URI` too. |
