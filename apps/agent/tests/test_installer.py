@@ -43,6 +43,9 @@ def mock_runtime(installer, monkeypatch):
         args = [str(arg) for arg in args]
         if args[0] == "systemctl":
             action = args[1]
+            if action == "show":
+                state = "loaded" if installer.SERVICE.exists() else "not-found"
+                return subprocess.CompletedProcess(args, 0, stdout=state + "\n")
             if action == "start":
                 service["active"] = not service["fail_start"]
                 service["fail_start"] = False
@@ -69,6 +72,24 @@ def mock_runtime(installer, monkeypatch):
 
     monkeypatch.setattr(installer, "run", run)
     return service
+
+
+@pytest.mark.parametrize("state", ["not-found", "loaded", "error"])
+def test_stop_skips_only_missing_service(installer, monkeypatch, state):
+    calls = []
+
+    def run(*args, **kwargs):
+        calls.append(args)
+        if args[1] == "show":
+            assert kwargs.get("check", True)
+            return subprocess.CompletedProcess(args, 0, stdout=state + "\n")
+        return subprocess.CompletedProcess(args, 3 if args[1] == "is-active" else 0)
+
+    monkeypatch.setattr(installer, "run", run)
+    installer.stop()
+    assert ("systemctl", "show", "--property=LoadState", "--value", installer.SERVICE.name) in calls
+    assert (("systemctl", "stop", installer.SERVICE.name) in calls) == (state != "not-found")
+    assert calls[-1] == ("systemctl", "is-active", "--quiet", installer.SERVICE.name)
 
 
 @pytest.fixture

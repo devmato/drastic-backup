@@ -105,7 +105,10 @@ def active():
 
 
 def stop():
-    systemctl('stop', check=False)
+    state = run('systemctl', 'show', '--property=LoadState', '--value', SERVICE.name,
+                stdout=subprocess.PIPE, text=True).stdout.strip()
+    if state != 'not-found':
+        systemctl('stop', check=False)
     if active():
         fail('The agent service is still running; no installation files were removed.')
 
