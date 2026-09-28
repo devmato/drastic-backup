@@ -23,7 +23,7 @@ Start the server stack:
 docker compose -f docker-compose.yaml up -d
 ```
 
-The web UI is served by the backend. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
+Open the backend address in a browser to reach the web UI; `/` redirects to `/app/`. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
 The server and Docker agent use the published GHCR `latest` images by default; `latest` is updated only for releases, not `develop` pushes. Official images support `linux/amd64` and `linux/arm64`. To pin a version or roll back, set `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE` to the same explicit release tag (for example `v0.1.0`), including `DRASTIC_AGENT_IMAGE` on the server for Docker install snippets. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 

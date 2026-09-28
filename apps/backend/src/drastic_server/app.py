@@ -4,7 +4,7 @@ import hmac
 import logging
 from pathlib import Path
 
-from flask import Flask, Response, jsonify, send_file, send_from_directory
+from flask import Flask, Response, jsonify, redirect, send_file, send_from_directory
 
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.cli import register_cli
@@ -107,6 +107,10 @@ def _register_install_route(app: Flask) -> None:
 
 def _register_spa_routes(app: Flask) -> None:
     app.config.setdefault("SPA_ROOT", str(Path(app.root_path).parents[1] / "spa"))
+
+    @app.get("/")
+    def redirect_to_spa():
+        return redirect("/app/")
 
     @app.get("/app")
     @app.get("/app/")
