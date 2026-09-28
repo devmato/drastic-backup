@@ -4,7 +4,7 @@
     <q-card class="db-auth-card q-pa-lg">
       <q-card-section class="text-center">
         <img
-          src="/icons/drastic-backup-icon.svg"
+          src="/app/icons/drastic-backup-icon.svg"
           width="96"
           height="96"
           alt="dRastic Backup"
