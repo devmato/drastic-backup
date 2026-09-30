@@ -40,9 +40,13 @@
     </q-banner>
 
     <template v-else>
+      <q-banner v-if="loadError" class="bg-negative text-white q-mb-md">
+        {{ loadError }}
+      </q-banner>
       <div class="row items-center q-mb-sm">
         <div class="text-subtitle1">Supported Guests</div>
         <q-space />
+        <q-btn flat dense icon="settings" label="Configure Proxmox" :disable="!selectedAgent" @click="showAgentSettings = true" />
         <q-btn flat dense icon="refresh" label="Refresh" :loading="loadingGuests" @click="loadGuests" />
       </div>
 
@@ -56,14 +60,22 @@
           </q-item-section>
         </q-item>
       </q-list>
-      <div v-else class="text-grey">No supported Proxmox guests found.</div>
+      <div v-else-if="!loadingGuests && !loadError" class="text-grey">No supported Proxmox guests found.</div>
     </template>
+
+    <AgentPropertiesDialog
+      v-model="showAgentSettings"
+      :agent="selectedAgent"
+      initial-tab="configuration"
+      @proxmox-updated="loadGuests"
+    />
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref, watch } from 'vue'
-import { useQuasar } from 'quasar'
+import { computed, ref, watch } from 'vue'
+import AgentPropertiesDialog from 'components/agents/AgentPropertiesDialog.vue'
+import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
@@ -75,11 +87,15 @@ const props = defineProps({
 
 const emit = defineEmits(['update:modelValue'])
 
-const $q = useQuasar()
+const agentStore = useAgentStore()
 const jobStore = useJobStore()
 
 const guests = ref([])
 const loadingGuests = ref(false)
+const loadError = ref('')
+const showAgentSettings = ref(false)
+const selectedAgent = computed(() => agentStore.agents.find(agent => String(agent.id) === String(props.agentId)))
+let loadVersion = 0
 
 const selectionModeOptions = [
   { label: 'All supported guests', value: 'all' },
@@ -96,11 +112,7 @@ const guestOptions = computed(() =>
 
 watch(
   () => [props.agentId, props.agentOnline],
-  () => {
-    if (props.agentId && props.agentOnline) {
-      loadGuests()
-    }
-  },
+  loadGuests,
   { immediate: true }
 )
 
@@ -125,32 +137,26 @@ function updateConfig(patch) {
 }
 
 async function loadGuests() {
+  const version = ++loadVersion
+  loadError.value = ''
+  guests.value = []
   if (!props.agentId || !props.agentOnline) {
-    guests.value = []
+    loadingGuests.value = false
     return
   }
 
   loadingGuests.value = true
   try {
-    guests.value = await jobStore.getProxmoxGuests(props.agentId)
+    const result = await jobStore.getProxmoxGuests(props.agentId)
+    if (version === loadVersion) guests.value = result
   } catch (error) {
-    guests.value = []
-    if (shouldIgnoreApiError(error)) return
-    $q.notify({
-      message: getApiErrorMessage(error, 'Failed to load Proxmox guests'),
-      color: 'red',
-      position: 'top',
-    })
+    if (version === loadVersion && !shouldIgnoreApiError(error)) {
+      loadError.value = getApiErrorMessage(error, 'Failed to load Proxmox guests')
+    }
   } finally {
-    loadingGuests.value = false
+    if (version === loadVersion) loadingGuests.value = false
   }
 }
-
-onMounted(() => {
-  if (props.agentId && props.agentOnline) {
-    loadGuests()
-  }
-})
 
 defineOptions({ name: 'ProxmoxBackupJobForm' })
 </script>

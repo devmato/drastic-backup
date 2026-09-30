@@ -99,7 +99,9 @@ Required agent prerequisites:
 - Proxmox API credentials must be configured on the agent.
 - The configured API token must be able to list nodes, list QEMU guests, read QEMU configs, and run the required backup operations.
 
-Agent environment variables:
+Configure credentials under **Agents > Agent Properties > Configuration > Proxmox**, or use **Configure Proxmox** in the job form. Test the connection and save while the agent is online. Settings apply immediately to all Proxmox jobs on that agent, and the token secret is stored encrypted on the agent.
+
+Agent environment variables remain a fallback when no configuration has been saved through the web UI:
 
 - `DRASTIC_PROXMOX_API_URL` -- Proxmox API base URL, for example `https://proxmox.example.net:8006/api2/json`.
 - `DRASTIC_PROXMOX_TOKEN_ID` -- Proxmox API token ID.
@@ -207,7 +209,7 @@ Example paths:
 ## Create a Proxmox Backup Job
 
 1. Run the agent on the Proxmox node.
-2. Configure the Proxmox API variables on the agent.
+2. Configure Proxmox access in the agent properties, test the connection, and save.
 3. Select an online Proxmox-capable agent.
 4. Create a Proxmox backup job.
 5. Choose all supported guests or select specific VMIDs.

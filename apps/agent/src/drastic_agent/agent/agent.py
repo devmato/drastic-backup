@@ -24,7 +24,7 @@ from docker import DockerClient
 from docker.errors import DockerException
 from marshmallow import ValidationError
 from socketio.exceptions import ConnectionError
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from drastic_agent.agent.action import AgentAction
 from drastic_agent.agent.database import (
@@ -39,6 +39,9 @@ from drastic_agent.agent.database import (
     schedule_runs,
     schedules,
 )
+from drastic_agent.agent.database import (
+    agent as agent_settings,
+)
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.execution import ExecutionManager
@@ -47,7 +50,12 @@ from drastic_agent.agent.report import AgentReport
 from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
 from drastic_agent.jobs.registry import get_job_handler
-from drastic_agent.proxmox import ProxmoxApiClient, ProxmoxError, get_proxmox_guest_driver
+from drastic_agent.proxmox import (
+    ProxmoxApiClient,
+    ProxmoxError,
+    ensure_vzdump_available,
+    get_proxmox_guest_driver,
+)
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.version import agent_version
@@ -57,6 +65,7 @@ from drastic_common.agent.commands import (
     AgentCommandRequestSchema,
 )
 from drastic_common.agent.enums import AgentJobActionModule, AgentRepositoryKind
+from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
 from drastic_common.restic import RESTIC_VERSION, ResticApi
 from drastic_common.restic.exceptions import ResticError
 from drastic_common.restic.repository import ResticRepository
@@ -150,6 +159,7 @@ def _redact_secrets(value):
                 "encrypted_restic_access_key",
                 "encrypted_value",
                 "agent_secret",
+                "token_secret",
             }:
                 redacted[key] = "<redacted>"
             else:
@@ -1548,11 +1558,86 @@ class Agent:
 
         return report.finish()
 
+    def get_proxmox_client(self):
+        saved = agent_settings.find_one(name="proxmox")
+        if saved is None:
+            return ProxmoxApiClient()
+        try:
+            settings = json.loads(saved["settings"])
+            encrypted_value = settings.pop("encrypted_value")
+            if not isinstance(encrypted_value, dict):
+                raise ValueError("Invalid encrypted token")
+            settings = ProxmoxSettingsSchema().load(settings)
+            settings["token_secret"] = decrypt_with_private_key(encrypted_value, self.private_key)
+            validate_proxmox_token_secret(settings["token_secret"])
+        except (KeyError, TypeError, ValueError, ValidationError) as exc:
+            raise ProxmoxError("Saved Proxmox settings could not be loaded") from exc
+        return ProxmoxApiClient(settings)
+
+    def __proxmox_client_for_update(self, settings, encrypted_value):
+        settings = ProxmoxSettingsSchema().load(settings)
+        if encrypted_value is not None:
+            if not isinstance(encrypted_value, dict):
+                raise ProxmoxError("Invalid encrypted Proxmox token")
+            try:
+                token_secret = decrypt_with_private_key(encrypted_value, self.private_key)
+            except (TypeError, ValueError) as exc:
+                raise ProxmoxError("Proxmox token could not be decrypted") from exc
+        else:
+            current = self.get_proxmox_client()
+            if settings["api_url"] != current.base_url or settings["token_id"] != current.token_id:
+                raise ProxmoxError("Enter a token secret when changing the API URL or token ID")
+            token_secret = current.token_secret
+        if not token_secret:
+            raise ProxmoxError("Enter a Proxmox token secret")
+        validate_proxmox_token_secret(token_secret)
+        return ProxmoxApiClient({**settings, "token_secret": token_secret})
+
+    def cmd_get_proxmox_settings(self):
+        report = AgentReport.command_report()
+        try:
+            report.data = self.get_proxmox_client().public_settings
+        except ProxmoxError as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        return report.finish()
+
+    def cmd_update_proxmox_settings(self, settings, encrypted_value=None):
+        report = AgentReport.command_report()
+        try:
+            with db:
+                api = self.__proxmox_client_for_update(settings, encrypted_value)
+                saved = ProxmoxSettingsSchema().dump(api.public_settings)
+                saved["encrypted_value"] = encrypt_for_public_key(api.token_secret, self.public_key)
+                agent_settings.upsert({"name": "proxmox", "settings": json.dumps(saved)}, ["name"])
+            report.data = api.public_settings
+        except (ProxmoxError, SecretEnvelopeError, ValidationError) as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        except SQLAlchemyError:
+            report.log_message(
+                "Could not save Proxmox settings on the agent", final_state=AgentReportState.failed
+            )
+        return report.finish()
+
+    def cmd_test_proxmox_settings(self, settings, encrypted_value=None):
+        report = AgentReport.command_report()
+        api = None
+        try:
+            api = self.__proxmox_client_for_update(settings, encrypted_value)
+            ensure_vzdump_available()
+            guests = get_proxmox_guest_driver().list_supported_guests(api)
+            report.data = {"node": api.get_node(), "guest_count": len(guests)}
+        except (ProxmoxError, SecretEnvelopeError, ValidationError) as exc:
+            message = str(exc)
+            if api and api.token_secret:
+                message = message.replace(api.token_secret, "<redacted>")
+            report.log_message(message, final_state=AgentReportState.failed)
+        return report.finish()
+
     def cmd_get_proxmox_guests(self):
         report = AgentReport.command_report(data={"guests": []})
 
         try:
-            api = ProxmoxApiClient()
+            api = self.get_proxmox_client()
             driver = get_proxmox_guest_driver()
             report.data["guests"] = driver.list_supported_guests(api=api)
         except ProxmoxError as exc:

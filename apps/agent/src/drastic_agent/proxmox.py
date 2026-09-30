@@ -14,7 +14,7 @@ class ProxmoxError(Exception):
 
 
 class ProxmoxApiClient:
-    def __init__(self):
+    def __init__(self, settings=None):
         self.base_url = env_value("DRASTIC_PROXMOX_API_URL", DefaultConfig.PROXMOX_API_URL).rstrip(
             "/"
         )
@@ -22,6 +22,14 @@ class ProxmoxApiClient:
         self.token_secret = str(os.environ.get("DRASTIC_PROXMOX_TOKEN_SECRET") or "").strip()
         self.node_override = str(os.environ.get("DRASTIC_PROXMOX_NODE") or "").strip()
         self.verify_tls = env_flag("DRASTIC_PROXMOX_VERIFY_TLS", DefaultConfig.PROXMOX_VERIFY_TLS)
+        self.source = "environment"
+        if settings is not None:
+            self.base_url = settings["api_url"]
+            self.token_id = settings["token_id"]
+            self.token_secret = settings["token_secret"]
+            self.node_override = settings["node"]
+            self.verify_tls = settings["verify_tls"]
+            self.source = "agent"
         self.command_timeout = env_int(
             "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS
         )
@@ -33,6 +41,18 @@ class ProxmoxApiClient:
     @property
     def configured(self):
         return bool(self.token_id and self.token_secret)
+
+    @property
+    def public_settings(self):
+        return {
+            "api_url": self.base_url,
+            "token_id": self.token_id,
+            "node": self.node_override,
+            "verify_tls": self.verify_tls,
+            "token_secret_configured": bool(self.token_secret),
+            "configured": self.configured,
+            "source": self.source,
+        }
 
     def _headers(self):
         if not self.configured:
@@ -102,7 +122,7 @@ class ProxmoxApiClient:
                 return self._node
 
         raise ProxmoxError(
-            "Unable to determine local Proxmox node automatically. Set DRASTIC_PROXMOX_NODE."
+            "Unable to determine local Proxmox node automatically. Set the node in the agent's Proxmox settings or DRASTIC_PROXMOX_NODE."
         )
 
     def list_qemu_guests(self):

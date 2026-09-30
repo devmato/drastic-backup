@@ -7,6 +7,7 @@ from drastic_common.agent.enums import (
     AgentOperationType,
 )
 from drastic_common.agent.schemas import AgentOperationSchema
+from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
 from drastic_server.schemas.repository import RepositoryResponseSchema
 
 _OPERATION_TYPE_NAMES = tuple(AgentOperationType.__members__)
@@ -45,6 +46,21 @@ class AgentSyncInputSchema(Schema):
         unknown = EXCLUDE
 
     recovery_key = fields.String(load_default=None, allow_none=True)
+
+
+class AgentProxmoxSettingsInputSchema(ProxmoxSettingsSchema):
+    token_secret = fields.String(load_only=True, validate=validate_proxmox_token_secret)
+
+
+class AgentProxmoxSettingsResponseSchema(ProxmoxSettingsSchema):
+    token_secret_configured = fields.Boolean(required=True)
+    configured = fields.Boolean(required=True)
+    source = fields.String(required=True)
+
+
+class AgentProxmoxTestResponseSchema(Schema):
+    node = fields.String(required=True)
+    guest_count = fields.Integer(required=True)
 
 
 class AgentOperationLogResponseSchema(Schema):

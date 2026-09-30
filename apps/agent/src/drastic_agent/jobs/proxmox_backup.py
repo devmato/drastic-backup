@@ -6,7 +6,6 @@ from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.proxmox import (
-    ProxmoxApiClient,
     ProxmoxError,
     ensure_vzdump_available,
     get_proxmox_guest_driver,
@@ -23,7 +22,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
         ensure_vzdump_available()
 
-        api = ProxmoxApiClient()
+        api = self.agent.get_proxmox_client()
         if not api.configured:
             raise ProxmoxError("Proxmox API token is not configured on the agent")
 

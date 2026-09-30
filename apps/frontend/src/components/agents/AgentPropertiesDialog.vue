@@ -9,12 +9,13 @@
       <q-tabs v-model="activeTab" dense align="left" class="text-primary">
         <q-tab name="info" label="Info" />
         <q-tab name="repositories" label="Repositories" />
+        <q-tab name="configuration" label="Configuration" />
         <q-tab name="actions" label="Actions" />
       </q-tabs>
 
       <q-separator />
 
-      <q-tab-panels v-model="activeTab" animated>
+      <q-tab-panels v-model="activeTab">
         <q-tab-panel name="info" class="q-gutter-sm">
           <div class="row q-col-gutter-sm">
             <div class="col-12 col-sm-6">
@@ -101,6 +102,16 @@
           </q-banner>
         </q-tab-panel>
 
+        <q-tab-panel name="configuration">
+          <AgentProxmoxSettings
+            v-if="agent"
+            :key="agent.id"
+            :agent-id="agent.id"
+            :agent-online="agent.online"
+            @saved="emit('proxmox-updated')"
+          />
+        </q-tab-panel>
+
         <q-tab-panel name="actions" class="q-gutter-md">
           <q-card flat bordered>
             <q-card-section>
@@ -150,25 +161,31 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
+import AgentProxmoxSettings from 'components/agents/AgentProxmoxSettings.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const props = defineProps({
   modelValue: { type: Boolean, required: true },
   agent: { type: Object, default: null },
+  initialTab: { type: String, default: 'info' },
 })
 
-const emit = defineEmits(['update:modelValue', 'updated'])
+const emit = defineEmits(['update:modelValue', 'updated', 'proxmox-updated'])
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
 
-const activeTab = ref('info')
+const activeTab = ref(props.initialTab)
 const removingRepositoryId = ref(null)
 const resettingKnownHosts = ref(false)
 const rotatingSshKey = ref(false)
+
+watch(() => props.modelValue, visible => {
+  if (visible) activeTab.value = props.initialTab
+})
 
 const dialogVisible = computed({
   get: () => props.modelValue,

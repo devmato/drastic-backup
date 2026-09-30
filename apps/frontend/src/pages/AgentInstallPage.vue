@@ -64,7 +64,7 @@
           <q-separator />
 
           <q-card-section class="col-auto">
-            <q-tab-panels :model-value="selectedActionId(card)" animated class="bg-transparent q-pa-none">
+            <q-tab-panels :model-value="selectedActionId(card)" class="bg-transparent q-pa-none">
               <q-tab-panel v-for="action in card.actions" :key="action.id" :name="action.id" class="q-pa-none">
                 <div class="text-subtitle2">{{ action.description }}</div>
                 <div class="text-body2 text-grey-7 q-mt-xs">{{ action.note }}</div>

@@ -18,3 +18,4 @@
 - Do not add project-specific CSS classes for one-off layout concerns such as dialog width, grid spacing, margins, padding, or text alignment.
 - Use custom CSS only for reusable project patterns, such as standardized dialog widths, or when Quasar utilities cannot express the required behavior cleanly.
 - Keep dialogs content-driven by default. Avoid `full-width` dialogs unless the content genuinely needs the viewport width.
+- Keep tab content transitions instant. Do not use `animated` on `QTabPanels` or add custom animations for tab changes.

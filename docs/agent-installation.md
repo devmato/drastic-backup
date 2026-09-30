@@ -149,7 +149,13 @@ For Homelab deployments, register agents from a trusted network and then remove 
 
 ## Proxmox Backups
 
-For Proxmox jobs, configure API credentials on the agent:
+For Proxmox jobs, open **Agents > Agent Properties > Configuration > Proxmox** while the agent is online. Enter the token ID (`user@realm!tokenname`) and token secret, then use **Test connection** and **Save**. The **Configure Proxmox** button in the backup job form opens the same settings.
+
+The test checks local `vzdump` availability and API access to supported VMs without saving changes. Saved settings apply to guest discovery and all Proxmox jobs on that agent immediately, without a restart. The secret is encrypted for the agent before command dispatch and stored encrypted in its local database; it is never returned to the web UI. Leaving the secret field empty preserves the current token. Changing the API URL or token ID requires entering a token secret again.
+
+Under **Advanced**, the API URL defaults to `https://127.0.0.1:8006/api2/json`, the local node is detected automatically, and TLS verification can be enabled. Disable verification when using a self-signed certificate without a trusted CA.
+
+Existing agent environment configuration remains supported until settings are saved through the web UI:
 
 - `DRASTIC_PROXMOX_API_URL`
 - `DRASTIC_PROXMOX_TOKEN_ID`
@@ -157,4 +163,4 @@ For Proxmox jobs, configure API credentials on the agent:
 - `DRASTIC_PROXMOX_NODE`
 - `DRASTIC_PROXMOX_VERIFY_TLS`
 
-The agent host must have the required Proxmox tooling available for `vzdump` based backups.
+The agent must run directly on the Proxmox node with the required tooling for `vzdump` based backups. A remote API URL does not enable remote backup execution. Update older agents to use the web UI configuration commands.

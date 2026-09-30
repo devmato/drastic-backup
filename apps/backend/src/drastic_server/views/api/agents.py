@@ -4,6 +4,7 @@ from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_smorest import Blueprint, abort
 
+from drastic_common.secret_envelope import SecretEnvelopeError, encrypt_for_public_key
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentOperation, AgentOperationState
@@ -14,6 +15,9 @@ from drastic_server.schemas.agent import (
     AgentInstallOptionsResponseSchema,
     AgentOperationQuerySchema,
     AgentOperationResponseSchema,
+    AgentProxmoxSettingsInputSchema,
+    AgentProxmoxSettingsResponseSchema,
+    AgentProxmoxTestResponseSchema,
     AgentRegisterInputSchema,
     AgentRegisterResponseSchema,
     AgentRepositoryAssignInputSchema,
@@ -269,6 +273,55 @@ class AgentRotateSshKey(MethodView):
             emit_agents_update(user_id)
 
         return {"msg": "SSH key rotated"}
+
+
+def _proxmox_command(agent_id, command, data=None):
+    agent = Agent.query.filter(
+        Agent.id == agent_id, Agent.user_id == get_jwt_identity()
+    ).first_or_404()
+    if not agent.online:
+        abort(400, message="Agent is offline")
+
+    args = {}
+    if data is not None:
+        settings = dict(data)
+        token_secret = settings.pop("token_secret", None)
+        args["settings"] = settings
+        if token_secret is not None:
+            try:
+                args["encrypted_value"] = encrypt_for_public_key(token_secret, agent.public_key)
+            except SecretEnvelopeError:
+                abort(400, message="Agent encryption key is unavailable; reconnect or update the agent")
+
+    response = getattr(AgentCommand(agent), command)(**args)
+    if is_agent_timeout_response(response):
+        abort(504, message="Agent request timed out; reload the settings before retrying")
+    if response.get("state") != AgentOperationState.success:
+        abort(400, message=response.get("log") or "Proxmox configuration request failed")
+    return response.get("data") or {}
+
+
+@blp.route("/<int:agent_id>/proxmox-settings")
+class AgentProxmoxSettings(MethodView):
+    @jwt_required()
+    @blp.response(200, AgentProxmoxSettingsResponseSchema)
+    def get(self, agent_id):
+        return _proxmox_command(agent_id, "get_proxmox_settings")
+
+    @jwt_required()
+    @blp.arguments(AgentProxmoxSettingsInputSchema)
+    @blp.response(200, AgentProxmoxSettingsResponseSchema)
+    def put(self, data, agent_id):
+        return _proxmox_command(agent_id, "update_proxmox_settings", data)
+
+
+@blp.route("/<int:agent_id>/proxmox-settings/test")
+class AgentProxmoxSettingsTest(MethodView):
+    @jwt_required()
+    @blp.arguments(AgentProxmoxSettingsInputSchema)
+    @blp.response(200, AgentProxmoxTestResponseSchema)
+    def post(self, data, agent_id):
+        return _proxmox_command(agent_id, "test_proxmox_settings", data)
 
 
 @blp.route("/<int:agent_id>/operations")

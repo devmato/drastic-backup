@@ -2,6 +2,7 @@
 
 ## Release Notes
 
+- Proxmox API access can now be configured and tested in the agent properties, with a shortcut from the backup job form. Tokens are stored encrypted on the agent and settings apply without restarting. Tab content switches are now instant throughout the web UI.
 - Native Linux agents now install directly from Git through a pipe installer, with private Python/uv, local lifecycle commands and update rollback. Native release archives and their backend cache have been removed; Docker image builds remain available. Existing native installations must first uninstall without `--purge` to retain their identity, then run the new installer with `--reuse-data`.
 - Signed-in users can download a password-confirmed recovery ZIP with an offline reconstruction document containing repository credentials and backup configuration for encrypted off-site storage.
 - Synchronized custom-repository schedules can continue while the backend is offline only when the repository and local agent key remain available; native repositories require the backend proxy.

@@ -113,6 +113,18 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.get_proxmox_guests)
 
     @classmethod
+    def get_proxmox_settings(cls, agent):
+        return cls.send_command(agent, AgentCommandName.get_proxmox_settings)
+
+    @classmethod
+    def update_proxmox_settings(cls, agent, **kwargs):
+        return cls.send_command(agent, AgentCommandName.update_proxmox_settings, **kwargs)
+
+    @classmethod
+    def test_proxmox_settings(cls, agent, **kwargs):
+        return cls.send_command(agent, AgentCommandName.test_proxmox_settings, **kwargs)
+
+    @classmethod
     def run_job(cls, agent, job_id, repository_id, operation_uuid=None, run_options=None):
         return cls.send_command(
             agent,
@@ -194,6 +206,15 @@ class AgentCommand:
 
     def get_proxmox_guests(self):
         return AgentService.get_proxmox_guests(self.agent)
+
+    def get_proxmox_settings(self):
+        return AgentService.get_proxmox_settings(self.agent)
+
+    def update_proxmox_settings(self, **kwargs):
+        return AgentService.update_proxmox_settings(self.agent, **kwargs)
+
+    def test_proxmox_settings(self, **kwargs):
+        return AgentService.test_proxmox_settings(self.agent, **kwargs)
 
     def run_job(self, job_id, repository_id, operation_uuid=None, run_options=None):
         return AgentService.run_job(

@@ -56,6 +56,21 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
+  async function getProxmoxSettings(agentId) {
+    const response = await api.get(`/agents/${agentId}/proxmox-settings`)
+    return response.data
+  }
+
+  async function updateProxmoxSettings(agentId, settings) {
+    const response = await api.put(`/agents/${agentId}/proxmox-settings`, settings)
+    return response.data
+  }
+
+  async function testProxmoxSettings(agentId, settings) {
+    const response = await api.post(`/agents/${agentId}/proxmox-settings/test`, settings)
+    return response.data
+  }
+
   async function deleteOperation(operationId) {
     await api.delete(`/agents/operations/${operationId}`)
   }
@@ -70,5 +85,5 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
-  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, resetKnownHosts, rotateSshKey, getAgentOperations, deleteOperation, getOperation, getInstallOptions }
+  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, resetKnownHosts, rotateSshKey, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings }
 })

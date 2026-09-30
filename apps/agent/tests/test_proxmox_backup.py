@@ -35,6 +35,10 @@ class _FakeResticApi:
 class _FakeAgent:
     def __init__(self):
         self.resticapi = _FakeResticApi()
+        self.proxmox_client = _FakeApi()
+
+    def get_proxmox_client(self):
+        return self.proxmox_client
 
 
 class _FakeApi:
@@ -74,7 +78,6 @@ class _FakeDriver:
 def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch):
     fake_driver = _FakeDriver()
     monkeypatch.setattr(proxmox_backup_module, "ensure_vzdump_available", lambda: None)
-    monkeypatch.setattr(proxmox_backup_module, "ProxmoxApiClient", lambda: _FakeApi())
     monkeypatch.setattr(proxmox_backup_module, "get_proxmox_guest_driver", lambda: fake_driver)
 
     handler = ProxmoxBackupJobHandler(
@@ -94,6 +97,7 @@ def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch):
 
     assert len(fake_driver.export_calls) == 1
     export_call = fake_driver.export_calls[0]
+    assert export_call["api"] is handler.agent.proxmox_client
     assert export_call["vmid"] == 101
     assert export_call["stdin_filename"].startswith("vzdump-qemu-101-")
     assert export_call["stdin_filename"].endswith(".vma")
