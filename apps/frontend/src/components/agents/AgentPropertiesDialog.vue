@@ -9,7 +9,7 @@
       <q-tabs v-model="activeTab" dense align="left" class="text-primary">
         <q-tab name="info" label="Info" />
         <q-tab name="repositories" label="Repositories" />
-        <q-tab name="configuration" label="Configuration" />
+        <q-tab v-if="supportsConfiguration" name="configuration" label="Configuration" />
         <q-tab name="actions" label="Actions" />
       </q-tabs>
 
@@ -33,6 +33,10 @@
             <div class="col-12 col-sm-6">
               <div class="text-caption text-grey-7">Version</div>
               <div>{{ agent?.version || '-' }}</div>
+            </div>
+            <div class="col-12 col-sm-6">
+              <div class="text-caption text-grey-7">Protocol</div>
+              <div>{{ agent?.protocol_version || 0 }}</div>
             </div>
             <div class="col-12 col-sm-6">
               <div class="text-caption text-grey-7">Install type</div>
@@ -102,7 +106,7 @@
           </q-banner>
         </q-tab-panel>
 
-        <q-tab-panel name="configuration">
+        <q-tab-panel v-if="supportsConfiguration" name="configuration">
           <AgentProxmoxSettings
             v-if="agent"
             :key="agent.id"
@@ -113,6 +117,12 @@
         </q-tab-panel>
 
         <q-tab-panel name="actions" class="q-gutter-md">
+          <q-btn v-if="supportsUpdate" color="primary" icon="system_update" label="Update"
+            :disable="!agent?.online" :loading="pendingActions.update"
+            @click="runAction('update', 'Agent update started', 'Could not start agent update')">
+            <q-tooltip>Update from the saved Git repository and ref; tags and commits stay pinned.</q-tooltip>
+          </q-btn>
+
           <q-card flat bordered>
             <q-card-section>
               <div class="text-subtitle2">Reset SSH known_hosts</div>
@@ -126,7 +136,7 @@
                 icon="restart_alt"
                 label="Reset known_hosts"
                 :disable="!agent?.online"
-                :loading="resettingKnownHosts"
+                :loading="pendingActions['reset-known-hosts']"
                 @click="confirmResetKnownHosts"
               />
             </q-card-actions>
@@ -145,7 +155,7 @@
                 icon="vpn_key"
                 label="Rotate SSH key"
                 :disable="!agent?.online"
-                :loading="rotatingSshKey"
+                :loading="pendingActions['rotate-ssh-key']"
                 @click="confirmRotateSshKey"
               />
             </q-card-actions>
@@ -180,12 +190,17 @@ const agentStore = useAgentStore()
 
 const activeTab = ref(props.initialTab)
 const removingRepositoryId = ref(null)
-const resettingKnownHosts = ref(false)
-const rotatingSshKey = ref(false)
+const pendingActions = ref({})
+const supportsConfiguration = computed(() => (props.agent?.protocol_version || 0) >= 1)
+const supportsUpdate = computed(() => supportsConfiguration.value
+  && props.agent?.install_type === 'git' && props.agent?.os?.toLowerCase() === 'linux')
 
-watch(() => props.modelValue, visible => {
-  if (visible) activeTab.value = props.initialTab
-})
+watch([() => props.modelValue, () => props.agent?.protocol_version], () => {
+  if (props.modelValue) {
+    activeTab.value = props.initialTab === 'configuration' && !supportsConfiguration.value
+      ? 'info' : props.initialTab
+  }
+}, { immediate: true })
 
 const dialogVisible = computed({
   get: () => props.modelValue,
@@ -233,6 +248,21 @@ async function removeRepository(repository) {
   }
 }
 
+async function runAction(action, message, failure) {
+  if (!props.agent) return
+  pendingActions.value[action] = true
+  try {
+    await agentStore.runAction(props.agent.id, action)
+    if (action === 'rotate-ssh-key') emit('updated')
+    $q.notify({ message, color: 'green', position: 'top' })
+  } catch (error) {
+    if (shouldIgnoreApiError(error)) return
+    $q.notify({ message: getApiErrorMessage(error, failure), color: 'negative', position: 'top' })
+  } finally {
+    pendingActions.value[action] = false
+  }
+}
+
 function confirmResetKnownHosts() {
   if (!props.agent) return
   $q.dialog({
@@ -240,21 +270,7 @@ function confirmResetKnownHosts() {
     message: `Reset SSH known_hosts on ${props.agent.hostname || `Agent #${props.agent.id}`}? SSH hosts will be trusted again on first use.`,
     cancel: true,
     persistent: true,
-  }).onOk(resetKnownHosts)
-}
-
-async function resetKnownHosts() {
-  if (!props.agent) return
-  resettingKnownHosts.value = true
-  try {
-    await agentStore.resetKnownHosts(props.agent.id)
-    $q.notify({ message: 'SSH known_hosts reset', color: 'green', position: 'top' })
-  } catch (e) {
-    if (shouldIgnoreApiError(e)) return
-    $q.notify({ message: getApiErrorMessage(e, 'Could not reset SSH known_hosts'), color: 'red', position: 'top' })
-  } finally {
-    resettingKnownHosts.value = false
-  }
+  }).onOk(() => runAction('reset-known-hosts', 'SSH known_hosts reset', 'Could not reset SSH known_hosts'))
 }
 
 function confirmRotateSshKey() {
@@ -264,22 +280,7 @@ function confirmRotateSshKey() {
     message: `Rotate the SSH key on ${props.agent.hostname || `Agent #${props.agent.id}`}? Existing SSH/SFTP targets must be updated with the new public key.`,
     cancel: true,
     persistent: true,
-  }).onOk(rotateSshKey)
-}
-
-async function rotateSshKey() {
-  if (!props.agent) return
-  rotatingSshKey.value = true
-  try {
-    await agentStore.rotateSshKey(props.agent.id)
-    emit('updated')
-    $q.notify({ message: 'Agent SSH key rotated', color: 'green', position: 'top' })
-  } catch (e) {
-    if (shouldIgnoreApiError(e)) return
-    $q.notify({ message: getApiErrorMessage(e, 'Could not rotate SSH key'), color: 'red', position: 'top' })
-  } finally {
-    rotatingSshKey.value = false
-  }
+  }).onOk(() => runAction('rotate-ssh-key', 'Agent SSH key rotated', 'Could not rotate SSH key'))
 }
 
 defineOptions({ name: 'AgentPropertiesDialog' })

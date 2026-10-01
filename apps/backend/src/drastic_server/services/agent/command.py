@@ -2,7 +2,12 @@ from flask import current_app
 from flask_socketio import call, emit
 from socketio.exceptions import TimeoutError
 
-from drastic_common.agent.commands import AgentCommandName, agent_command_value
+from drastic_common.agent.commands import (
+    AGENT_COMMAND_MIN_PROTOCOL,
+    AGENT_PROTOCOL_VERSION,
+    AgentCommandName,
+    agent_command_value,
+)
 from drastic_server.config import DefaultConfig, parse_int_value
 from drastic_server.models.agent import AgentOperationState, AgentOperationType
 from drastic_server.schemas.agent import AgentOperationSchema
@@ -50,6 +55,13 @@ class AgentService:
         command = agent_command_value(command)
         if not agent.online:
             return cls.failed_command_report("Agent is offline")
+
+        protocol_version = getattr(agent, "protocol_version", 0) or 0
+        required_version = AGENT_COMMAND_MIN_PROTOCOL.get(command, 0)
+        if not required_version <= protocol_version <= AGENT_PROTOCOL_VERSION:
+            return cls.failed_command_report(
+                f"Command {command} is not supported by agent protocol {protocol_version}; update the agent"
+            )
 
         try:
             if await_response:
@@ -179,14 +191,6 @@ class AgentService:
     def get_containers(cls, agent):
         return cls.send_command(agent, AgentCommandName.get_containers)
 
-    @classmethod
-    def reset_known_hosts(cls, agent):
-        return cls.send_command(agent, AgentCommandName.reset_known_hosts)
-
-    @classmethod
-    def rotate_ssh_key(cls, agent):
-        return cls.send_command(agent, AgentCommandName.rotate_ssh_key)
-
 
 class AgentCommand:
     def __init__(self, agent):
@@ -256,9 +260,3 @@ class AgentCommand:
 
     def get_containers(self):
         return AgentService.get_containers(self.agent)
-
-    def reset_known_hosts(self):
-        return AgentService.reset_known_hosts(self.agent)
-
-    def rotate_ssh_key(self):
-        return AgentService.rotate_ssh_key(self.agent)

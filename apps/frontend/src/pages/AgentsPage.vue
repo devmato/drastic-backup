@@ -52,7 +52,7 @@
 </template>
 
 <script setup>
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
@@ -66,7 +66,8 @@ const agentStore = useAgentStore()
 const userStore = useUserStore()
 
 const showPropertiesDialog = ref(false)
-const selectedAgent = ref(null)
+const selectedAgentId = ref(null)
+const selectedAgent = computed(() => agentStore.agents.find(agent => agent.id === selectedAgentId.value) || null)
 
 const columns = [
   { name: 'id', label: 'ID', field: 'id', align: 'left', sortable: true },
@@ -78,13 +79,12 @@ const columns = [
 ]
 
 function showAgentProperties(agent) {
-  selectedAgent.value = agent
+  selectedAgentId.value = agent.id
   showPropertiesDialog.value = true
 }
 
 async function refreshSelectedAgent() {
   await agentStore.loadAgents()
-  selectedAgent.value = agentStore.agents.find(agent => agent.id === selectedAgent.value?.id) || selectedAgent.value
 }
 
 function confirmDelete(agent) {

@@ -23,6 +23,7 @@ class AgentResponseSchema(Schema):
     hostname = fields.String(allow_none=True)
     os = fields.String(allow_none=True)
     version = fields.String(allow_none=True)
+    protocol_version = fields.Integer(required=True)
     install_type = fields.String(required=True)
     ssh_public_key = fields.String(allow_none=True)
     ssh_key_fingerprint = fields.String(allow_none=True)

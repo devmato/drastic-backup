@@ -2,6 +2,8 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields
 
+AGENT_PROTOCOL_VERSION = 1
+
 
 class AgentCommandName(str, enum.Enum):
     list_restore_snapshots = "list_restore_snapshots"
@@ -26,6 +28,16 @@ class AgentCommandName(str, enum.Enum):
     get_containers = "get_containers"
     reset_known_hosts = "reset_known_hosts"
     rotate_ssh_key = "rotate_ssh_key"
+    update = "update"
+
+
+# Protocol 0 is the legacy command set, before web-based Proxmox settings.
+AGENT_COMMAND_MIN_PROTOCOL = {
+    AgentCommandName.get_proxmox_settings: 1,
+    AgentCommandName.update_proxmox_settings: 1,
+    AgentCommandName.test_proxmox_settings: 1,
+    AgentCommandName.update: 1,
+}
 
 
 ASYNC_AGENT_COMMANDS = frozenset(

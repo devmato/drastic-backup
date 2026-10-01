@@ -91,3 +91,40 @@ def test_queued_future_is_registered_by_operation_uuid_and_can_be_cancelled():
     release.set()
     manager.shutdown()
     assert not queued_ran.is_set()
+
+
+def test_maintenance_launch_is_exclusive_with_work_admission():
+    manager = ExecutionManager(max_workers=1, max_pending=1)
+    release = Event()
+    started = Event()
+    work = manager.submit(lambda: release.wait(2))
+    assert manager.start_maintenance(lambda: None) is False
+    work.add_done_callback(lambda _: started.set())
+    release.set()
+    work.result(timeout=2)
+    assert started.wait(1)
+
+    release.clear()
+    started.clear()
+    admitted = []
+
+    def launch():
+        started.set()
+        release.wait(2)
+
+    updater = Thread(target=lambda: manager.start_maintenance(launch))
+    updater.start()
+    assert started.wait(1)
+    submitter = Thread(target=lambda: admitted.append(manager.submit(lambda: None)))
+    submitter.start()
+    release.set()
+    updater.join(2)
+    submitter.join(2)
+    assert not updater.is_alive() and not submitter.is_alive()
+    assert admitted == [None]
+    assert manager.maintenance
+    assert manager.start_maintenance(lambda: None) is False
+    manager.finish_maintenance()
+    manager.submit(lambda: None).result(timeout=2)
+    manager.shutdown()
+    assert manager.start_maintenance(lambda: None) is False

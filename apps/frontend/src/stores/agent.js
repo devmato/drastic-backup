@@ -39,14 +39,9 @@ export const useAgentStore = defineStore('agent', () => {
     await loadAgents()
   }
 
-  async function resetKnownHosts(agentId) {
-    const response = await api.post(`/agents/${agentId}/actions/reset-known-hosts`)
-    return response.data
-  }
-
-  async function rotateSshKey(agentId) {
-    const response = await api.post(`/agents/${agentId}/actions/rotate-ssh-key`)
-    await loadAgents()
+  async function runAction(agentId, action) {
+    const response = await api.post(`/agents/${agentId}/actions/${action}`)
+    if (action === 'rotate-ssh-key') await loadAgents()
     return response.data
   }
 
@@ -85,5 +80,5 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
-  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, resetKnownHosts, rotateSshKey, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings }
+  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings }
 })

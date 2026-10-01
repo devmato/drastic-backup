@@ -93,9 +93,17 @@ journalctl -u drastic-agent.service
 
 Updates follow the saved branch, or keep the selected tag/commit pinned until you change `--ref`. Dependencies are installed with `uv sync --frozen --no-dev --no-editable`. A new source/venv directory is prepared and checked before stopping the running service. If the new service fails its startup checks, the old installation is restored. Agent data and additional environment settings (for example Proxmox credentials) are retained. This rollback covers program files, not changes made by the running agent to its data.
 
+**Agent Properties > Actions > Update** starts the same command for managed native Linux agents using protocol 1 or later. Running/queued operations and duplicate updates are rejected; new executions and schedules wait until the installer finishes, including its startup checks. The UI acknowledges the start and refreshes the version after reconnect. Check completion and errors with `journalctl -u drastic-agent-update.service`.
+
 If the service cannot be stopped during rollback, both releases remain on disk and the installer reports the blocked rollback. Stop `drastic-agent.service` before retrying. An interrupted first installation cleans up its new runtime files; any existing or newly registered agent identity remains available for a retry.
 
 The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, otherwise the browser origin. Native installations report their install type as `git`; Docker installations continue to report `docker`.
+
+### Protocol Compatibility
+
+Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and `update`. Unknown versions are rejected.
+
+Existing agents without a protocol number report as protocol 0. Update them once manually with `sudo drastic-agent update` to enable the update button and web-based Proxmox configuration. Docker agents must be updated through their container deployment.
 
 ### Uninstall
 

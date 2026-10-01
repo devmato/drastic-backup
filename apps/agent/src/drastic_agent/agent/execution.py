@@ -20,11 +20,12 @@ class ExecutionManager:
         self._resources = set()
         self._operations = {}
         self._shutdown = False
+        self._maintenance = False
 
     def submit(self, function, *args, resources=(), operation_uuid=None, **kwargs):
         resources = {resource for resource in resources if resource is not None}
         with self._lock:
-            if self._shutdown or self._admitted >= self.max_workers + self.max_pending:
+            if self._shutdown or self._maintenance or self._admitted >= self.max_workers + self.max_pending:
                 return None
             if resources & self._resources:
                 return None
@@ -69,6 +70,27 @@ class ExecutionManager:
         with self._lock:
             operation = self._operations.get(operation_uuid)
         return isinstance(operation, Future) and operation.cancel()
+
+    @property
+    def maintenance(self):
+        with self._lock:
+            return self._maintenance
+
+    def start_maintenance(self, starter, *, preflight=None):
+        with self._lock:
+            if self._shutdown or self._maintenance or self._admitted or self._operations:
+                return False
+            if preflight:
+                preflight()
+            self._maintenance = True
+            # Keep admission locked until the independent updater has been launched.
+            # On a launch error, the agent checks the unit before resuming work.
+            starter()
+            return True
+
+    def finish_maintenance(self):
+        with self._lock:
+            self._maintenance = False
 
     def shutdown(self, wait=True):
         with self._lock:

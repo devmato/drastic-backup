@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 from concurrent.futures import CancelledError
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from threading import Event
 from time import monotonic, sleep
 from urllib.parse import urlparse, urlunparse
@@ -60,6 +61,7 @@ from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.version import agent_version
 from drastic_common.agent.commands import (
+    AGENT_PROTOCOL_VERSION,
     ASYNC_AGENT_COMMANDS,
     AgentCommandName,
     AgentCommandRequestSchema,
@@ -76,6 +78,10 @@ from drastic_common.secret_envelope import (
     generate_agent_keypair,
 )
 from drastic_common.ssh_keys import generate_ssh_keypair
+
+AGENT_INSTALL_ROOT = Path("/opt/drastic-agent")
+AGENT_COMMAND = AGENT_INSTALL_ROOT / "bin/drastic-agent"
+AGENT_UPDATE_UNIT = "drastic-agent-update.service"
 
 
 def _agent_data_dir() -> str:
@@ -442,13 +448,35 @@ class Agent:
         while not self.__shutdown_event.wait(sleep_time):
             now = datetime.now()
 
-            self.__run_due_schedules(now)
+            if not self.__check_update():
+                self.__run_due_schedules(now)
 
             # Process tasks that require server connection
             if self.connected:
                 self.__flush_report_queue()
             else:
                 self.__maintain_server_connection(now)
+
+    def __check_update(self, *, startup=False):
+        manager = self.__execution_manager()
+        if not manager.maintenance and not startup:
+            return False
+        if monotonic() >= getattr(self, "_Agent__next_update_check_at", 0):
+            self.__next_update_check_at = monotonic() + 5
+            try:
+                result = subprocess.run(
+                    ["systemctl", "is-active", AGENT_UPDATE_UNIT],
+                    capture_output=True, text=True, timeout=5, check=False,
+                )
+                state = result.stdout.strip()
+                if startup and state in {"active", "activating", "reloading", "deactivating"}:
+                    manager.start_maintenance(lambda: None)
+                elif state in {"inactive", "failed", "unknown"} and manager.maintenance:
+                    manager.finish_maintenance()
+                    logging.info("Update unit finished; resuming execution. Details: journalctl -u %s", AGENT_UPDATE_UNIT)
+            except (OSError, subprocess.SubprocessError) as exc:
+                logging.warning("Could not check update unit: %s", exc)
+        return manager.maintenance
 
 
     def __run_due_schedules(self, now):
@@ -1379,6 +1407,10 @@ class Agent:
         AgentReport.recover_interrupted()
         AgentReport.load_queue()
 
+        # The installer still performs startup checks after restarting this service.
+        if self.install_type == "git":
+            self.__check_update(startup=True)
+
         # Attempt registration/connection to server
         self.__maintain_server_connection(datetime.now())
 
@@ -1460,6 +1492,7 @@ class Agent:
             "agent_os": self.os,
             "agent_hostname": self.hostname,
             "agent_version": self.version,
+            "protocol_version": AGENT_PROTOCOL_VERSION,
             "agent_install_type": self.install_type,
             "agent_public_key": self.public_key,
             "agent_ssh_public_key": self.ssh_public_key,
@@ -1510,6 +1543,40 @@ class Agent:
         if self.client and self.client.connected:
             return True
         return False
+
+    def cmd_update(self):
+        report = AgentReport.command_report()
+        if self.install_type != "git" or Path(_agent_data_dir()).resolve() != AGENT_INSTALL_ROOT / "data":
+            report.log_message(
+                "Updates require a managed native Linux installation running as root with systemd",
+                final_state=AgentReportState.failed,
+            )
+            return report.finish()
+
+        def start():
+            # ponytail: systemd owns the update lifecycle and journal; reuse the installer.
+            subprocess.run(
+                ["systemd-run", "--collect", f"--unit={AGENT_UPDATE_UNIT}",
+                 "--", str(AGENT_COMMAND), "update"],
+                check=True, capture_output=True, text=True, timeout=10,
+            )
+
+        def preflight():
+            # Reuse the lifecycle manager's platform, ownership and installation checks.
+            subprocess.run([str(AGENT_COMMAND), "status"],
+                           check=True, capture_output=True, text=True, timeout=10)
+
+        try:
+            if not self.__execution_manager().start_maintenance(start, preflight=preflight):
+                report.log_message(
+                    "Cannot update: execution capacity is busy or an update is already running",
+                    final_state=AgentReportState.failed,
+                )
+            else:
+                report.log_message("Agent update started; details: journalctl -u drastic-agent-update.service")
+        except (OSError, subprocess.SubprocessError) as exc:
+            report.log_message(f"Could not start agent update: {exc}", final_state=AgentReportState.failed)
+        return report.finish()
 
     """ Get available docker container on this client """
 

@@ -46,7 +46,7 @@
       <div class="row items-center q-mb-sm">
         <div class="text-subtitle1">Supported Guests</div>
         <q-space />
-        <q-btn flat dense icon="settings" label="Configure Proxmox" :disable="!selectedAgent" @click="showAgentSettings = true" />
+        <q-btn v-if="(selectedAgent?.protocol_version || 0) >= 1" flat dense icon="settings" label="Configure Proxmox" @click="showAgentSettings = true" />
         <q-btn flat dense icon="refresh" label="Refresh" :loading="loadingGuests" @click="loadGuests" />
       </div>
 

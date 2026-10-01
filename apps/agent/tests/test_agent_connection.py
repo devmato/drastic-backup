@@ -3,9 +3,12 @@ import configparser
 import hashlib
 import os
 import stat
+import subprocess
 from datetime import datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
+
+import pytest
 
 import drastic_agent.agent.agent as agent_module
 from drastic_agent.agent.agent import Agent
@@ -33,6 +36,92 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__repository_passwords = {}
     agent._Agent__secret_values = {}
     return agent
+
+
+@pytest.fixture
+def managed_agent(tmp_path, monkeypatch):
+    root = tmp_path / "agent"
+    monkeypatch.setattr(agent_module, "AGENT_INSTALL_ROOT", root)
+    monkeypatch.setattr(agent_module, "AGENT_COMMAND", root / "bin/drastic-agent")
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(root / "data"))
+    monkeypatch.setenv("DRASTIC_AGENT_DEPLOYMENT", "native")
+    monkeypatch.setenv("DRASTIC_AGENT_INSTALL_SOURCE", "git")
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    yield agent
+    if hasattr(agent, "_Agent__execution"):
+        agent._Agent__execution.shutdown()
+
+
+def test_update_uses_installer_and_keeps_work_paused_until_unit_finishes(managed_agent, monkeypatch):
+    agent = managed_agent
+    calls = []
+    state = "activating"
+    launch_error = False
+
+    def run(command, **kwargs):
+        calls.append((command, kwargs))
+        if launch_error and command[0] == "systemd-run":
+            raise subprocess.TimeoutExpired(command, 10)
+        return SimpleNamespace(returncode=0, stdout=state, stderr="")
+
+    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    assert agent.cmd_update().state == AgentReportState.success
+    assert calls[0][0] == [str(agent_module.AGENT_COMMAND), "status"]
+    assert calls[1][0] == [
+        "systemd-run", "--collect", "--unit=drastic-agent-update.service",
+        "--", str(agent_module.AGENT_COMMAND), "update",
+    ]
+    manager = agent._Agent__execution
+    assert manager.submit(lambda: None) is None
+    assert agent.cmd_update().state == AgentReportState.failed
+    assert len(calls) == 2  # Busy/duplicate updates must not even run the lifecycle preflight.
+    for unit_state in ("activating", "active", "deactivating"):
+        state = unit_state
+        agent._Agent__next_update_check_at = 0
+        assert agent._Agent__check_update()
+    restarted = build_agent()
+    try:
+        assert restarted._Agent__check_update(startup=True)
+        assert restarted._Agent__execution.submit(lambda: None) is None
+        state = "inactive"
+        restarted._Agent__next_update_check_at = 0
+        assert not restarted._Agent__check_update()
+    finally:
+        restarted._Agent__execution.shutdown()
+    agent._Agent__next_update_check_at = 0
+    assert not agent._Agent__check_update()
+    launch_error = True
+    assert agent.cmd_update().state == AgentReportState.failed
+    assert manager.maintenance  # A launch timeout may have started the independent unit.
+    agent._Agent__next_update_check_at = 0
+    assert not agent._Agent__check_update()
+    manager.submit(lambda: None).result(timeout=2)
+
+
+@pytest.mark.parametrize("failure", ["busy", "manual", "docker", "wrong-data", "preflight"])
+def test_update_rejects_busy_and_unmanaged_agents(managed_agent, monkeypatch, failure):
+    agent = managed_agent
+    calls = []
+    def run(command, **kwargs):
+        calls.append(command)
+        if failure == "preflight":
+            raise subprocess.CalledProcessError(1, command)
+    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    release = Event()
+    if failure == "busy":
+        agent._Agent__execution_manager().submit(lambda: release.wait(2))
+    elif failure in {"manual", "docker"}:
+        monkeypatch.setenv("DRASTIC_AGENT_INSTALL_SOURCE", "manual")
+        if failure == "docker":
+            monkeypatch.setenv("DRASTIC_AGENT_DEPLOYMENT", "docker")
+    elif failure == "wrong-data":
+        monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", "/another-agent/data")
+    try:
+        assert agent.cmd_update().state == AgentReportState.failed
+        assert all(command == [str(agent_module.AGENT_COMMAND), "status"] for command in calls)
+        assert not agent._Agent__execution_manager().maintenance
+    finally:
+        release.set()
 
 
 def file_mode(path):

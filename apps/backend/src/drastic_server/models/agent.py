@@ -53,6 +53,7 @@ class Agent(IdMixin, TimeMixin, db.Model):
     ssh_key_algorithm = db.Column(db.String(64), nullable=True)
     os = db.Column(db.String(255), nullable=True)
     version = db.Column(db.String(255), nullable=True)
+    protocol_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
     install_type = db.Column(db.String(32), nullable=False, default="manual")
     hostname = db.Column(db.String(255), nullable=True)
     last_connection = db.Column(db.DateTime, nullable=True)

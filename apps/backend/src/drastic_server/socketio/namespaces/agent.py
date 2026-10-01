@@ -5,6 +5,7 @@ from flask import current_app, request
 from flask_socketio import Namespace
 from sqlalchemy import delete
 
+from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_server.extensions import db, socketio
 from drastic_server.models.agent import Agent, AgentSession
@@ -29,10 +30,15 @@ class AgentNamespace(Namespace):
             agent_install_type = auth.get('agent_install_type')
             agent_public_key = auth.get('agent_public_key')
             agent_ssh_public_key = auth.get('agent_ssh_public_key')
+            protocol_version = auth.get('protocol_version', 0)
 
         # Terminate connection on invalid authdata
-        except KeyError:
+        except (KeyError, TypeError, AttributeError):
             current_app.logger.info('Terminating connection (Invalid authdata received)')
+            return False
+
+        if type(protocol_version) is not int or not 0 <= protocol_version <= AGENT_PROTOCOL_VERSION:
+            current_app.logger.info('Terminating connection (Unsupported agent protocol version)')
             return False
         
         # Load agent
@@ -48,6 +54,7 @@ class AgentNamespace(Namespace):
             agent.os = agent_os
             agent.hostname = agent_hostname
             agent.version = agent_version
+            agent.protocol_version = protocol_version
             agent.install_type = Agent.normalize_install_type(agent_install_type)
             if agent_public_key and agent.public_key != agent_public_key:
                 agent.public_key = agent_public_key
