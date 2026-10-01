@@ -540,6 +540,46 @@ def test_pipeline_allows_producer_cleanup_after_successful_restic_exit(tmp_path)
     assert cleanup_marker.read_text(encoding="utf-8") == "complete"
 
 
+def test_pipeline_delivers_source_progress_before_completion_and_keeps_diagnostics(tmp_path):
+    marker = tmp_path / "progress-received"
+    producer = tmp_path / "producer"
+    restic = tmp_path / "restic"
+    _write_executable(producer, (
+        "import os, time\n"
+        "os.write(2, b'INFO: 25% (16 GiB of ')\n"
+        "os.write(2, b'64 GiB) in 1s\\n')\n"
+        "deadline = time.monotonic() + 2\n"
+        f"while not os.path.exists({str(marker)!r}) and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        f"assert os.path.exists({str(marker)!r}), 'progress was buffered'\n"
+        "os.write(1, b'archive data')\n"
+        "os.write(2, b'cleanup failed\\n')\n"
+        "raise SystemExit(2)\n"
+    ))
+    _write_executable(restic, (
+        "import sys\n"
+        "sys.stdin.buffer.read()\n"
+        "print('{\"message_type\":\"summary\",\"snapshot_id\":\"snap-progress\"}')\n"
+    ))
+    lines = []
+
+    def on_stderr(line):
+        lines.append(line)
+        if line.startswith("INFO:"):
+            marker.touch()
+
+    api = ResticApi(binary_path=str(restic), timeout=4, terminate_grace=0.01)
+    with pytest.raises(ResticFailedError) as exc_info:
+        api.backup_stdin_from_command(
+            [str(producer)], "backup.vma", producer_stderr_callback=on_stderr,
+        )
+
+    assert lines == ["INFO: 25% (16 GiB of 64 GiB) in 1s\n", "cleanup failed\n"]
+    assert "cleanup failed" in str(exc_info.value)
+    assert exc_info.value.snapshot_id == "snap-progress"
+    assert api._processes == {}
+
+
 def test_cancel_process_uses_configured_termination_grace():
     class ManagedProcess:
         def __init__(self):

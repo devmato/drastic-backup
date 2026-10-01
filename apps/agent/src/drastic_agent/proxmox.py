@@ -189,12 +189,36 @@ class ProxmoxGuestDriver:
         callback_args,
         callback_pid,
         callback_throttle,
+        progress_callback=None,
     ):
         raise NotImplementedError
 
 
 class QemuVolumeGuestDriver(ProxmoxGuestDriver):
     _QEMU_VOLUME_KEYS = re.compile(r"^(?:ide|sata|scsi|virtio)\d+$|^(?:efidisk0|tpmstate0)$")
+    _BACKUP_PROGRESS = re.compile(
+        r"(?:INFO:\s*)?(\d+(?:\.\d+)?)%\s*\((\d+(?:\.\d+)?)\s*([KMGTPE]?i?B) of (\d+(?:\.\d+)?)\s*([KMGTPE]?i?B)\)"
+    )
+
+    @classmethod
+    def parse_backup_progress(cls, line):
+        match = cls._BACKUP_PROGRESS.search(line)
+        if not match:
+            return None
+        percent, done, done_unit, total, total_unit = match.groups()
+
+        def to_bytes(value, unit):
+            exponent = "BKMGTPE".index(unit[0])
+            return int(float(value) * (1024 if "i" in unit else 1000) ** exponent)
+
+        total_bytes = to_bytes(total, total_unit)
+        if total_bytes <= 0 or not 0 <= float(percent) <= 100:
+            return None
+        return {
+            "percent_done": float(percent),
+            "bytes_processed": to_bytes(done, done_unit),
+            "bytes_total": total_bytes,
+        }
 
     def _extract_volid(self, value):
         if not value:
@@ -265,6 +289,7 @@ class QemuVolumeGuestDriver(ProxmoxGuestDriver):
         callback_args,
         callback_pid,
         callback_throttle,
+        progress_callback=None,
     ):
         command = [
             "vzdump",
@@ -278,6 +303,11 @@ class QemuVolumeGuestDriver(ProxmoxGuestDriver):
             api.get_node(),
         ]
 
+        def process_stderr(line):
+            progress = self.parse_backup_progress(line)
+            if progress is not None and progress_callback is not None:
+                progress_callback(progress)
+
         return resticapi.backup_stdin_from_command(
             command=command,
             stdin_filename=stdin_filename,
@@ -286,6 +316,7 @@ class QemuVolumeGuestDriver(ProxmoxGuestDriver):
             callback_args=callback_args,
             callback_pid=callback_pid,
             callback_throttle=callback_throttle,
+            producer_stderr_callback=process_stderr if progress_callback else None,
         )
 
 

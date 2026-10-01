@@ -12,7 +12,7 @@
         <div class="text-h5">{{ pageTitle }}</div>
       </div>
       <div class="col-auto">
-        <q-btn color="primary" icon="refresh" label="Refresh" :loading="loading" @click="loadOperation" />
+        <q-btn color="primary" icon="refresh" label="Refresh" :loading="loading" @click="loadOperation()" />
       </div>
     </div>
 
@@ -212,6 +212,7 @@ const logPagination = ref({ rowsPerPage: 0, sortBy: 'time', descending: false })
 let stopOperationSocketListener = null
 let operationRefreshInFlight = false
 let operationRefreshQueued = false
+let disposed = false
 
 const pageTitle = computed(() => {
   if (!operation.value) return `Operation #${route.params.operationId}`
@@ -242,6 +243,7 @@ const logColumns = [
 ]
 
 const operationData = computed(() => operation.value?.data || {})
+const proxmoxProgress = computed(() => operationData.value.proxmox_progress)
 const isRestoreOperation = computed(() => operation.value?.type === 'restore')
 const bytesProcessed = computed(() => numberOrNull(operationData.value.bytes_processed))
 const bytesTotal = computed(() => numberOrNull(operationData.value.bytes_total))
@@ -253,6 +255,21 @@ const restoreFilesRestored = computed(() => numberOrNull(operationData.value.res
 const restoreFilesTotal = computed(() => numberOrNull(operationData.value.restore_files_total ?? operationData.value.total_files))
 
 const progressSource = computed(() => {
+  if (proxmoxProgress.value) {
+    const progress = proxmoxProgress.value
+    const phases = {
+      backing_up: `Backing up VM ${progress.vmid}`,
+      finalizing: 'Finalizing restic snapshot',
+      manifest: 'Saving manifest',
+      complete: 'VM backup completed',
+      failed: 'VM backup failed',
+    }
+    return {
+      value: progress.percent_done == null ? null : clampProgress(progress.percent_done / 100),
+      basis: `VM ${progress.guest_index} of ${progress.guests_total} — ${phases[progress.phase] || 'Running'}`,
+    }
+  }
+
   if (isRestoreOperation.value) {
     if (['success', 'warning'].includes(operation.value?.state)) {
       return { value: 1, basis: restoreProgressBasis.value || 'Restore completed' }
@@ -291,9 +308,11 @@ const progressSource = computed(() => {
 
 const progressValue = computed(() => progressSource.value.value)
 const progressIndeterminate = computed(() => progressValue.value === null && operation.value?.state === 'running')
-const showProgress = computed(() => progressValue.value !== null || progressIndeterminate.value)
+const showProgress = computed(() => !!proxmoxProgress.value || progressValue.value !== null || progressIndeterminate.value)
 const progressLabel = computed(() => {
   if (progressIndeterminate.value) return 'Running'
+  if (proxmoxProgress.value && progressValue.value === null) return 'Unknown'
+  if (proxmoxProgress.value) return `${Math.round((progressValue.value || 0) * 100)}% (VM data)`
   return `${Math.round((progressValue.value || 0) * 100)}%`
 })
 const progressBasis = computed(() => progressSource.value.basis)
@@ -312,6 +331,15 @@ const restoreProgressBasis = computed(() => {
 
 const metricCards = computed(() => {
   const metrics = []
+
+  if (proxmoxProgress.value) {
+    const progress = proxmoxProgress.value
+    return [
+      { label: 'VM data processed', value: formatBytes(progress.bytes_processed) },
+      { label: 'Total VM size', value: progress.bytes_total > 0 ? formatBytes(progress.bytes_total) : 'Unknown' },
+      ...(progress.archive_bytes != null ? [{ label: 'VMA archive size', value: formatBytes(progress.archive_bytes) }] : []),
+    ]
+  }
 
   if (isRestoreOperation.value) {
     if (restoreBytesRestored.value !== null) {
@@ -379,6 +407,9 @@ const metricCards = computed(() => {
 
 const currentFiles = computed(() => {
   if (isRestoreOperation.value) return []
+  if (proxmoxProgress.value) {
+    return operation.value?.state === 'running' ? [proxmoxProgress.value.archive_filename] : []
+  }
 
   const files = Array.isArray(operationData.value.current_files) ? operationData.value.current_files : []
   return files.map(formatCurrentFile).filter(Boolean).slice(0, 8)
@@ -422,6 +453,7 @@ function filterLogs(rows, terms) {
 }
 
 function numberOrNull(value) {
+  if (value == null || value === '') return null
   const number = Number(value)
   return Number.isFinite(number) ? number : null
 }
@@ -499,28 +531,39 @@ function cleanupOperationSocketListener() {
 }
 
 async function syncOperationSocketListener() {
-  cleanupOperationSocketListener()
-  if (!operation.value || operation.value.state !== 'running') return
+  if (!operation.value || operation.value.state !== 'running') {
+    cleanupOperationSocketListener()
+    return
+  }
+  if (stopOperationSocketListener || disposed) return
 
-  stopOperationSocketListener = await subscribeToSocketEvents(async (payload) => {
-    if (payload?.name === `operationupdate${operation.value.id}`) {
+  const operationId = String(operation.value.id)
+  const stopListener = await subscribeToSocketEvents(async (payload) => {
+    if (payload?.name === `operationupdate${operationId}`) {
       await queueOperationRefresh()
     }
   })
+  if (disposed || stopOperationSocketListener || String(route.params.operationId) !== operationId || operation.value?.state !== 'running') {
+    stopListener()
+  } else {
+    stopOperationSocketListener = stopListener
+  }
 }
 
-async function loadOperation() {
-  loading.value = true
+async function loadOperation(background = false) {
+  const operationId = String(route.params.operationId)
+  if (!background) loading.value = true
   try {
-    operation.value = await agentStore.getOperation(route.params.operationId)
+    const updatedOperation = await agentStore.getOperation(operationId)
+    if (disposed || String(route.params.operationId) !== operationId) return
+    operation.value = updatedOperation
     await syncOperationSocketListener()
   } catch (e) {
-    operation.value = null
-    cleanupOperationSocketListener()
+    if (disposed || String(route.params.operationId) !== operationId || background) return
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load operation'), color: 'red', position: 'top' })
   } finally {
-    loading.value = false
+    if (!background && String(route.params.operationId) === operationId) loading.value = false
   }
 }
 
@@ -534,8 +577,8 @@ async function queueOperationRefresh() {
   try {
     do {
       operationRefreshQueued = false
-      await loadOperation()
-    } while (operationRefreshQueued)
+      await loadOperation(true)
+    } while (operationRefreshQueued && !disposed)
   } finally {
     operationRefreshInFlight = false
   }
@@ -544,8 +587,8 @@ async function queueOperationRefresh() {
 watch(
   () => route.params.operationId,
   async () => {
+    cleanupOperationSocketListener()
     operation.value = null
-    operationRefreshInFlight = false
     operationRefreshQueued = false
     await loadOperation()
   },
@@ -553,6 +596,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  disposed = true
   cleanupOperationSocketListener()
 })
 

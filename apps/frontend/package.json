@@ -10,7 +10,7 @@
   "scripts": {
     "lint": "eslint \"./**/*.{js,mjs,cjs,vue}\"",
     "format": "prettier --write \"**/*.{js,vue,scss,md,json}\"",
-    "test": "echo \"No test specified\" && exit 0",
+    "test": "node --test tests/*.test.mjs",
     "dev": "quasar dev",
     "build": "quasar build"
   },

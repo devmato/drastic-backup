@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, timezone
-from threading import Event, Thread
 
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
@@ -13,8 +12,6 @@ from drastic_agent.proxmox import (
 
 
 class ProxmoxBackupJobHandler(BackupJobHandler):
-    _STREAM_HEARTBEAT_SECONDS = 15
-
     def run_backup(self, report):
         config = self.job.get("config") or {}
         selection_mode = config.get("selection_mode") or "all"
@@ -39,10 +36,10 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
         completed_guests = []
         failed_guests = []
-        for guest in guests:
+        for guest_index, guest in enumerate(guests, start=1):
             vmid = int(guest["vmid"])
             try:
-                self._backup_qemu_guest(report, api, driver, guest)
+                self._backup_qemu_guest(report, api, driver, guest, guest_index)
                 completed_guests.append(vmid)
             except Exception as exc:
                 failed_guests.append({"vmid": vmid, "error": str(exc)})
@@ -58,7 +55,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             failed_ids = ", ".join(str(item["vmid"]) for item in failed_guests)
             raise ProxmoxError(f"Backup failed for Proxmox guest(s): {failed_ids}")
 
-    def _backup_qemu_guest(self, report, api, driver, guest):
+    def _backup_qemu_guest(self, report, api, driver, guest, guest_index):
         vmid = int(guest["vmid"])
         config = api.get_qemu_config(vmid)
         plan = driver.get_guest_backup_plan(config)
@@ -68,6 +65,28 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
         backup_started = datetime.now(timezone.utc)
         archive_filename = f"vzdump-qemu-{vmid}-{backup_started.strftime('%Y_%m_%d-%H_%M_%S')}.vma"
+        report.set_data("proxmox_progress", {
+            "vmid": vmid,
+            "guest_index": guest_index,
+            "guests_total": len(report.data.get("guests") or [vmid]),
+            "archive_filename": archive_filename,
+            "phase": "backing_up",
+            "percent_done": None,
+            "bytes_processed": 0,
+            "bytes_total": None,
+        })
+
+        def update_progress(progress):
+            report.set_data("proxmox_progress", {
+                **report.data["proxmox_progress"],
+                **progress,
+            })
+
+        def process_progress(progress):
+            update_progress({
+                **progress,
+                "phase": "finalizing" if progress["percent_done"] >= 100 else "backing_up",
+            })
 
         manifest = {
             "job_id": self.job["id"],
@@ -110,12 +129,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             f"Streaming VM {vmid} ({guest.get('name') or 'unnamed'}) to restic via vzdump"
         )
         try:
-            restic_status = self._run_with_stream_heartbeat(
-                report=report,
-                heartbeat_message=(
-                    f"VM {vmid} backup stream is still running via vzdump; waiting for restic summary"
-                ),
-                export_func=driver.export_qemu_backup_to_restic,
+            restic_status = driver.export_qemu_backup_to_restic(
                 api=api,
                 resticapi=self.agent.resticapi,
                 vmid=vmid,
@@ -125,8 +139,10 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 callback_args={"job_id": self.job["id"]},
                 callback_pid=True,
                 callback_throttle=500,
+                progress_callback=process_progress,
             )
         except Exception as exc:
+            update_progress({"phase": "failed"})
             self.finish_artifact(
                 artifact,
                 state=AgentOperationState.failed,
@@ -135,6 +151,10 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             raise
 
         report.process_job_status(status=restic_status, job_id=self.job["id"])
+        update_progress({
+            "phase": "manifest",
+            "archive_bytes": restic_status.get("total_bytes_processed") if isinstance(restic_status, dict) else None,
+        })
         self.finish_artifact(
             artifact,
             snapshot_id=restic_status.get("snapshot_id") if isinstance(restic_status, dict) else None,
@@ -169,6 +189,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 callback_throttle=500,
             )
         except Exception as exc:
+            update_progress({"phase": "failed"})
             self.finish_artifact(
                 manifest_artifact,
                 state=AgentOperationState.failed,
@@ -183,19 +204,4 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             snapshot_id=manifest_status.get("snapshot_id") if isinstance(manifest_status, dict) else None,
             data={"manifest_filename": manifest_filename},
         )
-
-    def _run_with_stream_heartbeat(self, report, heartbeat_message, export_func, **kwargs):
-        stop_event = Event()
-
-        def heartbeat():
-            while not stop_event.wait(self._STREAM_HEARTBEAT_SECONDS):
-                report.log_message(heartbeat_message)
-
-        heartbeat_thread = Thread(target=heartbeat, daemon=True)
-        heartbeat_thread.start()
-
-        try:
-            return export_func(**kwargs)
-        finally:
-            stop_event.set()
-            heartbeat_thread.join(timeout=0.1)
+        update_progress({"phase": "complete"})

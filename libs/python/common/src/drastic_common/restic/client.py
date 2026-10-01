@@ -133,11 +133,11 @@ class ResticApi:
         with self._process_lock:
             self._processes.pop(pid, None)
 
-    def __drain_binary_stream(self, stream, output_chunks):
+    def __drain_binary_stream(self, stream, output_chunks, callback=None):
         try:
             while True:
                 try:
-                    chunk = stream.read(64 * 1024)
+                    chunk = stream.readline() if callback is not None else stream.read(64 * 1024)
                 except TypeError:
                     chunk = stream.read()
                     if chunk:
@@ -146,6 +146,12 @@ class ResticApi:
                 if not chunk:
                     break
                 output_chunks.append(chunk)
+                if callback is not None:
+                    # Progress parsing must never stop draining the pipe or break the backup.
+                    try:
+                        callback(chunk.decode("utf-8", errors="replace"))
+                    except Exception:
+                        logging.exception("Backup source progress callback failed")
         finally:
             close = getattr(stream, "close", None)
             if close:
@@ -358,6 +364,7 @@ class ResticApi:
         callback_args=None,
         callback_pid=False,
         callback_throttle=None,
+        producer_stderr_callback=None,
     ):
         cmd = self.__make_command(
             "backup",
@@ -418,7 +425,7 @@ class ResticApi:
             restic_stderr_thread.start()
             producer_stderr_thread = threading.Thread(
                 target=self.__drain_binary_stream,
-                args=(producer_process.stderr, producer_stderr_chunks),
+                args=(producer_process.stderr, producer_stderr_chunks, producer_stderr_callback),
                 daemon=True,
             )
             producer_stderr_thread.start()
