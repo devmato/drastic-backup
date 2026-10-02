@@ -50,6 +50,7 @@ class TrueNASBackupConfigSchema(Schema):
 class ConnectionStatusSchema(Schema):
     configured = fields.Boolean(required=True)
     available = fields.Boolean(required=True)
+    guest_files_error = fields.String(allow_none=True)
 
 
 class AgentConnectionsSchema(Schema):

@@ -185,3 +185,30 @@ def test_failed_export_removes_prepared_images(monkeypatch, tmp_path):
                                    restore_location=str(tmp_path / "out"))
     assert list(restore.workspace_root().iterdir()) == []
     assert report.data["destination_may_contain_restored_data"]
+
+
+def test_agent_status_reports_cached_guest_tools_error(monkeypatch):
+    from drastic_agent.agent.agent import Agent
+    from drastic_common.truenas import AgentConnectionsSchema
+
+    calls = []
+
+    def probe():
+        calls.append(True)
+        raise ValueError("GuestFS dependencies missing")
+
+    monkeypatch.setattr(restore, "guest_tools_available", probe)
+    monkeypatch.setattr("drastic_agent.agent.agent.shutil.which", lambda _: "/usr/sbin/vzdump")
+    client = SimpleNamespace(public_settings={"configured": True})
+    agent = SimpleNamespace(get_proxmox_client=lambda: client, get_truenas_client=lambda: client, os_clean="linux")
+    restore.guest_tools_error.cache_clear()
+    try:
+        status = Agent.connection_status(agent)
+        assert AgentConnectionsSchema().load(status)["proxmox"]["guest_files_error"] == "GuestFS dependencies missing"
+        assert Agent.connection_status(agent) == status
+        assert len(calls) == 1
+        monkeypatch.setattr(restore, "guest_tools_available", lambda: None)
+        restore.guest_tools_error.cache_clear()  # A new agent process rechecks after installation.
+        assert Agent.connection_status(agent)["proxmox"]["guest_files_error"] is None
+    finally:
+        restore.guest_tools_error.cache_clear()

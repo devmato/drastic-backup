@@ -17,6 +17,10 @@
           <q-btn flat icon="description" label="Reports" :to="`/agents/${agent.id}/operations`" />
         </div>
         <div class="text-caption text-grey-7">{{ agent?.hostname || `Agent #${agent?.id}` }}</div>
+        <q-banner v-if="agent.connections?.proxmox?.guest_files_error" class="bg-warning text-black q-mt-sm" role="status">
+          {{ agent.connections.proxmox.guest_files_error }}.
+          Run an agent update as root to retry dependency installation.
+        </q-banner>
       </q-card-section>
 
       <q-tabs v-model="activeTab" dense align="left" class="text-primary">

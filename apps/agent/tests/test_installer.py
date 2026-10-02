@@ -371,3 +371,86 @@ def test_failed_bootstrap_does_not_clean_existing_install(tmp_path):
 
     assert result.returncode == 33
     assert uv.is_file() and (root / ".managed-by-drastic-agent").exists()
+
+
+def test_target_release_optional_dependency_failure_does_not_block_install(installer, monkeypatch, repository, capsys):
+    service = mock_runtime(installer, monkeypatch)
+    script = repository / "scripts/install-agent-dependencies.sh"
+    script.write_text("#!/bin/bash\nexit 9\n")
+    subprocess.run(["git", "-C", str(repository), "add", str(script)], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: optional dependencies"], check=True, capture_output=True)
+    installer.install(arguments(repository=str(repository), ref="main"))
+    assert service["active"]
+    assert "Optional dependencies were not installed" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("proxmox,uid,present,tty,sudo_code,apt_code,expected", [
+    (False, 0, False, False, 0, 0, "skip"),
+    (True, 0, True, False, 0, 0, "skip"),
+    (True, 0, False, False, 0, 0, "installed"),
+    (True, 0, False, False, 0, 1, "package installation failed"),
+    (True, 1000, False, False, 0, 0, "interactive terminal"),
+    (True, 1000, False, True, 0, 0, "installed"),
+    (True, 1000, False, True, 1, 0, "authorization was declined"),
+])
+def test_optional_dependencies_root_sudo_and_fallback(tmp_path, proxmox, uid, present, tty, sudo_code, apt_code, expected):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    stub = commands / "stub"
+    stub.write_text('''#!/bin/bash
+case "${0##*/}" in
+  id) printf '%s' "$TEST_UID" ;;
+  dpkg-query) [ "$TEST_PRESENT" = 1 ] && printf 'install ok installed' ;;
+  python) [ "$TEST_PRESENT" = 1 ] || [ -f "$TEST_INSTALLED" ] ;;
+  sudo)
+    printf 'sudo %s\\n' "$*" >> "$TEST_CALLS"
+    if [ "$1" = -v ]; then [ -t 0 ] || exit 99; exit "$TEST_SUDO_CODE"; fi
+    shift; exec "$@" ;;
+  apt-get)
+    printf 'apt %s\\n' "$*" >> "$TEST_CALLS"
+    [ "$TEST_APT_CODE" = 0 ] || exit "$TEST_APT_CODE"
+    case " $* " in *' install '*) : > "$TEST_INSTALLED" ;; esac ;;
+esac
+''')
+    stub.chmod(0o755)
+    for name in ("id", "dpkg-query", "sudo", "apt-get", "python", *(["pveversion"] if proxmox else [])):
+        (commands / name).symlink_to(stub)
+    # Supply only our tools (plus env), so this test can never run the host package manager.
+    (commands / "env").symlink_to("/usr/bin/env")
+    script = Path(__file__).resolve().parents[3] / "scripts/install-agent-dependencies.sh"
+    source = script.read_text().replace("/usr/bin/python3", str(commands / "python"))
+    env = {**os.environ, "PATH": str(commands), "TEST_UID": str(uid), "TEST_PRESENT": str(int(present)),
+           "TEST_INSTALLED": str(tmp_path / "installed"), "TEST_CALLS": str(tmp_path / "calls"),
+           "TEST_SUDO_CODE": str(sudo_code), "TEST_APT_CODE": str(apt_code)}
+    if tty:
+        master, slave = pty.openpty()
+        try:
+            def attach_tty():
+                os.setsid()
+                fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+            process = subprocess.Popen(["/bin/bash", "-s"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True, env=env, preexec_fn=attach_tty)
+            os.close(slave)
+            output, error = process.communicate(source, timeout=5)
+            assert process.returncode == 0
+        finally:
+            os.close(master)
+    else:
+        result = subprocess.run(["/bin/bash", "-s"], input=source, capture_output=True, text=True,
+                                env=env, start_new_session=True, timeout=5)
+        assert result.returncode == 0
+        output, error = result.stdout, result.stderr
+    calls = (tmp_path / "calls").read_text() if (tmp_path / "calls").exists() else ""
+    if expected == "installed":
+        assert (tmp_path / "installed").exists()
+        assert "--no-remove --no-install-recommends python3-guestfs libguestfs-tools" in calls
+        assert ("sudo -v" in calls) == (uid != 0)
+        assert "dependencies are available" in output
+    elif expected == "skip":
+        assert calls == ""
+    else:
+        assert expected in error
+        assert "Continuing without Proxmox file restore" in error
+        assert not (tmp_path / "installed").exists()

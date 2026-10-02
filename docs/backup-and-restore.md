@@ -286,10 +286,24 @@ does not require the original node's API credentials.
 
 **Files from VM**
 
-Install the optional native dependency on the restore host:
+On detected Proxmox hosts, the native installer and updater attempt to install
+`python3-guestfs` and `libguestfs-tools` automatically. They use root privileges,
+or ask through sudo when the dependency script is run with an interactive
+terminal. Missing permissions, denied sudo authorization or package-manager
+failures produce a warning and leave the agent usable without guest file restore.
+The native installation itself still requires root/sudo.
+
+Agent Properties displays missing GuestFS dependencies before opening the restore
+dialog. This status is checked once per agent process and refreshed after an
+update/restart; the restore dialog also performs a live check. Retry a native
+agent update as root to install missing packages. When upgrading from an older
+installer without this dependency step, the first update installs the new
+installer; run the update once more if the warning remains.
+
+For manual installation on the restore host:
 
 ```bash
-apt install python3-guestfs libguestfs-tools
+apt-get install --no-remove --no-install-recommends python3-guestfs libguestfs-tools
 libguestfs-test-tool
 ```
 

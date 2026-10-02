@@ -1752,6 +1752,10 @@ class Agent:
                 configured = False
             available = bool(shutil.which("vzdump")) if kind == "proxmox" else self.os_clean == "linux"
             result[kind] = {"configured": configured, "available": available}
+            if kind == "proxmox" and available:
+                from drastic_agent.services.proxmox_restore import guest_tools_error
+
+                result[kind]["guest_files_error"] = guest_tools_error()
         return result
 
     def get_truenas_client(self):

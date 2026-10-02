@@ -177,6 +177,12 @@ def prepare_release(args, state):
         run(ROOT / 'tools/bin/uv', 'sync', '--project', source / 'apps/agent', '--frozen',
             '--no-dev', '--no-editable', '--python', sys.executable, env=environment)
         run(release / 'venv/bin/drastic-agent', '--help', stdout=subprocess.DEVNULL)
+        dependencies = source / 'scripts/install-agent-dependencies.sh'
+        if dependencies.is_file():
+            try:
+                run('bash', dependencies)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                print(f'Optional dependencies were not installed: {exc}. Continuing agent installation.', file=sys.stderr)
         return release, {'repository': repository, 'ref': ref, 'commit': commit}
     except BaseException:
         shutil.rmtree(release)

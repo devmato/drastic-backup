@@ -8,6 +8,7 @@ import re
 import shutil
 import time
 from contextlib import contextmanager
+from functools import cache
 from pathlib import Path
 from uuid import UUID
 
@@ -113,6 +114,16 @@ def guest_tools_available():
         run_process(["/usr/bin/python3", "-c", "import guestfs"], timeout=15)
     except (OSError, RuntimeError, TimeoutError) as exc:
         raise ValueError("Guest file restore requires python3-guestfs and libguestfs-tools on the agent host") from exc
+
+
+@cache
+def guest_tools_error():
+    """Probe once per agent process for the connection status; restore checks stay live."""
+    try:
+        guest_tools_available()
+    except ValueError as exc:
+        return str(exc)
+    return None
 
 
 def guest_request(path, action, *, cancelled=lambda: False, **kwargs):
