@@ -20,7 +20,7 @@ It is designed for trusted self-hosted and homelab environments where backup job
 
 ## Disclaimer
 
-dRastic Backup is developed with significant AI assistance. Large parts of the codebase have not been independently reviewed.
+dRastic Backup is developed with significant AI assistance. Large parts of the codebase have not been reviewed by a human.
 
 Use this software at your own risk. There is no warranty or guarantee that it will work correctly, protect your data, or avoid data loss, security issues, misconfiguration, downtime, or other problems caused directly or indirectly by using the application.
 
