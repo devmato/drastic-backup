@@ -14,6 +14,7 @@ from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.schemas.agent import (
     AgentInstallOptionsResponseSchema,
+    AgentOperationDetailResponseSchema,
     AgentOperationQuerySchema,
     AgentOperationResponseSchema,
     AgentProxmoxSettingsInputSchema,
@@ -351,7 +352,7 @@ class AgentOperationList(MethodView):
 @blp.route("/operations/<int:operation_id>")
 class AgentOperationDetail(MethodView):
     @jwt_required()
-    @blp.response(200, AgentOperationResponseSchema)
+    @blp.response(200, AgentOperationDetailResponseSchema)
     def get(self, operation_id):
         user_id = get_jwt_identity()
         operation = (

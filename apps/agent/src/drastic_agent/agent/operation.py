@@ -322,6 +322,8 @@ class AgentOperation:
                 "dirs_changed": "dirs_changed",
                 "dirs_unmodified": "dirs_unmodified",
                 "total_bytes_processed": "bytes_processed",
+                "data_added": "data_added",
+                "data_added_packed": "data_added_packed",
                 "total_duration": "duration",
                 "snapshot_id": "snapshot_id",
             },

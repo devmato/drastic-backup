@@ -119,6 +119,12 @@ class AgentOperationResponseSchema(Schema):
         return obj.source.name if obj.source else None
 
 
+class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
+    agent_hostname = fields.String(attribute="agent.hostname", dump_default=None, allow_none=True)
+    job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
+    repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
+
+
 class AgentOperationStartResponseSchema(Schema):
     msg = fields.String(required=True)
     id = fields.Integer(required=True)

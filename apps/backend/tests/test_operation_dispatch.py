@@ -61,7 +61,7 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
         try:
             user = User(name="admin")
             user.set_initial_password("account-password", recovery_key="user-recovery-key")
-            agent = Agent(user=user, secret="agent-secret")
+            agent = Agent(user=user, secret="agent-secret", hostname="backup-host")
             AgentSession(agent=agent, request_sid="agent-sid")
             repository = Repository(
                 user=user,
@@ -123,6 +123,19 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
             db.session.refresh(operation)
             assert operation.state == AgentOperationState.success
             assert operation.data == {"completed": True}
+            detail = client.get(f"/api/agents/operations/{operation.id}")
+            assert detail.status_code == 200
+            assert detail.json["agent_hostname"] == "backup-host"
+            assert detail.json["job_name"] == "Files"
+            assert detail.json["repository_name"] == "Repo"
+
+            operation.job = None
+            operation.repository = None
+            db.session.commit()
+            detail = client.get(f"/api/agents/operations/{operation.id}")
+            assert detail.status_code == 200
+            assert detail.json["job_name"] is None
+            assert detail.json["repository_name"] is None
         finally:
             db.session.remove()
             db.drop_all()

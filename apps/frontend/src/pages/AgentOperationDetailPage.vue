@@ -2,7 +2,7 @@
   <q-page class="q-pa-md">
     <q-breadcrumbs class="q-pb-md">
       <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-      <q-breadcrumbs-el :label="`Agent #${route.params.agentId}`" />
+      <q-breadcrumbs-el :label="operation?.agent_hostname || `Agent #${route.params.agentId}`" />
       <q-breadcrumbs-el label="Operations" :to="operationListRoute" />
       <q-breadcrumbs-el :label="`Operation #${route.params.operationId}`" />
     </q-breadcrumbs>
@@ -24,75 +24,40 @@
 
     <div v-if="operation" class="q-gutter-md">
       <q-card flat bordered>
-        <q-card-section class="q-pa-sm">
-          <q-markup-table flat dense separator="none">
-            <tbody>
-              <tr>
-                <td>
-                  <div class="text-caption text-grey-7">Status</div>
-                  <q-badge :color="stateColor(operation.state)" :label="operation.state || '-'" />
-                </td>
-                <td>
-                  <div class="text-caption text-grey-7">Type</div>
-                  <div class="text-body2 text-weight-medium">{{ operation.type_text || operation.type || '-' }}</div>
-                </td>
-                <td>
-                  <div class="text-caption text-grey-7">Source</div>
-                  <div class="text-body2 text-weight-medium">{{ operation.source || '-' }}</div>
-                </td>
-                <td>
-                  <div class="text-caption text-grey-7">Job</div>
-                  <div class="text-body2 text-weight-medium">{{ operation.job_id ? `#${operation.job_id}` : '-' }}</div>
-                </td>
-              </tr>
-              <tr>
-                <td>
-                  <div class="text-caption text-grey-7">Repository</div>
-                  <div class="text-body2 text-weight-medium">{{ operation.repository_id ? `#${operation.repository_id}` : '-' }}</div>
-                </td>
-                <td>
-                  <div class="text-caption text-grey-7">Started</div>
-                  <div class="text-body2 text-weight-medium">{{ formatDate(operation.started) }}</div>
-                </td>
-                <td>
-                  <div class="text-caption text-grey-7">Ended</div>
-                  <div class="text-body2 text-weight-medium">{{ formatDate(operation.ended) }}</div>
-                </td>
-                <td />
-              </tr>
-            </tbody>
-          </q-markup-table>
-        </q-card-section>
-
         <q-card-section>
           <div class="q-gutter-md">
             <div v-if="showProgress" class="q-gutter-xs">
-              <div class="row items-center no-wrap">
-                <div class="text-subtitle2">Progress</div>
-                <q-space />
-                <div class="text-caption text-grey-7 q-ml-sm">{{ progressLabel }}</div>
-              </div>
               <q-linear-progress
                 rounded
-                size="10px"
+                size="24px"
                 :color="stateColor(operation.state)"
                 :value="progressValue || 0"
                 :indeterminate="progressIndeterminate"
-              />
-              <div v-if="progressBasis" class="text-caption text-grey-7">{{ progressBasis }}</div>
+                aria-label="Operation progress"
+                :aria-valuetext="progressLabel"
+              >
+                <div class="absolute-full flex flex-center">
+                  <q-badge color="white" text-color="black" :label="progressLabel" />
+                </div>
+              </q-linear-progress>
+              <div v-if="operation.state === 'running' && proxmoxProgress" class="text-caption">{{ progressBasis }}</div>
             </div>
 
-            <q-list v-if="metricCards.length > 0" dense>
-              <q-item v-for="metric in metricCards" :key="metric.label" class="q-px-none">
-                <q-item-section>
-                  <q-item-label caption>{{ metric.label }}</q-item-label>
-                  <q-item-label class="text-body2 text-weight-medium ellipsis">
-                    {{ metric.value }}
-                    <q-tooltip v-if="metric.fullValue">{{ metric.fullValue }}</q-tooltip>
-                  </q-item-label>
-                </q-item-section>
-              </q-item>
-            </q-list>
+            <div>
+              <div class="row q-col-gutter-md text-body2">
+                <div v-for="(column, index) in summaryColumns" :key="index" class="col-12 col-md-6">
+                  <div v-for="field in column" :key="field.label" class="row no-wrap items-baseline q-py-xs">
+                    <span class="col-auto q-mr-sm">{{ field.label }}:</span>
+                    <div class="col ellipsis">
+                      <q-badge v-if="field.color" :color="field.color" :label="field.value" class="text-capitalize" />
+                      <router-link v-else-if="field.to" :to="field.to" class="text-primary">{{ field.value }}</router-link>
+                      <span v-else class="text-weight-medium">{{ field.value }}</span>
+                      <q-tooltip>{{ field.fullValue || field.value }}</q-tooltip>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
 
             <q-list v-if="currentFiles.length > 0" dense>
               <q-item-label header class="q-px-none">Current files</q-item-label>
@@ -106,9 +71,25 @@
               </q-item>
             </q-list>
 
-            <q-banner v-if="!hasStructuredMetrics" class="bg-grey-2 text-grey-8">
-              No structured metrics available.
-            </q-banner>
+            <q-expansion-item
+              dense dense-toggle switch-toggle-side label="Technical details"
+              header-class="q-px-none" class="text-body2"
+            >
+              <div v-for="field in technicalDetails" :key="field.label" class="row no-wrap items-center q-mt-sm">
+                <span class="col-auto q-mr-sm">{{ field.label }}:</span>
+                <span class="col ellipsis">
+                  {{ field.value }}
+                  <q-tooltip>{{ field.value }}</q-tooltip>
+                </span>
+                <q-btn
+                  v-if="field.label === 'Snapshot'"
+                  flat dense round size="sm" icon="content_copy" aria-label="Copy snapshot ID"
+                  @click="copySnapshot"
+                >
+                  <q-tooltip>Copy snapshot ID</q-tooltip>
+                </q-btn>
+              </div>
+            </q-expansion-item>
           </div>
         </q-card-section>
       </q-card>
@@ -195,7 +176,7 @@
 <script setup>
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { useQuasar } from 'quasar'
+import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -232,14 +213,14 @@ const sortedLogs = computed(() => {
 const logColumns = [
   {
     name: 'time',
-    label: 'Zeit',
+    label: 'Time',
     field: 'created',
     align: 'left',
     sortable: true,
     sort: (left, right) => new Date(left || 0) - new Date(right || 0),
   },
   { name: 'level', label: 'Level', field: 'level', align: 'left', sortable: true },
-  { name: 'message', label: 'Meldung', field: 'message', align: 'left', sortable: true },
+  { name: 'message', label: 'Message', field: 'message', align: 'left', sortable: true },
 ]
 
 const operationData = computed(() => operation.value?.data || {})
@@ -275,38 +256,35 @@ const progressSource = computed(() => {
 
   if (isRestoreOperation.value) {
     if (['success', 'warning'].includes(operation.value?.state)) {
-      return { value: 1, basis: restoreProgressBasis.value || 'Restore completed' }
+      return { value: 1 }
     }
 
     if (restoreBytesTotal.value && restoreBytesTotal.value > 0) {
       return {
         value: clampProgress((restoreBytesRestored.value || 0) / restoreBytesTotal.value),
-        basis: `${formatBytes(restoreBytesRestored.value)} of ${formatBytes(restoreBytesTotal.value)} restored`,
       }
     }
 
-    return { value: null, basis: '' }
+    return { value: null }
   }
 
   if (['success', 'warning'].includes(operation.value?.state)) {
-    return { value: 1, basis: 'Operation completed' }
+    return { value: 1 }
   }
 
   if (bytesTotal.value && bytesTotal.value > 0) {
     return {
       value: clampProgress((bytesProcessed.value || 0) / bytesTotal.value),
-      basis: `${formatBytes(bytesProcessed.value)} of ${formatBytes(bytesTotal.value)}`,
     }
   }
 
   if (filesTotal.value && filesTotal.value > 0) {
     return {
       value: clampProgress((filesProcessed.value || 0) / filesTotal.value),
-      basis: `${formatNumber(filesProcessed.value)} of ${formatNumber(filesTotal.value)} files`,
     }
   }
 
-  return { value: null, basis: '' }
+  return { value: null }
 })
 
 const progressValue = computed(() => progressSource.value.value)
@@ -320,26 +298,14 @@ const progressLabel = computed(() => {
 })
 const progressBasis = computed(() => progressSource.value.basis)
 
-const restoreProgressBasis = computed(() => {
-  if (restoreBytesRestored.value !== null) {
-    return `${formatBytes(restoreBytesRestored.value)} restored`
-  }
-
-  if (restoreFilesRestored.value !== null) {
-    return `${formatNumber(restoreFilesRestored.value)} files restored`
-  }
-
-  return ''
-})
-
 const metricCards = computed(() => {
   const metrics = []
 
   if (proxmoxProgress.value) {
     const progress = proxmoxProgress.value
     return [
-      { label: 'VM data processed', value: formatBytes(progress.bytes_processed) },
-      { label: 'Total VM size', value: progress.bytes_total > 0 ? formatBytes(progress.bytes_total) : 'Unknown' },
+      ...(progress.bytes_processed != null ? [{ label: 'VM data processed', value: formatBytes(progress.bytes_processed) }] : []),
+      ...(progress.bytes_total > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.bytes_total) }] : []),
       ...(progress.archive_bytes != null ? [{ label: 'VMA archive size', value: formatBytes(progress.archive_bytes) }] : []),
     ]
   }
@@ -369,56 +335,117 @@ const metricCards = computed(() => {
       })
     }
 
-    if (operationData.value.snapshot_id) {
-      const snapshotId = String(operationData.value.snapshot_id)
-      metrics.push({ label: 'Snapshot', value: truncateMiddle(snapshotId), fullValue: snapshotId })
-    }
-
     return metrics
   }
 
   if (bytesProcessed.value !== null || bytesTotal.value !== null) {
-    metrics.push({ label: 'Data processed', value: `${formatBytes(bytesProcessed.value)} / ${formatBytes(bytesTotal.value)}` })
+    metrics.push({
+      label: bytesProcessed.value === null ? 'Total data' : 'Data processed',
+      value: formatProcessed(bytesProcessed.value, bytesTotal.value, formatBytes),
+    })
   }
 
   if (filesProcessed.value !== null || filesTotal.value !== null) {
-    metrics.push({ label: 'Files processed', value: `${formatNumber(filesProcessed.value)} / ${formatNumber(filesTotal.value)}` })
+    metrics.push({
+      label: filesProcessed.value === null ? 'Total files' : 'Files',
+      value: formatProcessed(filesProcessed.value, filesTotal.value, formatNumber),
+    })
   }
 
-  const fileChanges = changeSummary('files_new', 'files_changed', 'files_unmodified')
-  if (fileChanges) {
-    metrics.push({ label: 'Files changed', value: fileChanges })
+  const newFiles = numberOrNull(operationData.value.files_new)
+  const modifiedFiles = numberOrNull(operationData.value.files_changed)
+  const changes = [
+    newFiles > 0 ? `${formatNumber(newFiles)} new` : null,
+    modifiedFiles > 0 ? `${formatNumber(modifiedFiles)} modified` : null,
+  ].filter(Boolean)
+  if (changes.length > 0 || (newFiles === 0 && modifiedFiles === 0)) {
+    metrics.push({ label: 'Changes', value: changes.join(' · ') || 'No changes' })
   }
 
-  const dirChanges = changeSummary('dirs_new', 'dirs_changed', 'dirs_unmodified')
-  if (dirChanges) {
-    metrics.push({ label: 'Directories changed', value: dirChanges })
-  }
-
-  const duration = numberOrNull(operationData.value.duration)
-  if (duration !== null) {
-    metrics.push({ label: 'Duration', value: formatDuration(duration) })
-  }
-
-  if (operationData.value.snapshot_id) {
-    const snapshotId = String(operationData.value.snapshot_id)
-    metrics.push({ label: 'Snapshot', value: truncateMiddle(snapshotId), fullValue: snapshotId })
+  const addedBytes = numberOrNull(operationData.value.data_added_packed ?? operationData.value.data_added)
+  if (addedBytes !== null) {
+    metrics.push({ label: 'Added to repo', value: formatBytes(addedBytes) })
   }
 
   return metrics
 })
 
-const currentFiles = computed(() => {
-  if (isRestoreOperation.value) return []
-  if (proxmoxProgress.value) {
-    return operation.value?.state === 'running' ? [proxmoxProgress.value.archive_filename] : []
+const duration = computed(() => {
+  if (!operation.value?.started) return null
+  const end = operation.value.ended
+    ? new Date(operation.value.ended).getTime()
+    : operation.value.state === 'running' ? Date.now() : NaN
+  const seconds = (end - new Date(operation.value.started).getTime()) / 1000
+  return Number.isFinite(seconds) && seconds >= 0 ? formatDuration(seconds) : null
+})
+
+const summaryColumns = computed(() => {
+  const current = operation.value
+  if (!current) return []
+  return [
+    [
+      { label: 'Type', value: current.type_text || current.type || '-' },
+      { label: 'Status', value: current.state || '-', color: stateColor(current.state) },
+      ...(current.started ? [{ label: 'Started', value: formatDate(current.started) }] : []),
+      ...(current.ended ? [{ label: 'Ended', value: formatDate(current.ended) }] : []),
+      ...(duration.value !== null ? [{ label: 'Duration', value: duration.value }] : []),
+      ...(current.job_id ? [{ label: 'Job', value: current.job_name || `#${current.job_id}` }] : []),
+      ...(current.repository_id ? [{ label: 'Repository', value: current.repository_name || `#${current.repository_id}` }] : []),
+    ],
+    [
+      { label: 'Device', value: current.agent_hostname || `Agent #${route.params.agentId}`, to: operationListRoute.value },
+      ...metricCards.value,
+    ],
+  ]
+})
+
+const technicalDetails = computed(() => {
+  const current = operation.value
+  if (!current) return []
+  const details = [
+    { label: 'Operation ID', value: `#${current.id}` },
+    { label: 'Source', value: current.source || '-' },
+  ]
+  if (current.job_id) details.push({ label: 'Job ID', value: `#${current.job_id}` })
+  if (current.repository_id) details.push({ label: 'Repository ID', value: `#${current.repository_id}` })
+  const resticDuration = numberOrNull(operationData.value.duration)
+  if (resticDuration !== null) {
+    details.push({ label: 'Restic duration', value: formatDuration(resticDuration) })
   }
+  const fileChanges = changeSummary('files_new', 'files_changed', 'files_unmodified')
+  if (fileChanges) details.push({ label: 'Files', value: fileChanges })
+  const dirChanges = changeSummary('dirs_new', 'dirs_changed', 'dirs_unmodified')
+  if (dirChanges) details.push({ label: 'Directories', value: dirChanges })
+  if (operationData.value.snapshot_id) {
+    details.push({ label: 'Snapshot', value: String(operationData.value.snapshot_id) })
+  }
+
+  return details
+})
+
+async function copySnapshot() {
+  try {
+    await copyToClipboard(String(operationData.value.snapshot_id))
+    $q.notify({ message: 'Snapshot ID copied', color: 'positive', position: 'top' })
+  } catch {
+    $q.notify({ message: 'Could not copy snapshot ID', color: 'negative', position: 'top' })
+  }
+}
+
+function formatProcessed(processed, total, formatter) {
+  if (processed !== null && total !== null && operation.value?.state === 'running') {
+    return `${formatter(processed)} / ${formatter(total)}`
+  }
+  return formatter(processed ?? total)
+}
+
+const currentFiles = computed(() => {
+  if (isRestoreOperation.value || operation.value?.state !== 'running') return []
+  if (proxmoxProgress.value) return [proxmoxProgress.value.archive_filename]
 
   const files = Array.isArray(operationData.value.current_files) ? operationData.value.current_files : []
   return files.map(formatCurrentFile).filter(Boolean).slice(0, 8)
 })
-
-const hasStructuredMetrics = computed(() => metricCards.value.length > 0 || currentFiles.value.length > 0 || showProgress.value)
 
 function stateColor(state) {
   const colors = { running: 'blue', success: 'green', warning: 'orange', failed: 'red', cancelled: 'grey' }
@@ -499,15 +526,13 @@ function clampProgress(value) {
 }
 
 function changeSummary(newKey, changedKey, unchangedKey) {
-  const newCount = numberOrNull(operationData.value[newKey])
-  const changedCount = numberOrNull(operationData.value[changedKey])
-  const unchangedCount = numberOrNull(operationData.value[unchangedKey])
-
-  if (newCount === null && changedCount === null && unchangedCount === null) {
-    return null
-  }
-
-  return `${formatNumber(newCount)} new / ${formatNumber(changedCount)} changed / ${formatNumber(unchangedCount)} unchanged`
+  return [[newKey, 'new'], [changedKey, 'modified'], [unchangedKey, 'unchanged']]
+    .map(([key, label]) => {
+      const count = numberOrNull(operationData.value[key])
+      return count === null ? null : `${formatNumber(count)} ${label}`
+    })
+    .filter(Boolean)
+    .join(' · ')
 }
 
 function formatCurrentFile(file) {
@@ -515,15 +540,6 @@ function formatCurrentFile(file) {
   if (file?.path) return file.path
   if (file?.name) return file.name
   return JSON.stringify(file)
-}
-
-function truncateMiddle(value, maxLength = 20) {
-  if (value.length <= maxLength) return value
-
-  const visibleLength = maxLength - 3
-  const startLength = Math.ceil(visibleLength / 2)
-  const endLength = Math.floor(visibleLength / 2)
-  return `${value.slice(0, startLength)}...${value.slice(-endLength)}`
 }
 
 function cleanupOperationSocketListener() {

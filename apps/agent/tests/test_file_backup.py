@@ -48,7 +48,10 @@ def test_file_backup_summary_sets_final_totals(previous_status, total_bytes, tot
         "message_type": "summary",
         "total_bytes_processed": total_bytes,
         "total_files_processed": total_files,
-        "data_added": 0,
+        "data_added": total_bytes,
+        "data_added_packed": total_bytes // 2,
     }])
     assert report.data["bytes_total"] == report.data["bytes_processed"] == total_bytes
     assert report.data["files_total"] == report.data["files_processed"] == total_files
+    assert report.data["data_added"] == total_bytes
+    assert report.data["data_added_packed"] == total_bytes // 2
