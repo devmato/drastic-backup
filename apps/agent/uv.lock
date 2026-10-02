@@ -204,6 +204,7 @@ dependencies = [
     { name = "marshmallow" },
     { name = "python-socketio", extra = ["client"] },
     { name = "requests" },
+    { name = "websocket-client" },
 ]
 
 [package.dev-dependencies]
@@ -223,6 +224,7 @@ requires-dist = [
     { name = "marshmallow", specifier = ">=4.2.0" },
     { name = "python-socketio", extras = ["client"], specifier = ">=5.16.0" },
     { name = "requests", specifier = ">=2.32.5" },
+    { name = "websocket-client", specifier = ">=1.9.0" },
 ]
 
 [package.metadata.requires-dev]

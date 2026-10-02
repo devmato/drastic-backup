@@ -8,6 +8,7 @@ from drastic_common.agent.enums import (
 )
 from drastic_common.agent.schemas import AgentOperationSchema
 from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
+from drastic_common.truenas import AgentConnectionsSchema, TrueNASSettingsSchema, validate_api_key
 from drastic_server.schemas.repository import RepositoryResponseSchema
 
 _OPERATION_TYPE_NAMES = tuple(AgentOperationType.__members__)
@@ -24,6 +25,7 @@ class AgentResponseSchema(Schema):
     os = fields.String(allow_none=True)
     version = fields.String(allow_none=True)
     protocol_version = fields.Integer(required=True)
+    connections = fields.Nested(AgentConnectionsSchema, allow_none=True)
     install_type = fields.String(required=True)
     ssh_public_key = fields.String(allow_none=True)
     ssh_key_fingerprint = fields.String(allow_none=True)
@@ -62,6 +64,33 @@ class AgentProxmoxSettingsResponseSchema(ProxmoxSettingsSchema):
 class AgentProxmoxTestResponseSchema(Schema):
     node = fields.String(required=True)
     guest_count = fields.Integer(required=True)
+
+
+class AgentTrueNASSettingsInputSchema(TrueNASSettingsSchema):
+    api_key = fields.String(load_only=True, validate=validate_api_key)
+
+
+class AgentTrueNASSettingsResponseSchema(TrueNASSettingsSchema):
+    api_key_configured = fields.Boolean(required=True)
+    configured = fields.Boolean(required=True)
+    pending_snapshots = fields.Integer(dump_default=0)
+
+
+class AgentTrueNASTestResponseSchema(Schema):
+    version = fields.String(required=True)
+    dataset_count = fields.Integer(required=True)
+
+
+class TrueNASDatasetSchema(Schema):
+    id = fields.String(required=True)
+    mountpoint = fields.String(allow_none=True)
+    path = fields.String(allow_none=True)
+    available = fields.Boolean(required=True)
+    error = fields.String(required=True)
+
+
+class TrueNASDatasetsResponseSchema(Schema):
+    datasets = fields.List(fields.Nested(TrueNASDatasetSchema), required=True)
 
 
 class AgentOperationLogResponseSchema(Schema):

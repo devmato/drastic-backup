@@ -3,10 +3,12 @@ from datetime import datetime
 import bcrypt
 from flask import current_app, request
 from flask_socketio import Namespace
+from marshmallow import ValidationError
 from sqlalchemy import delete
 
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
+from drastic_common.truenas import AgentConnectionsSchema
 from drastic_server.extensions import db, socketio
 from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.services.agent import AgentRequestService
@@ -31,9 +33,10 @@ class AgentNamespace(Namespace):
             agent_public_key = auth.get('agent_public_key')
             agent_ssh_public_key = auth.get('agent_ssh_public_key')
             protocol_version = auth.get('protocol_version', 0)
+            connections = AgentConnectionsSchema().load(auth.get('connections') or {})
 
         # Terminate connection on invalid authdata
-        except (KeyError, TypeError, AttributeError):
+        except (KeyError, TypeError, AttributeError, ValidationError):
             current_app.logger.info('Terminating connection (Invalid authdata received)')
             return False
 
@@ -55,6 +58,7 @@ class AgentNamespace(Namespace):
             agent.hostname = agent_hostname
             agent.version = agent_version
             agent.protocol_version = protocol_version
+            agent.connections = connections if protocol_version >= 3 else None
             agent.install_type = Agent.normalize_install_type(agent_install_type)
             if agent_public_key and agent.public_key != agent_public_key:
                 agent.public_key = agent_public_key

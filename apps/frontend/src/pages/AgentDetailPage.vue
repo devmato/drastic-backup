@@ -1,15 +1,28 @@
 <template>
-  <q-dialog v-model="dialogVisible" :maximized="$q.screen.lt.md">
-    <q-card class="db-dialog-card-md">
+  <q-page class="q-pa-md">
+    <q-breadcrumbs class="q-mb-md">
+      <q-breadcrumbs-el label="Agents" to="/agents" />
+      <q-breadcrumbs-el :label="agent?.hostname || `Agent #${route.params.agentId}`" />
+    </q-breadcrumbs>
+    <q-banner v-if="loadError" class="bg-negative text-white q-mb-md">
+      {{ loadError }}
+      <template #action><q-btn flat label="Retry" @click="loadAgent" /></template>
+    </q-banner>
+    <q-inner-loading :showing="loading" />
+    <q-card v-if="agent" flat bordered>
       <q-card-section>
-        <div class="text-h6">Agent Properties</div>
+        <div class="row items-center q-gutter-sm">
+          <div class="text-h5">Agent Properties</div>
+          <q-space />
+          <q-btn flat icon="description" label="Reports" :to="`/agents/${agent.id}/operations`" />
+        </div>
         <div class="text-caption text-grey-7">{{ agent?.hostname || `Agent #${agent?.id}` }}</div>
       </q-card-section>
 
       <q-tabs v-model="activeTab" dense align="left" class="text-primary">
         <q-tab name="info" label="Info" />
         <q-tab name="repositories" label="Repositories" />
-        <q-tab v-if="supportsConfiguration" name="configuration" label="Configuration" />
+        <q-tab name="connections" label="Connections" />
         <q-tab name="actions" label="Actions" />
       </q-tabs>
 
@@ -106,14 +119,28 @@
           </q-banner>
         </q-tab-panel>
 
-        <q-tab-panel v-if="supportsConfiguration" name="configuration">
-          <AgentProxmoxSettings
-            v-if="agent"
-            :key="agent.id"
-            :agent-id="agent.id"
-            :agent-online="agent.online"
-            @saved="emit('proxmox-updated')"
-          />
+        <q-tab-panel name="connections" class="q-gutter-md">
+          <q-banner v-if="!supportsConnections" class="bg-warning text-black">
+            Update this agent to protocol 3 for TrueNAS and connection management.
+          </q-banner>
+          <q-card v-if="supportsConfiguration" flat bordered>
+            <q-card-section>
+              <q-badge v-if="supportsConnections" class="q-mb-sm" :color="agent.connections?.proxmox?.configured ? 'positive' : 'grey'" :label="agent.connections?.proxmox?.configured ? 'Configured' : 'Not configured'" />
+              <AgentProxmoxSettings :key="`proxmox-${agent.id}-${connectionRevision.proxmox}`" :agent-id="agent.id" :agent-online="agent.online" @saved="loadAgent" />
+            </q-card-section>
+            <q-card-actions v-if="supportsConnections && agent.connections?.proxmox?.configured" align="right">
+              <q-btn flat color="negative" label="Remove Proxmox connection" :disable="!agent.online" :loading="pendingActions.proxmox" @click="removeConnection('proxmox')" />
+            </q-card-actions>
+          </q-card>
+          <q-card v-if="supportsConnections" flat bordered>
+            <q-card-section>
+              <q-badge class="q-mb-sm" :color="agent.connections?.truenas?.configured ? 'positive' : 'grey'" :label="agent.connections?.truenas?.configured ? 'Configured' : 'Not configured'" />
+              <AgentTrueNASSettings :key="`truenas-${agent.id}-${connectionRevision.truenas}`" :agent-id="agent.id" :agent-online="agent.online" @saved="loadAgent" />
+            </q-card-section>
+            <q-card-actions v-if="agent.connections?.truenas?.configured" align="right">
+              <q-btn flat color="negative" label="Remove TrueNAS connection" :disable="!agent.online" :loading="pendingActions.truenas" @click="removeConnection('truenas')" />
+            </q-card-actions>
+          </q-card>
         </q-tab-panel>
 
         <q-tab-panel name="actions" class="q-gutter-md">
@@ -163,46 +190,67 @@
         </q-tab-panel>
       </q-tab-panels>
 
-      <q-card-actions align="right">
-        <q-btn flat label="Close" v-close-popup />
-      </q-card-actions>
     </q-card>
-  </q-dialog>
+  </q-page>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import AgentProxmoxSettings from 'components/agents/AgentProxmoxSettings.vue'
+import AgentTrueNASSettings from 'components/agents/AgentTrueNASSettings.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
-
-const props = defineProps({
-  agent: { type: Object, default: null },
-  initialTab: { type: String, default: 'info' },
-})
-
-const emit = defineEmits(['updated', 'proxmox-updated'])
-const dialogVisible = defineModel({ type: Boolean, required: true })
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
+const route = useRoute()
+const router = useRouter()
+const agent = computed(() => agentStore.agents.find(item => String(item.id) === String(route.params.agentId)))
+const loading = ref(false)
+const loadError = ref('')
+const connectionRevision = ref({ proxmox: 0, truenas: 0 })
 
-const activeTab = ref(props.initialTab)
+const activeTab = computed({
+  get: () => ['info', 'repositories', 'connections', 'actions'].includes(route.query.tab) ? route.query.tab : 'info',
+  set: tab => router.replace({ query: { ...route.query, tab } }),
+})
 const removingRepositoryId = ref(null)
 const pendingActions = ref({})
-const supportsConfiguration = computed(() => (props.agent?.protocol_version || 0) >= 1)
+const supportsConfiguration = computed(() => (agent.value?.protocol_version || 0) >= 1)
+const supportsConnections = computed(() => (agent.value?.protocol_version || 0) >= 3)
 const supportsUpdate = computed(() => supportsConfiguration.value
-  && props.agent?.install_type === 'git' && props.agent?.os?.toLowerCase() === 'linux')
+  && agent.value?.install_type === 'git' && agent.value?.os?.toLowerCase() === 'linux')
 
-watch([dialogVisible, () => props.agent?.protocol_version], () => {
-  if (dialogVisible.value) {
-    activeTab.value = props.initialTab === 'configuration' && !supportsConfiguration.value
-      ? 'info' : props.initialTab
+async function loadAgent() {
+  loading.value = true
+  loadError.value = ''
+  try {
+    await agentStore.loadAgents()
+    if (!agent.value) loadError.value = 'Agent not found'
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) loadError.value = getApiErrorMessage(error)
+  } finally {
+    loading.value = false
   }
-}, { immediate: true })
+}
 
-const agentRepositories = computed(() => props.agent?.repositories || [])
+async function removeConnection(kind) {
+  pendingActions.value[kind] = true
+  try {
+    await agentStore.deleteConnection(agent.value.id, kind)
+    connectionRevision.value[kind]++
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+  } finally {
+    pendingActions.value[kind] = false
+  }
+}
+
+watch(() => route.params.agentId, loadAgent, { immediate: true })
+
+const agentRepositories = computed(() => agent.value?.repositories || [])
 
 const repositoryColumns = [
   { name: 'name', label: 'Name', field: 'name', align: 'left' },
@@ -215,9 +263,9 @@ function formatDate(value) {
 }
 
 async function copySshPublicKey() {
-  if (!props.agent?.ssh_public_key) return
+  if (!agent.value?.ssh_public_key) return
   try {
-    await copyToClipboard(props.agent.ssh_public_key)
+    await copyToClipboard(agent.value.ssh_public_key)
     $q.notify({ message: 'SSH public key copied', color: 'green', position: 'top' })
   } catch {
     $q.notify({ message: 'Could not copy SSH public key', color: 'negative', position: 'top' })
@@ -225,15 +273,14 @@ async function copySshPublicKey() {
 }
 
 async function removeRepository(repository) {
-  if (!props.agent) return
+  if (!agent.value) return
 
   removingRepositoryId.value = repository.id
   try {
     const repositoryIds = agentRepositories.value
       .filter(agentRepository => agentRepository.id !== repository.id)
       .map(agentRepository => agentRepository.id)
-    await agentStore.updateAgentRepositories(props.agent.id, repositoryIds)
-    emit('updated')
+    await agentStore.updateAgentRepositories(agent.value.id, repositoryIds)
     $q.notify({ message: 'Repository assignment removed', color: 'green', position: 'top' })
   } catch (e) {
     if (shouldIgnoreApiError(e)) return
@@ -244,11 +291,10 @@ async function removeRepository(repository) {
 }
 
 async function runAction(action, message, failure) {
-  if (!props.agent) return
+  if (!agent.value) return
   pendingActions.value[action] = true
   try {
-    await agentStore.runAction(props.agent.id, action)
-    if (action === 'rotate-ssh-key') emit('updated')
+    await agentStore.runAction(agent.value.id, action)
     $q.notify({ message, color: 'green', position: 'top' })
   } catch (error) {
     if (shouldIgnoreApiError(error)) return
@@ -259,24 +305,24 @@ async function runAction(action, message, failure) {
 }
 
 function confirmResetKnownHosts() {
-  if (!props.agent) return
+  if (!agent.value) return
   $q.dialog({
     title: 'Reset SSH known_hosts',
-    message: `Reset SSH known_hosts on ${props.agent.hostname || `Agent #${props.agent.id}`}? SSH hosts will be trusted again on first use.`,
+    message: `Reset SSH known_hosts on ${agent.value.hostname || `Agent #${agent.value.id}`}? SSH hosts will be trusted again on first use.`,
     cancel: true,
     persistent: true,
   }).onOk(() => runAction('reset-known-hosts', 'SSH known_hosts reset', 'Could not reset SSH known_hosts'))
 }
 
 function confirmRotateSshKey() {
-  if (!props.agent) return
+  if (!agent.value) return
   $q.dialog({
     title: 'Rotate Agent SSH key',
-    message: `Rotate the SSH key on ${props.agent.hostname || `Agent #${props.agent.id}`}? Existing SSH/SFTP targets must be updated with the new public key.`,
+    message: `Rotate the SSH key on ${agent.value.hostname || `Agent #${agent.value.id}`}? Existing SSH/SFTP targets must be updated with the new public key.`,
     cancel: true,
     persistent: true,
   }).onOk(() => runAction('rotate-ssh-key', 'Agent SSH key rotated', 'Could not rotate SSH key'))
 }
 
-defineOptions({ name: 'AgentPropertiesDialog' })
+defineOptions({ name: 'AgentDetailPage' })
 </script>

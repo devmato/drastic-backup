@@ -7,6 +7,7 @@ from flask_smorest import Blueprint, abort
 from drastic_common.agent.commands import AgentCommandName
 from drastic_common.secret_envelope import SecretEnvelopeError, encrypt_for_public_key
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
+from drastic_common.truenas import AgentConnectionsSchema
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentOperation, AgentOperationState
 from drastic_server.models.job import Job
@@ -25,6 +26,10 @@ from drastic_server.schemas.agent import (
     AgentRepositoryAssignInputSchema,
     AgentResponseSchema,
     AgentSyncInputSchema,
+    AgentTrueNASSettingsInputSchema,
+    AgentTrueNASSettingsResponseSchema,
+    AgentTrueNASTestResponseSchema,
+    TrueNASDatasetsResponseSchema,
 )
 from drastic_server.schemas.common import MessageSchema
 from drastic_server.services.agent import (
@@ -273,17 +278,16 @@ class AgentAction(MethodView):
         return {"msg": message}
 
 
-def _proxmox_command(agent_id, command, data=None):
+def _connection_command(agent_id, command, data=None, secret_field="token_secret", **args):
     agent = Agent.query.filter(
         Agent.id == agent_id, Agent.user_id == get_jwt_identity()
     ).first_or_404()
     if not agent.online:
         abort(400, message="Agent is offline")
 
-    args = {}
     if data is not None:
         settings = dict(data)
-        token_secret = settings.pop("token_secret", None)
+        token_secret = settings.pop(secret_field, None)
         args["settings"] = settings
         if token_secret is not None:
             try:
@@ -295,8 +299,14 @@ def _proxmox_command(agent_id, command, data=None):
     if is_agent_timeout_response(response):
         abort(504, message="Agent request timed out; reload the settings before retrying")
     if response.get("state") != AgentOperationState.success:
-        abort(400, message=response.get("log") or "Proxmox configuration request failed")
-    return response.get("data") or {}
+        abort(400, message=response.get("log") or "Connection request failed")
+    result = response.get("data") or {}
+    connections = result.get("connections")
+    if connections is not None:
+        agent.connections = AgentConnectionsSchema().load(connections)
+        db.session.commit()
+        emit_agents_update(agent.user_id)
+    return result
 
 
 @blp.route("/<int:agent_id>/proxmox-settings")
@@ -304,13 +314,13 @@ class AgentProxmoxSettings(MethodView):
     @jwt_required()
     @blp.response(200, AgentProxmoxSettingsResponseSchema)
     def get(self, agent_id):
-        return _proxmox_command(agent_id, "get_proxmox_settings")
+        return _connection_command(agent_id, "get_proxmox_settings")
 
     @jwt_required()
     @blp.arguments(AgentProxmoxSettingsInputSchema)
     @blp.response(200, AgentProxmoxSettingsResponseSchema)
     def put(self, data, agent_id):
-        return _proxmox_command(agent_id, "update_proxmox_settings", data)
+        return _connection_command(agent_id, "update_proxmox_settings", data)
 
 
 @blp.route("/<int:agent_id>/proxmox-settings/test")
@@ -319,7 +329,57 @@ class AgentProxmoxSettingsTest(MethodView):
     @blp.arguments(AgentProxmoxSettingsInputSchema)
     @blp.response(200, AgentProxmoxTestResponseSchema)
     def post(self, data, agent_id):
-        return _proxmox_command(agent_id, "test_proxmox_settings", data)
+        return _connection_command(agent_id, "test_proxmox_settings", data)
+
+
+@blp.route("/<int:agent_id>/connections/<string:kind>")
+class AgentConnectionDetail(MethodView):
+    @jwt_required()
+    @blp.response(200, MessageSchema)
+    def delete(self, agent_id, kind):
+        if kind not in {"proxmox", "truenas"}:
+            abort(404)
+        _connection_command(agent_id, "delete_connection", kind=kind)
+        return {"msg": "Connection removed"}
+
+
+@blp.route("/<int:agent_id>/truenas-settings")
+class AgentTrueNASSettings(MethodView):
+    @jwt_required()
+    @blp.response(200, AgentTrueNASSettingsResponseSchema)
+    def get(self, agent_id):
+        return _connection_command(agent_id, "truenas_settings")
+
+    @jwt_required()
+    @blp.arguments(AgentTrueNASSettingsInputSchema)
+    @blp.response(200, AgentTrueNASSettingsResponseSchema)
+    def put(self, data, agent_id):
+        return _connection_command(agent_id, "truenas_settings", data, secret_field="api_key", action="save")
+
+
+@blp.route("/<int:agent_id>/truenas-settings/test")
+class AgentTrueNASSettingsTest(MethodView):
+    @jwt_required()
+    @blp.arguments(AgentTrueNASSettingsInputSchema)
+    @blp.response(200, AgentTrueNASTestResponseSchema)
+    def post(self, data, agent_id):
+        return _connection_command(agent_id, "truenas_settings", data, secret_field="api_key", action="test")
+
+
+@blp.route("/<int:agent_id>/truenas-datasets")
+class AgentTrueNASDatasets(MethodView):
+    @jwt_required()
+    @blp.response(200, TrueNASDatasetsResponseSchema)
+    def get(self, agent_id):
+        return _connection_command(agent_id, "truenas_settings", action="datasets")
+
+
+@blp.route("/<int:agent_id>/truenas-settings/cleanup")
+class AgentTrueNASCleanup(MethodView):
+    @jwt_required()
+    @blp.response(200, AgentTrueNASSettingsResponseSchema)
+    def post(self, agent_id):
+        return _connection_command(agent_id, "truenas_settings", action="cleanup")
 
 
 @blp.route("/<int:agent_id>/operations")

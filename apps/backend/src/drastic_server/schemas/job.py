@@ -7,6 +7,7 @@ from drastic_common.agent.schemas import (
     AgentRepositoryCheckConfigSchema,
     AgentScheduleConfigSchema,
 )
+from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.models.job import JobActionModuleEnum, JobType
 
 _JOB_TYPE_NAMES = tuple(JobType.__members__)
@@ -163,6 +164,8 @@ class JobCreateInputSchema(Schema):
                 data["config"] = FileBackupJobConfigSchema().load(config)
             elif job_type == "proxmox":
                 data["config"] = ProxmoxBackupJobConfigSchema().load(config)
+            elif job_type == "truenas":
+                data["config"] = TrueNASBackupConfigSchema().load(config)
         except ValidationError as exc:
             raise ValidationError({"config": exc.messages}) from exc
 

@@ -99,7 +99,7 @@ Required agent prerequisites:
 - Proxmox API credentials must be configured on the agent.
 - The configured API token must be able to list nodes, list QEMU guests, read QEMU configs, and run the required backup operations.
 
-Configure credentials under **Agents > Agent Properties > Configuration > Proxmox**, or use **Configure Proxmox** in the job form. Test the connection and save while the agent is online. Settings apply immediately to all Proxmox jobs on that agent, and the token secret is stored encrypted on the agent.
+Configure credentials under **Agents > your agent > Connections > Proxmox**, or use **Configure Proxmox** in the job form. Test the connection and save while the agent is online. Settings apply immediately to all Proxmox jobs on that agent, and the token secret is stored encrypted on the agent.
 
 Agent environment variables remain a fallback when no configuration has been saved through the web UI:
 
@@ -147,6 +147,10 @@ The backup stream command is equivalent to:
 ```bash
 vzdump <vmid> --mode snapshot --stdout --compress 0 --node <node>
 ```
+
+## TrueNAS Backups
+
+Configure **Connections > TrueNAS** on a protocol 3 agent running as a TrueNAS app to enable the **TrueNAS-Backup** job type. Select datasets explicitly; the agent creates temporary ZFS snapshots, backs up their files through Restic, and cleans up on completion or interruption. Each dataset has its own backup artifact and normal file restore support. See [TrueNAS](truenas.md) for required mounts, permissions and the deployment smoke test.
 
 ## Actions
 

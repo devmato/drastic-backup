@@ -26,7 +26,7 @@
       </template>
       <template #body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="settings" color="primary" @click="showAgentProperties(props.row)">
+          <q-btn flat dense icon="settings" color="primary" :to="`/agents/${props.row.id}`" aria-label="Agent properties">
             <q-tooltip>Agent properties</q-tooltip>
           </q-btn>
           <q-btn flat dense icon="sync" color="secondary" :disable="!props.row.online" @click="syncAgent(props.row)">
@@ -42,22 +42,16 @@
       </template>
     </q-table>
 
-    <AgentPropertiesDialog
-      v-model="showPropertiesDialog"
-      :agent="selectedAgent"
-      @updated="refreshSelectedAgent"
-    />
 
   </q-page>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useUserStore } from 'stores/user'
-import AgentPropertiesDialog from 'components/agents/AgentPropertiesDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const router = useRouter()
@@ -65,9 +59,6 @@ const $q = useQuasar()
 const agentStore = useAgentStore()
 const userStore = useUserStore()
 
-const showPropertiesDialog = ref(false)
-const selectedAgentId = ref(null)
-const selectedAgent = computed(() => agentStore.agents.find(agent => agent.id === selectedAgentId.value) || null)
 
 const columns = [
   { name: 'id', label: 'ID', field: 'id', align: 'left', sortable: true },
@@ -77,15 +68,6 @@ const columns = [
   { name: 'status', label: 'Status', field: 'online', align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
-
-function showAgentProperties(agent) {
-  selectedAgentId.value = agent.id
-  showPropertiesDialog.value = true
-}
-
-async function refreshSelectedAgent() {
-  await agentStore.loadAgents()
-}
 
 function confirmDelete(agent) {
   $q.dialog({

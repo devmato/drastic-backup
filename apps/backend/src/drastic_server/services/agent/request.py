@@ -62,11 +62,15 @@ class AgentRequestService:
         from drastic_server.models.retention import Retention
         from drastic_server.schemas.sync import SyncSchema
 
+        agent_jobs = Job.query.filter(Job.agent_id == self.agent.id).all()
+        if (self.agent.protocol_version or 0) < 3 and any(job.type.name == "truenas" for job in agent_jobs):
+            raise AgentException("Update the agent before syncing TrueNAS jobs")
+
         return SyncSchema().dump(
             {
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),
-                "jobs": Job.query.filter(Job.agent_id == self.agent.id).all(),
+                "jobs": agent_jobs,
                 "retentions": Retention.query.join(JobSchedule)
                 .join(Job, JobSchedule.job_id == Job.id)
                 .filter(Job.agent_id == self.agent.id)

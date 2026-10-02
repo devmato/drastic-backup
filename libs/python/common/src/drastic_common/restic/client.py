@@ -253,7 +253,17 @@ class ResticApi:
         callback_pid=False,
         callback_throttle=None,
         parser=parsers.default,
+        cwd=None,
     ):
+        if cwd is not None:
+            # Changing the source directory must not relocate the binary or local repository.
+            cmd = list(cmd)
+            if os.path.dirname(cmd[0]):
+                cmd[0] = os.path.abspath(cmd[0])
+            if "-r" in cmd:
+                index = cmd.index("-r") + 1
+                if ":" not in cmd[index]:
+                    cmd[index] = os.path.abspath(cmd[index])
         logging.debug(f"Executing command: {cmd}")
         if self._cancelled():
             raise ResticCancelledError("Restic operation was cancelled")
@@ -273,6 +283,7 @@ class ResticApi:
                 encoding="utf-8",
                 env=env,
                 start_new_session=True,
+                **({"cwd": cwd} if cwd is not None else {}),
             )
 
             self.__register_process(process.pid, _ManagedProcess(process))
@@ -333,8 +344,10 @@ class ResticApi:
         callback_args=None,
         callback_pid=False,
         callback_throttle=None,
+        cwd=None,
+        parent=None,
     ):
-        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags)
+        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent)
 
         return self.__execute_command(
             cmd,
@@ -343,6 +356,7 @@ class ResticApi:
             callback_pid=callback_pid,
             callback_throttle=callback_throttle,
             parser=parsers.backup,
+            cwd=cwd,
         )
 
     def backup_stdin(

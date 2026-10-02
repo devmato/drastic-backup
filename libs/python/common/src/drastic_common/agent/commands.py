@@ -2,7 +2,7 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields
 
-AGENT_PROTOCOL_VERSION = 2
+AGENT_PROTOCOL_VERSION = 3
 
 
 class AgentCommandName(str, enum.Enum):
@@ -19,6 +19,8 @@ class AgentCommandName(str, enum.Enum):
     get_proxmox_settings = "get_proxmox_settings"
     update_proxmox_settings = "update_proxmox_settings"
     test_proxmox_settings = "test_proxmox_settings"
+    truenas_settings = "truenas_settings"
+    delete_connection = "delete_connection"
     run_job = "run_job"
     get_job_status = "get_job_status"
     add_job = "add_job"
@@ -34,6 +36,8 @@ class AgentCommandName(str, enum.Enum):
 
 # Protocol 0 is the legacy command set, before web-based Proxmox settings.
 AGENT_COMMAND_MIN_PROTOCOL = {
+    AgentCommandName.truenas_settings: 3,
+    AgentCommandName.delete_connection: 3,
     AgentCommandName.proxmox_restore: 2,
     AgentCommandName.get_proxmox_settings: 1,
     AgentCommandName.update_proxmox_settings: 1,

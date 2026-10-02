@@ -36,6 +36,7 @@ class AgentOperationLogLevel(enum.Enum):
 class AgentJobType(enum.Enum):
     file = {"text": "File-Backup"}
     proxmox = {"text": "Proxmox-Backup"}
+    truenas = {"text": "TrueNAS-Backup"}
 
 
 class AgentJobActionModule(enum.Enum):

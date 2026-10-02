@@ -7,6 +7,7 @@ import os
 import platform
 import re
 import secrets
+import shutil
 import stat
 import subprocess
 import tempfile
@@ -39,6 +40,7 @@ from drastic_agent.agent.database import (
     retentions,
     schedule_runs,
     schedules,
+    truenas_snapshots,
 )
 from drastic_agent.agent.database import (
     agent as agent_settings,
@@ -59,6 +61,7 @@ from drastic_agent.proxmox import (
 )
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
+from drastic_agent.truenas import TRUENAS_LOCK, TrueNASClient, TrueNASError
 from drastic_agent.version import agent_version
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
@@ -78,6 +81,7 @@ from drastic_common.secret_envelope import (
     generate_agent_keypair,
 )
 from drastic_common.ssh_keys import generate_ssh_keypair
+from drastic_common.truenas import TrueNASSettingsSchema, validate_api_key
 
 AGENT_INSTALL_ROOT = Path("/opt/drastic-agent")
 AGENT_COMMAND = AGENT_INSTALL_ROOT / "bin/drastic-agent"
@@ -166,6 +170,7 @@ def _redact_secrets(value):
                 "encrypted_value",
                 "agent_secret",
                 "token_secret",
+                "api_key",
             }:
                 redacted[key] = "<redacted>"
             else:
@@ -1418,6 +1423,10 @@ class Agent:
 
         cleanup_workspaces(all_workspaces=True)
 
+        from drastic_agent.jobs.truenas_backup import recover_snapshots
+
+        recover_snapshots(self)
+
         # The installer still performs startup checks after restarting this service.
         if self.install_type == "git":
             self.__check_update(startup=True)
@@ -1508,6 +1517,7 @@ class Agent:
             "agent_hostname": self.hostname,
             "agent_version": self.version,
             "protocol_version": AGENT_PROTOCOL_VERSION,
+            "connections": self.connection_status(),
             "agent_install_type": self.install_type,
             "agent_public_key": self.public_key,
             "agent_ssh_public_key": self.ssh_public_key,
@@ -1646,6 +1656,11 @@ class Agent:
             return ProxmoxApiClient()
         try:
             settings = json.loads(saved["settings"])
+            if settings.get("disabled"):
+                api = ProxmoxApiClient()
+                api.token_id = api.token_secret = ""
+                api.source = "agent"
+                return api
             encrypted_value = settings.pop("encrypted_value")
             if not isinstance(encrypted_value, dict):
                 raise ValueError("Invalid encrypted token")
@@ -1692,6 +1707,7 @@ class Agent:
                 saved["encrypted_value"] = encrypt_for_public_key(api.token_secret, self.public_key)
                 agent_settings.upsert({"name": "proxmox", "settings": json.dumps(saved)}, ["name"])
             report.data = api.public_settings
+            report.data["connections"] = self.connection_status()
         except (ProxmoxError, SecretEnvelopeError, ValidationError) as exc:
             report.log_message(str(exc), final_state=AgentReportState.failed)
         except SQLAlchemyError:
@@ -1725,6 +1741,99 @@ class Agent:
         except ProxmoxError as exc:
             report.log_message(str(exc), final_state=AgentReportState.failed)
 
+        return report.finish()
+
+    def connection_status(self):
+        result = {}
+        for kind, factory in (("proxmox", self.get_proxmox_client), ("truenas", self.get_truenas_client)):
+            try:
+                configured = factory().public_settings["configured"]
+            except (ProxmoxError, TrueNASError):
+                configured = False
+            available = bool(shutil.which("vzdump")) if kind == "proxmox" else self.os_clean == "linux"
+            result[kind] = {"configured": configured, "available": available}
+        return result
+
+    def get_truenas_client(self):
+        saved = agent_settings.find_one(name="truenas")
+        if saved is None:
+            return TrueNASClient({"api_url": "", "username": "", "verify_tls": True, "host_root": "/mnt/host"})
+        try:
+            settings = json.loads(saved["settings"])
+            envelope = settings.pop("encrypted_value")
+            settings = TrueNASSettingsSchema().load(settings)
+            key = decrypt_with_private_key(envelope, self.private_key)
+            validate_api_key(key)
+            return TrueNASClient(settings, key)
+        except (KeyError, TypeError, ValueError, ValidationError, SecretEnvelopeError) as exc:
+            raise TrueNASError("Saved TrueNAS settings could not be loaded") from exc
+
+    def cmd_truenas_settings(self, action="get", settings=None, encrypted_value=None):
+        report = AgentReport.command_report()
+        locked = False
+        try:
+            if action not in {"get", "test", "save", "datasets", "cleanup"}:
+                raise TrueNASError("Unsupported TrueNAS settings action")
+            if action in {"save", "cleanup"}:
+                locked = TRUENAS_LOCK.acquire(blocking=False)
+                if not locked:
+                    raise TrueNASError("Finish the current TrueNAS backup before changing the connection or cleaning up")
+            api = self.get_truenas_client()
+            if action in {"test", "save"}:
+                settings = TrueNASSettingsSchema().load(settings)
+                if action == "save" and truenas_snapshots.count() and settings["api_url"] != api.settings["api_url"]:
+                    raise TrueNASError("Clean up pending snapshots before changing the NAS address")
+                if encrypted_value is not None:
+                    key = decrypt_with_private_key(encrypted_value, self.private_key)
+                else:
+                    if any(settings[field] != api.settings[field] for field in ("api_url", "username")):
+                        raise TrueNASError("Enter an API key when changing the NAS address or user")
+                    key = api.api_key
+                validate_api_key(key)
+                api = TrueNASClient(settings, key)
+            if action == "test":
+                report.data = api.test()
+            elif action == "datasets":
+                report.data = {"datasets": api.datasets()}
+            else:
+                if action == "cleanup":
+                    from drastic_agent.jobs.truenas_backup import cleanup_snapshots
+
+                    cleanup_snapshots(api, self.identifier, report)
+                if action == "save":
+                    saved = {**settings, "encrypted_value": encrypt_for_public_key(api.api_key, self.public_key)}
+                    agent_settings.upsert({"name": "truenas", "settings": json.dumps(saved)}, ["name"])
+                report.data = {**api.public_settings, "connections": self.connection_status(),
+                               "pending_snapshots": truenas_snapshots.count()}
+        except (TrueNASError, SecretEnvelopeError, ValidationError, ValueError, TypeError) as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        except SQLAlchemyError:
+            report.log_message("Could not save TrueNAS settings", final_state=AgentReportState.failed)
+        finally:
+            if locked:
+                TRUENAS_LOCK.release()
+        return report.finish()
+
+    def cmd_delete_connection(self, kind):
+        report = AgentReport.command_report()
+        locked = False
+        try:
+            if kind == "truenas":
+                locked = TRUENAS_LOCK.acquire(blocking=False)
+                if not locked or truenas_snapshots.count():
+                    raise TrueNASError("Finish TrueNAS backups and clean up pending snapshots before removing the connection")
+                agent_settings.delete(name="truenas")
+            elif kind == "proxmox":
+                # Keep an explicit disabled marker so environment credentials stay disabled too.
+                agent_settings.upsert({"name": "proxmox", "settings": json.dumps({"disabled": True})}, ["name"])
+            else:
+                raise TrueNASError("Unknown connection")
+            report.data = {"connections": self.connection_status()}
+        except (TrueNASError, SQLAlchemyError) as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        finally:
+            if locked:
+                TRUENAS_LOCK.release()
         return report.finish()
 
     """ Get restic repository stats """
@@ -1954,6 +2063,13 @@ class Agent:
 
         if job_report:
             job_report.log_message(f"Canceling job {job_id} by user request")
+
+            job = jobs.find_one(id=job_id)
+            if job and job.get("type") == "truenas":
+                job_report.cancel_event.set()
+                job_report.final_state = AgentReportState.cancelled
+                report.log_message(f"Cancellation requested for TrueNAS job {job_id}")
+                return report.finish()
 
             pid = self.__wait_for_report_pid(job_report)
             if not pid:

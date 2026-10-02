@@ -31,6 +31,10 @@
                   <div class="q-gutter-md">
                     <q-input outlined dense v-model="jobForm.name" label="Job Name" :rules="[val => !!val || 'Required']" />
                     <q-select outlined dense v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
+                    <q-banner v-if="!supportsJob(selectedAgent, jobForm.type)" class="bg-warning text-black">This job requires a configured connection and its local prerequisites. Existing job settings are retained.</q-banner>
+                    <q-btn flat dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
+                      <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
+                    </q-btn>
                   </div>
                 </q-tab-panel>
 
@@ -79,10 +83,14 @@ import { computed, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import FileBackupJobForm from 'components/jobs/forms/FileBackupJobForm.vue'
 import ProxmoxBackupJobForm from 'components/jobs/forms/ProxmoxBackupJobForm.vue'
+import TrueNASBackupJobForm from 'components/jobs/forms/TrueNASBackupJobForm.vue'
+import { useAgentStore } from 'stores/agent'
+import { supportsJob } from 'src/utils/agent-connections'
 import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
 import JobSchedulesPanel from 'components/jobs/panels/JobSchedulesPanel.vue'
 
 const $q = useQuasar()
+const agentStore = useAgentStore()
 
 const props = defineProps({
   editingJob: { type: Object, default: null },
@@ -102,10 +110,12 @@ const sections = [
   { name: 'schedules', label: 'Schedule', icon: 'event', requiresEntries: true },
 ]
 
-const jobTypeOptions = [
+const selectedAgent = computed(() => agentStore.agents.find(agent => String(agent.id) === String(props.agentId)))
+const jobTypeOptions = computed(() => [
   { label: 'File-Backup', value: 'file' },
   { label: 'Proxmox-Backup', value: 'proxmox' },
-]
+  { label: 'TrueNAS-Backup', value: 'truenas' },
+].filter(option => supportsJob(selectedAgent.value, option.value) || props.editingJob?.type === option.value))
 
 const jobForm = reactive(createEmptyJobForm())
 const activeSection = ref('general')
@@ -141,6 +151,7 @@ const canGoNext = computed(() => {
 })
 
 const currentTypeComponent = computed(() => {
+  if (jobForm.type === 'truenas') return TrueNASBackupJobForm
   if (jobForm.type === 'file') {
     return FileBackupJobForm
   }
@@ -156,6 +167,7 @@ const dialogRepositories = computed(() => props.repositories)
 const allRepositories = computed(() => props.allRepositories)
 
 const entriesConfigured = computed(() => {
+  if (jobForm.type === 'truenas') return (jobForm.config?.datasets || []).length > 0
   if (jobForm.type === 'file') {
     return (jobForm.config?.paths || []).length > 0
   }
@@ -253,6 +265,7 @@ function parseDayOfWeek(cronString) {
 }
 
 function cloneConfig(type, config = {}) {
+  if (type === 'truenas') return { datasets: [...(config.datasets || [])], exclude_patterns: [...(config.exclude_patterns || [])] }
   if (type === 'proxmox') {
     return cloneProxmoxConfig(config)
   }
@@ -305,6 +318,10 @@ function goPrevious() {
 }
 
 function submitForm() {
+  if (jobForm.type === 'truenas' && !(jobForm.config?.datasets || []).length) {
+    $q.notify({ message: 'Select at least one TrueNAS dataset', color: 'negative' })
+    return
+  }
   if (jobForm.type === 'file' && (jobForm.config?.paths || []).length === 0) {
     $q.notify({ message: 'Select at least one include path', color: 'red', position: 'top' })
     return

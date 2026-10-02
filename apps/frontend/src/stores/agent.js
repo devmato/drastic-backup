@@ -70,6 +70,31 @@ export const useAgentStore = defineStore('agent', () => {
     await api.delete(`/agents/operations/${operationId}`)
   }
 
+  async function deleteConnection(agentId, kind) {
+    await api.delete(`/agents/${agentId}/connections/${kind}`)
+    await loadAgents()
+  }
+
+  async function getTrueNASSettings(agentId) {
+    return (await api.get(`/agents/${agentId}/truenas-settings`)).data
+  }
+
+  async function updateTrueNASSettings(agentId, settings) {
+    return (await api.put(`/agents/${agentId}/truenas-settings`, settings)).data
+  }
+
+  async function testTrueNASSettings(agentId, settings) {
+    return (await api.post(`/agents/${agentId}/truenas-settings/test`, settings)).data
+  }
+
+  async function cleanupTrueNAS(agentId) {
+    return (await api.post(`/agents/${agentId}/truenas-settings/cleanup`)).data
+  }
+
+  async function getTrueNASDatasets(agentId) {
+    return (await api.get(`/agents/${agentId}/truenas-datasets`)).data.datasets
+  }
+
   async function getOperation(operationId) {
     const response = await api.get(`/agents/operations/${operationId}`)
     return response.data
@@ -80,5 +105,5 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
-  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings }
+  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings, deleteConnection, getTrueNASSettings, updateTrueNASSettings, testTrueNASSettings, cleanupTrueNAS, getTrueNASDatasets }
 })

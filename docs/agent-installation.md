@@ -6,6 +6,8 @@ Agents are high-trust components. A native agent usually runs as `root`, and a D
 
 ## Docker Agent
 
+For TrueNAS Custom Apps, see the [TrueNAS installation and snapshot backup guide](truenas.md).
+
 Use the install snippets in the web UI under **Agents > Add Agent**. Docker snippets use the default GHCR `latest` image or the server's `DRASTIC_AGENT_IMAGE` override and do not require a project checkout on the target host. Official GHCR agent images support `linux/amd64` and `linux/arm64`.
 
 If you still run the standalone Compose file, create an environment file from the production example and configure the server URL and initial registration credentials:
@@ -101,7 +103,7 @@ The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, ot
 
 ### Protocol Compatibility
 
-Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and `update`. Unknown versions are rejected.
+Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and `update`, protocol 2 adds Proxmox restore support, and protocol 3 adds connection status, connection removal and TrueNAS snapshot backups. Unknown versions are rejected; update the server before its agents.
 
 Existing agents without a protocol number report as protocol 0. Update them once manually with `sudo drastic-agent update` to enable the update button and web-based Proxmox configuration. Docker agents must be updated through their container deployment.
 
@@ -157,7 +159,7 @@ For Homelab deployments, register agents from a trusted network and then remove 
 
 ## Proxmox Backups
 
-For Proxmox jobs, open **Agents > Agent Properties > Configuration > Proxmox** while the agent is online. Enter the token ID (`user@realm!tokenname`) and token secret, then use **Test connection** and **Save**. The **Configure Proxmox** button in the backup job form opens the same settings.
+For Proxmox jobs, open **Agents > your agent > Connections > Proxmox** while the agent is online. Enter the token ID (`user@realm!tokenname`) and token secret, then use **Test connection** and **Save**. The **Configure Proxmox** button in the backup job form opens the agent page in another tab, preserving the job draft. Protocol 3 agents expose Proxmox jobs when the connection is configured and local `vzdump` is available. Removing the connection also disables the environment fallback until credentials are saved again.
 
 The test checks local `vzdump` availability and API access to supported VMs without saving changes. Saved settings apply to guest discovery and all Proxmox jobs on that agent immediately, without a restart. The secret is encrypted for the agent before command dispatch and stored encrypted in its local database; it is never returned to the web UI. Leaving the secret field empty preserves the current token. Changing the API URL or token ID requires entering a token secret again.
 

@@ -8,7 +8,7 @@ from drastic_agent.agent.database import (
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
 from drastic_agent.agent.report import AgentReport
 from drastic_common.agent.enums import AgentRepositoryKind
-from drastic_common.restic.exceptions import ResticError
+from drastic_common.restic.exceptions import ResticCancelledError, ResticError
 
 
 class BackupJobHandler:
@@ -115,6 +115,8 @@ class BackupJobHandler:
                 try:
                     self.run_backup(report)
                     backup_completed = self._has_completed_snapshot()
+                except ResticCancelledError as exc:
+                    report.log_message(str(exc), final_state=AgentOperationState.cancelled)
                 except ResticError as exc:
                     report.log_message(
                         f"Error during backup: {exc}",

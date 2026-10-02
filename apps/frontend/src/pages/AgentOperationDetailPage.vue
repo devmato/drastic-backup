@@ -26,6 +26,22 @@
     </q-banner>
 
     <div v-if="operation" class="q-gutter-md">
+      <q-banner v-if="operation.state === 'running' && operation.data?.truenas_progress" role="status">
+        TrueNAS · {{ operation.data.truenas_progress.phase }}
+        <span v-if="operation.data.truenas_progress.dataset"> · {{ operation.data.truenas_progress.dataset }} ({{ operation.data.truenas_progress.dataset_index }}/{{ operation.data.truenas_progress.datasets_total }})</span>
+      </q-banner>
+      <q-card v-if="operation.artifacts?.some(artifact => artifact.data?.dataset)" flat bordered>
+        <q-card-section class="text-subtitle2">Dataset backups</q-card-section>
+        <q-list separator>
+          <q-item v-for="artifact in operation.artifacts.filter(item => item.data?.dataset)" :key="artifact.uuid">
+            <q-item-section>
+              <q-item-label>{{ artifact.data.dataset }}</q-item-label>
+              <q-item-label caption class="text-break">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
+            </q-item-section>
+            <q-item-section side><q-badge :color="stateColor(artifact.state)" :label="artifact.state" /></q-item-section>
+          </q-item>
+        </q-list>
+      </q-card>
       <q-card flat bordered>
         <q-card-section>
           <div class="q-gutter-md">

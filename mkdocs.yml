@@ -30,6 +30,7 @@ nav:
   - User Guide:
     - Overview: user-guide.md
     - Agent Installation: agent-installation.md
+    - TrueNAS: truenas.md
     - Backup and Restore: backup-and-restore.md
   - Deployment:
     - Deployment: deployment.md

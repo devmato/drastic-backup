@@ -31,6 +31,7 @@ agent_operations = db["agent_operations"]
 agent_operation_artifacts = db["agent_operation_artifacts"]
 agent_operation_queue = db["agent_operation_queue"]
 agent_schema = db["agent_schema"]
+truenas_snapshots = db["truenas_snapshots"]
 
 
 def initialize_schema():

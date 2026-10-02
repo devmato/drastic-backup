@@ -46,7 +46,9 @@
       <div class="row items-center q-mb-sm">
         <div class="text-subtitle1">Supported Guests</div>
         <q-space />
-        <q-btn v-if="(selectedAgent?.protocol_version || 0) >= 1" flat dense icon="settings" label="Configure Proxmox" @click="showAgentSettings = true" />
+        <q-btn v-if="(selectedAgent?.protocol_version || 0) >= 1" flat dense icon="settings" label="Configure Proxmox" :to="`/agents/${agentId}?tab=connections`" target="_blank">
+          <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
+        </q-btn>
         <q-btn flat dense icon="refresh" label="Refresh" :loading="loadingGuests" @click="loadGuests" />
       </div>
 
@@ -63,18 +65,11 @@
       <div v-else-if="!loadingGuests && !loadError" class="text-grey">No supported Proxmox guests found.</div>
     </template>
 
-    <AgentPropertiesDialog
-      v-model="showAgentSettings"
-      :agent="selectedAgent"
-      initial-tab="configuration"
-      @proxmox-updated="loadGuests"
-    />
   </div>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import AgentPropertiesDialog from 'components/agents/AgentPropertiesDialog.vue'
 import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -93,7 +88,6 @@ const jobStore = useJobStore()
 const guests = ref([])
 const loadingGuests = ref(false)
 const loadError = ref('')
-const showAgentSettings = ref(false)
 const selectedAgent = computed(() => agentStore.agents.find(agent => String(agent.id) === String(props.agentId)))
 let loadVersion = 0
 

@@ -1,5 +1,7 @@
 from croniter import croniter
+from marshmallow import ValidationError
 
+from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.extensions import db
 from drastic_server.models.job import Job, JobSchedule, JobType
 from drastic_server.models.repository import Repository
@@ -142,9 +144,31 @@ def _get_job_type(job_type):
         raise ValueError("Invalid job type") from exc
 
 
+def ensure_job_connection(agent, job_type):
+    if job_type not in {"proxmox", "truenas"}:
+        return
+    if (agent.protocol_version or 0) < 3:
+        if job_type == "truenas":
+            raise ValueError("Update the agent to use TrueNAS backups (protocol 3 required)")
+        return  # Existing Proxmox agents predate connection status reporting.
+    connection = (agent.connections or {}).get(job_type) or {}
+    if not connection.get("configured") or not connection.get("available"):
+        raise ValueError(f"Configure the {job_type} connection and its local prerequisites on the agent first")
+
+
+def _normalize_truenas_config(config):
+    try:
+        return TrueNASBackupConfigSchema().load(config)
+    except ValidationError as exc:
+        raise ValueError(f"Invalid TrueNAS configuration: {exc}") from exc
+
+
 def create_job_instance(data, agent_id):
     job_type = _get_job_type(data["type"])
     config = data.get("config", {})
+
+    if job_type == JobType.truenas:
+        return Job(name=data["name"], agent_id=agent_id, type=job_type, config=_normalize_truenas_config(config))
 
     if job_type == JobType.file:
         normalized_config = _normalize_file_backup_config(config)
@@ -172,6 +196,10 @@ def update_job_instance(job, data):
         job.name = data["name"]
 
     if "config" not in data:
+        return job
+
+    if job.type == JobType.truenas:
+        job.config = _normalize_truenas_config(data["config"])
         return job
 
     if job.type == JobType.file:

@@ -15,6 +15,7 @@ const routes = [
     children: [
       { path: '', component: () => import('pages/AgentsPage.vue') },
       { path: 'install', component: () => import('pages/AgentInstallPage.vue') },
+      { path: ':agentId', component: () => import('pages/AgentDetailPage.vue') },
       { path: ':agentId/operations', component: () => import('pages/AgentReportsPage.vue') },
       { path: ':agentId/operations/:operationId', component: () => import('pages/AgentOperationDetailPage.vue') },
     ],

@@ -54,6 +54,7 @@ from drastic_server.services.job import (
     assign_agent_repository,
     create_job_instance,
     create_job_schedule,
+    ensure_job_connection,
     normalize_schedule_config,
     update_job_instance,
     update_job_schedule,
@@ -110,6 +111,7 @@ class JobList(MethodView):
             abort(400, message="Agent is offline")
 
         try:
+            ensure_job_connection(agent, data["type"])
             job = create_job_instance(data=data, agent_id=agent.id)
         except ValueError as exc:
             abort(400, message=str(exc))
@@ -157,6 +159,7 @@ class JobDetail(MethodView):
             abort(400, message="Agent is offline")
 
         try:
+            ensure_job_connection(agent, job.type.name)
             update_job_instance(job=job, data=data)
         except ValueError as exc:
             abort(400, message=str(exc))
@@ -202,6 +205,11 @@ class JobOperationRun(MethodView):
 
         if not job.agent.online:
             abort(400, message="Agent is offline")
+
+        try:
+            ensure_job_connection(job.agent, job.type.name)
+        except ValueError as exc:
+            abort(400, message=str(exc))
 
         repository_id = data["repository_id"]
         try:

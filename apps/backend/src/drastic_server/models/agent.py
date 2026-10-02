@@ -51,6 +51,7 @@ class Agent(IdMixin, TimeMixin, db.Model):
     os = db.Column(db.String(255), nullable=True)
     version = db.Column(db.String(255), nullable=True)
     protocol_version = db.Column(db.Integer, nullable=False, default=0, server_default="0")
+    connections = db.Column(db.JSON, nullable=True)
     install_type = db.Column(db.String(32), nullable=False, default="manual")
     hostname = db.Column(db.String(255), nullable=True)
     last_connection = db.Column(db.DateTime, nullable=True)

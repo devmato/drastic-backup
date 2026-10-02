@@ -244,7 +244,8 @@ function snapshotLabel(snapshot) {
   const time = snapshot.time ? new Date(snapshot.time).toLocaleString() : 'unknown time'
   const vmid = snapshot.tags?.find(tag => tag.startsWith('vmid:'))?.slice(5)
   const guest = vmid ? `VM ${vmid}${snapshot.guest_name ? ` (${snapshot.guest_name})` : ''} — ` : ''
-  return `${guest}${time} — ${id}`
+  const dataset = snapshot.tags?.find(tag => tag.startsWith('dataset:'))?.slice(8)
+  return `${dataset ? `${dataset} — ` : guest}${time} — ${id}`
 }
 
 watch(dialogVisible, value => {

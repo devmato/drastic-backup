@@ -1,0 +1,236 @@
+import configparser
+import json
+import shutil
+from contextlib import nullcontext
+from pathlib import Path
+from types import SimpleNamespace
+
+import dataset
+import pytest
+
+import drastic_agent.agent.agent as agent_module
+import drastic_agent.jobs.truenas_backup as backup_module
+import drastic_agent.truenas as truenas_module
+from drastic_agent.agent.agent import Agent, _encode_config_secret
+from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.agent.report import AgentReport
+from drastic_agent.jobs.truenas_backup import TrueNASBackupJobHandler, cleanup_snapshots
+from drastic_agent.truenas import TrueNASClient, TrueNASError
+from drastic_common.restic import ResticApi
+from drastic_common.restic.exceptions import ResticCancelledError
+from drastic_common.restic.repository import ResticRepository
+from drastic_common.secret_envelope import encrypt_for_public_key, generate_agent_keypair
+
+SETTINGS = {"api_url": "https://nas", "username": "backup", "host_root": "/mnt/host", "verify_tls": True}
+
+
+@pytest.fixture
+def state(monkeypatch, tmp_path):
+    db = dataset.connect(f"sqlite:///{tmp_path}/agent.db")
+    monkeypatch.setattr(agent_module, "agent_settings", db["agent"])
+    monkeypatch.setattr(agent_module, "truenas_snapshots", db["snapshots"])
+    monkeypatch.setattr(backup_module, "truenas_snapshots", db["snapshots"])
+    yield db
+    db.engine.dispose()
+
+
+def test_settings_are_encrypted_and_endpoint_changes_require_new_key(state):
+    private, public = generate_agent_keypair()
+    agent = Agent.__new__(Agent)
+    agent._Agent__config = configparser.ConfigParser()
+    agent._Agent__config["AGENT"] = {"private_key": _encode_config_secret(private), "public_key": _encode_config_secret(public)}
+    report = agent.cmd_truenas_settings("save", SETTINGS, encrypt_for_public_key("api-secret", public))
+    assert report.state == AgentOperationState.success
+    assert "api-secret" not in json.dumps(report.data)
+    assert "api-secret" not in state["agent"].find_one(name="truenas")["settings"]
+    assert agent.get_truenas_client().api_key == "api-secret"
+    assert agent.cmd_truenas_settings("save", {**SETTINGS, "verify_tls": False}).state == AgentOperationState.success
+    assert agent.cmd_truenas_settings("save", {**SETTINGS, "api_url": "https://other"}).state == AgentOperationState.failed
+    assert agent.get_truenas_client().settings["api_url"] == "https://nas"
+    assert agent.cmd_delete_connection("truenas").state == AgentOperationState.success
+    assert not agent.get_truenas_client().public_settings["configured"]
+
+
+def test_websocket_auth_ids_errors_tls_and_secret_redaction(monkeypatch):
+    sent = []
+    responses = iter([
+        {"jsonrpc": "2.0", "method": "notification"},
+        {"id": 1, "result": {"response_type": "SUCCESS"}},
+        {"id": 2, "error": {"data": {"reason": "denied api-secret"}}},
+    ])
+    closed = []
+    def connect(url, **kwargs):
+        assert url == "wss://nas/api/current"
+        assert kwargs["redirect_limit"] == 0
+        assert kwargs["sslopt"]["cert_reqs"] == truenas_module.ssl.CERT_REQUIRED
+        return SimpleNamespace(send=lambda msg: sent.append(json.loads(msg)), settimeout=lambda _: None,
+                               recv=lambda: json.dumps(next(responses)), close=lambda: closed.append(True))
+    monkeypatch.setattr(truenas_module.websocket, "create_connection", connect)
+    with pytest.raises(TrueNASError, match="denied <redacted>"):
+        TrueNASClient(SETTINGS, "api-secret").call("pool.dataset.query")
+    assert sent[0]["params"][0]["mechanism"] == "API_KEY_PLAIN"
+    assert sent[1]["method"] == "pool.dataset.query"
+    assert closed
+
+
+@pytest.fixture
+def nas(state, tmp_path, monkeypatch):
+    root = tmp_path / "host"
+    live = root / "mnt/tank/data"
+    live.mkdir(parents=True)
+    (live / "example.txt").write_text("snapshot content")
+    snapshots = {}
+    api = TrueNASClient({**SETTINGS, "host_root": str(root)}, "api-secret")
+    controls = {"fail_delete": False, "cancel": None, "missing_mount": False, "datasets": ["tank/data"]}
+    calls = []
+
+    def call(method, *params):
+        calls.append((method, params))
+        if method == "system.version":
+            return "TrueNAS-25.10.4"
+        if method == "system.host_id":
+            return "nas-id"
+        if method == "pool.dataset.query":
+            return [{"id": name, "type": "FILESYSTEM", "mountpoint": f"/mnt/{name}", "locked": False} for name in controls["datasets"]]
+        if method == "pool.snapshot.create":
+            config = params[0]
+            source = root / "mnt" / config["dataset"]
+            path = source / ".zfs/snapshot" / config["name"]
+            path.mkdir(parents=True)
+            shutil.copyfile(source / "example.txt", path / "example.txt")
+            (source / "example.txt").write_text("changed live data")
+            snapshots[f"{config['dataset']}@{config['name']}"] = {"properties": {k: {"value": v} for k, v in config["properties"].items()}}
+            if controls["cancel"]:
+                controls["cancel"].set()
+            return {"id": f"{config['dataset']}@{config['name']}"}
+        if method == "filesystem.listdir":
+            return {}
+        if method == "pool.snapshot.query":
+            snapshot = snapshots.get(params[0][0][2])
+            return [snapshot] if snapshot else []
+        if method == "pool.snapshot.delete":
+            if controls["fail_delete"]:
+                raise TrueNASError("NAS unavailable")
+            snapshots.pop(params[0])
+            return True
+        raise AssertionError(method)
+
+    def source(path):
+        relative = str(Path(path).relative_to(root / "mnt"))
+        if "/.zfs/snapshot/" not in relative:
+            return relative
+        return None if controls["missing_mount"] else relative.replace("/.zfs/snapshot/", "@")
+
+    monkeypatch.setattr(api, "call", call)
+    monkeypatch.setattr(truenas_module, "mount_source", source)
+    return api, controls, calls, snapshots, live
+
+
+def make_handler(api, restic):
+    agent = SimpleNamespace(identifier="agent-1", get_truenas_client=lambda: api, resticapi=restic)
+    handler = TrueNASBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {"datasets": ["tank/data"]}}, 1)
+    artifacts = []
+    handler.start_artifact = lambda key, data: artifacts.append({"uuid": "artifact", "artifact_key": key, "data": data}) or artifacts[-1]
+    handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs)
+    return handler, artifacts
+
+
+def test_snapshot_backup_restores_original_files_and_reuses_parent(nas, state, tmp_path, monkeypatch):
+    binary = shutil.which("restic")
+    if not binary:
+        pytest.skip("restic is required (scripts/ci/install-restic.sh)")
+    api, _, calls, snapshots, live = nas
+    monkeypatch.chdir(tmp_path)
+    restic = ResticApi(binary, ResticRepository(location="repo", password="test-password"))
+    restic.init()
+    handler, artifacts = make_handler(api, restic)
+    handler.run_backup(AgentReport.command_report())
+    first = artifacts[0]["snapshot_id"]
+    assert first and not snapshots and state["snapshots"].count() == 0
+    assert (live / "example.txt").read_text() == "changed live data"
+    target = tmp_path / "restore"
+    restic.restore(first, str(target), include_paths=["/"])
+    assert (target / "example.txt").read_text() == "snapshot content"
+    handler.run_backup(AgentReport.command_report())
+    saved = sorted(restic.snapshots(), key=lambda item: item["time"])
+    assert saved[-1]["parent"].startswith(first)
+    assert len([call for call in calls if call[0] == "pool.snapshot.create"]) == 2
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_missing_mount_or_cancellation_never_backs_up_live_data_and_cleans_up(nas, state, cancel):
+    api, controls, _, snapshots, _ = nas
+    report = AgentReport.command_report()
+    controls["cancel"] = report.cancel_event if cancel else None
+    controls["missing_mount"] = not cancel
+    handler, artifacts = make_handler(api, SimpleNamespace())
+    with pytest.raises(ResticCancelledError if cancel else TrueNASError):
+        handler.run_backup(report)
+    assert not snapshots and not artifacts and not state["snapshots"].count()
+
+
+def test_cleanup_survives_failure_checks_ownership_and_recovers(nas, state, monkeypatch):
+    api, controls, _, snapshots, _ = nas
+    controls["missing_mount"] = controls["fail_delete"] = True
+    handler, _ = make_handler(api, SimpleNamespace())
+    with pytest.raises(TrueNASError):
+        handler.run_backup(AgentReport.command_report())
+    assert state["snapshots"].count() == 1
+    controls["fail_delete"] = False
+    snapshot = next(iter(snapshots.values()))
+    snapshot["properties"]["org.drastic:agent"]["value"] = "another-agent"
+    cleanup_snapshots(api, "agent-1")
+    assert snapshots and state["snapshots"].count() == 1
+    snapshot["properties"]["org.drastic:agent"]["value"] = "agent-1"
+    restarted_db = dataset.connect(str(state.engine.url))
+    with monkeypatch.context() as patch:
+        patch.setattr(backup_module, "truenas_snapshots", restarted_db["snapshots"])
+        backup_module.recover_snapshots(SimpleNamespace(identifier="agent-1", get_truenas_client=lambda: api))
+    restarted_db.engine.dispose()
+    assert not snapshots and not state["snapshots"].count()
+
+
+def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapshots(nas, state):
+    api, controls, _, snapshots, live = nas
+    other = live.parent / "other"
+    other.mkdir()
+    (other / "example.txt").write_text("other content")
+    controls["datasets"].append("tank/other")
+
+    def backup(**kwargs):
+        if "/data/" in kwargs["cwd"]:
+            raise OSError("injected read failure")
+        return {"snapshot_id": "successful-dataset"}
+
+    restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=backup)
+    handler, artifacts = make_handler(api, restic)
+    handler.job["config"]["datasets"] = controls["datasets"]
+    report = AgentReport.command_report()
+    with pytest.raises(TrueNASError, match="tank/data"):
+        handler.run_backup(report)
+    assert report.data["partial_failure"] is True
+    assert artifacts[0]["state"] == AgentOperationState.failed
+    assert artifacts[1]["snapshot_id"] == "successful-dataset"
+    assert not snapshots and state["snapshots"].count() == 0
+
+
+def test_mount_detection_requires_exact_dataset_and_unescapes_paths(monkeypatch, tmp_path):
+    mount = tmp_path / "data space"
+    mount.mkdir()
+    escaped = str(mount).replace(" ", r"\040")
+    monkeypatch.setattr(Path, "read_text", lambda _self: f"101 1 0:42 / {escaped} ro - zfs tank/data@snap ro\n")
+    assert truenas_module.mount_source(mount) == "tank/data@snap"
+    assert truenas_module.mount_source(mount / "missing") is None
+
+
+def test_uncertain_snapshot_creation_retains_intent_until_reconciliation(nas, state):
+    api, _, _, _, _ = nas
+    record = {"snapshot_id": "tank/data@drastic-unknown", "api_url": SETTINGS["api_url"], "host_id": "nas-id",
+              "operation_uuid": "unknown", "confirmed": False, "created_at": backup_module.time()}
+    record["id"] = state["snapshots"].insert(record)
+    cleanup_snapshots(api, "agent-1")
+    assert state["snapshots"].count() == 1
+    record["created_at"] -= 301
+    state["snapshots"].update(record, ["id"])
+    cleanup_snapshots(api, "agent-1")
+    assert state["snapshots"].count() == 0

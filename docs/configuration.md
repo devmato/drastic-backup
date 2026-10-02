@@ -88,7 +88,7 @@ The agent defaults to 2 workers, 8 pending jobs, 60 seconds for commands, 600 se
 | `DRASTIC_PASSWORD` | Password used for initial agent registration. |
 | `DRASTIC_LOGLEVEL` | Agent log level. |
 
-Configure Proxmox access through **Agents > Agent Properties > Configuration > Proxmox** while the agent is online. These settings are saved on the agent, with an encrypted token secret, and apply without restarting. The job form's **Configure Proxmox** button opens the same settings. All Proxmox jobs on the agent share this configuration.
+Configure Proxmox access through **Agents > your agent > Connections > Proxmox** while the agent is online. These settings are saved on the agent, with an encrypted token secret, and apply without restarting. The job form's **Configure Proxmox** button opens the same settings in a new tab. All Proxmox jobs on the agent share this configuration. TrueNAS connections are configured on the same page; see the [TrueNAS guide](truenas.md).
 
 Without web UI settings, the agent uses `DRASTIC_PROXMOX_TOKEN_ID` and `DRASTIC_PROXMOX_TOKEN_SECRET`. `DRASTIC_PROXMOX_API_URL` defaults to `https://127.0.0.1:8006/api2/json`; `DRASTIC_PROXMOX_VERIFY_TLS` defaults to `false`. Set `DRASTIC_PROXMOX_NODE` only when automatic node detection is insufficient. Once saved through the web UI, the complete saved configuration takes precedence over these environment variables.
 

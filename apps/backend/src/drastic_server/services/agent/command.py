@@ -137,6 +137,14 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.test_proxmox_settings, **kwargs)
 
     @classmethod
+    def truenas_settings(cls, agent, **kwargs):
+        return cls.send_command(agent, AgentCommandName.truenas_settings, **kwargs)
+
+    @classmethod
+    def delete_connection(cls, agent, **kwargs):
+        return cls.send_command(agent, AgentCommandName.delete_connection, **kwargs)
+
+    @classmethod
     def run_job(cls, agent, job_id, repository_id, operation_uuid=None, run_options=None):
         return cls.send_command(
             agent,
