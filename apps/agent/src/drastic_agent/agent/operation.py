@@ -339,6 +339,11 @@ class AgentOperation:
                 operation.set_data(message_param_dict[parameter], status_dict[parameter])
             elif parameter == "current_files":
                 operation.set_data("current_files", [])
+        if status_dict.get("message_type") == "summary":
+            if "total_bytes_processed" in status_dict:
+                operation.set_data("bytes_total", status_dict["total_bytes_processed"])
+            if "total_files_processed" in status_dict:
+                operation.set_data("files_total", status_dict["total_files_processed"])
 
     @property
     def state(self):

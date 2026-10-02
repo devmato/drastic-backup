@@ -246,7 +246,10 @@ const operationData = computed(() => operation.value?.data || {})
 const proxmoxProgress = computed(() => operationData.value.proxmox_progress)
 const isRestoreOperation = computed(() => operation.value?.type === 'restore')
 const bytesProcessed = computed(() => numberOrNull(operationData.value.bytes_processed))
-const bytesTotal = computed(() => numberOrNull(operationData.value.bytes_total))
+const bytesTotal = computed(() => {
+  const total = numberOrNull(operationData.value.bytes_total)
+  return total === 0 && bytesProcessed.value > 0 ? null : total
+})
 const filesProcessed = computed(() => numberOrNull(operationData.value.files_processed))
 const filesTotal = computed(() => numberOrNull(operationData.value.files_total))
 const restoreBytesRestored = computed(() => numberOrNull(operationData.value.restore_bytes_restored ?? operationData.value.bytes_restored))
@@ -285,6 +288,10 @@ const progressSource = computed(() => {
     return { value: null, basis: '' }
   }
 
+  if (['success', 'warning'].includes(operation.value?.state)) {
+    return { value: 1, basis: 'Operation completed' }
+  }
+
   if (bytesTotal.value && bytesTotal.value > 0) {
     return {
       value: clampProgress((bytesProcessed.value || 0) / bytesTotal.value),
@@ -297,10 +304,6 @@ const progressSource = computed(() => {
       value: clampProgress((filesProcessed.value || 0) / filesTotal.value),
       basis: `${formatNumber(filesProcessed.value)} of ${formatNumber(filesTotal.value)} files`,
     }
-  }
-
-  if (['success', 'warning'].includes(operation.value?.state)) {
-    return { value: 1, basis: 'Operation completed' }
   }
 
   return { value: null, basis: '' }
@@ -460,14 +463,14 @@ function numberOrNull(value) {
 
 function formatNumber(value) {
   const number = numberOrNull(value)
-  return number === null ? '-' : new Intl.NumberFormat().format(number)
+  return number === null ? 'Unknown' : new Intl.NumberFormat().format(number)
 }
 
 function formatBytes(value) {
   const number = numberOrNull(value)
-  if (number === null) return '-'
+  if (number === null) return 'Unknown'
 
-  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let size = Math.abs(number)
   let unitIndex = 0
 

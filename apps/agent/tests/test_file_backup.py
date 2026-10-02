@@ -1,5 +1,7 @@
 import pytest
 
+from drastic_agent.agent.enums import AgentOperationType
+from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.file_backup import FileBackupJobHandler
 from drastic_common.restic.exceptions import ResticFailedError
 
@@ -33,3 +35,20 @@ def test_failed_file_artifact_keeps_snapshot_id():
 
     assert artifact["state"].name == "failed"
     assert artifact["snapshot_id"] == "partial-snap"
+
+
+@pytest.mark.parametrize(("previous_status", "total_bytes", "total_files"), [
+    (None, 1024, 1),
+    ({"message_type": "status", "total_bytes": 2048, "total_files": 2, "bytes_done": 256, "files_done": 0}, 1024, 1),
+    (None, 0, 0),
+])
+def test_file_backup_summary_sets_final_totals(previous_status, total_bytes, total_files):
+    report = AgentReport(type=AgentOperationType.backup, persist=False)
+    AgentReport._process_restic_status(report, [previous_status, {
+        "message_type": "summary",
+        "total_bytes_processed": total_bytes,
+        "total_files_processed": total_files,
+        "data_added": 0,
+    }])
+    assert report.data["bytes_total"] == report.data["bytes_processed"] == total_bytes
+    assert report.data["files_total"] == report.data["files_processed"] == total_files
