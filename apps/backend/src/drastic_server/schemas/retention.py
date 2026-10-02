@@ -3,16 +3,6 @@ from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, vali
 _RETENTION_TYPES = ("count", "date")
 
 
-class RetentionSchema(Schema):
-    id = fields.Integer(required=True)
-    name = fields.String(required=True)
-    keep_last = fields.Integer(allow_none=True)
-    keep_hourly = fields.Integer(allow_none=True)
-    keep_weekly = fields.Integer(allow_none=True)
-    keep_monthly = fields.Integer(allow_none=True)
-    keep_yearly = fields.Integer(allow_none=True)
-
-
 class RetentionResponseSchema(Schema):
     id = fields.Integer(required=True)
     name = fields.String(required=True)

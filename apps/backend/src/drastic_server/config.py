@@ -44,7 +44,6 @@ class DefaultConfig:
     REST_SERVER_URL = "http://rest-server:8000"
     REST_SERVER_DATA_DIRECTORY = "/data"
     DOCS_SITE_PATH = "/app/docs-site"
-    RESTIC_BINARY_PATH = "restic"
 
     SQLALCHEMY_DATABASE_URI = ""
     SQLALCHEMY_TRACK_MODIFICATIONS = False

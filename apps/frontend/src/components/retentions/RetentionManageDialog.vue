@@ -34,12 +34,11 @@ import { computed, reactive, watch } from 'vue'
 import { useQuasar } from 'quasar'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   retention: { type: Object, default: null },
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit'])
+const emit = defineEmits(['submit'])
 
 const $q = useQuasar()
 
@@ -60,10 +59,7 @@ const form = reactive({
 
 const isEdit = computed(() => Boolean(props.retention))
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 function resetForm() {
   const retention = props.retention
@@ -85,12 +81,12 @@ function submitForm() {
   emit('submit', { ...form })
 }
 
-watch(() => props.modelValue, value => {
+watch(dialogVisible, value => {
   if (value) resetForm()
 })
 
 watch(() => props.retention, () => {
-  if (props.modelValue) resetForm()
+  if (dialogVisible.value) resetForm()
 })
 
 defineOptions({ name: 'RetentionManageDialog' })

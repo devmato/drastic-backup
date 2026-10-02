@@ -27,23 +27,19 @@
 import { computed, reactive, watch } from 'vue'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   config: { type: Object, default: null },
   options: { type: Object, default: () => ({ operation_types: [], operation_states: [] }) },
   submitting: { type: Boolean, default: false },
   testing: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit', 'test'])
+const emit = defineEmits(['submit', 'test'])
 
 const form = reactive({ url: '', operation_types: [], operation_states: [] })
 
 const isEdit = computed(() => Boolean(props.config))
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 function resetForm() {
   const config = props.config
@@ -60,12 +56,12 @@ function submitForm() {
   })
 }
 
-watch(() => props.modelValue, value => {
+watch(dialogVisible, value => {
   if (value) resetForm()
 })
 
 watch(() => props.config, () => {
-  if (props.modelValue) resetForm()
+  if (dialogVisible.value) resetForm()
 })
 
 defineOptions({ name: 'NotificationManageDialog' })

@@ -79,17 +79,11 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
                 lambda *_args, **_kwargs: (repository, False),
             )
 
-            class TimeoutAgentCommand:
-                def __init__(self, agent):
-                    self.agent = agent
+            def run_job(target_agent, **_kwargs):
+                assert target_agent.id == agent.id
+                return AgentService.failed_command_report("Agent request timed out", timeout=True)
 
-                @staticmethod
-                def run_job(**_kwargs):
-                    return AgentService.failed_command_report("Agent request timed out", timeout=True)
-
-            monkeypatch.setattr(
-                "drastic_server.views.api.jobs.AgentCommand", TimeoutAgentCommand
-            )
+            monkeypatch.setattr(AgentService, "run_job", run_job)
             client = app.test_client()
             _login(client)
 
@@ -166,17 +160,11 @@ def test_explicit_backup_admission_rejection_is_failed_conflict(monkeypatch):
                 lambda *_args, **_kwargs: (repository, False),
             )
 
-            class RejectingAgentCommand:
-                def __init__(self, agent):
-                    self.agent = agent
+            def run_job(target_agent, **_kwargs):
+                assert target_agent.id == agent.id
+                return AgentService.failed_command_report("Resource is busy")
 
-                @staticmethod
-                def run_job(**_kwargs):
-                    return AgentService.failed_command_report("Resource is busy")
-
-            monkeypatch.setattr(
-                "drastic_server.views.api.jobs.AgentCommand", RejectingAgentCommand
-            )
+            monkeypatch.setattr(AgentService, "run_job", run_job)
             client = app.test_client()
             _login(client)
 

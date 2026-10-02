@@ -109,12 +109,11 @@ import { useOperationStore } from 'stores/operation'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   job: { type: Object, default: null },
   agents: { type: Array, default: () => [] },
   repositories: { type: Array, default: () => [] },
 })
-const emit = defineEmits(['update:modelValue', 'started'])
+const emit = defineEmits(['started'])
 
 const $q = useQuasar()
 const restoreStore = useRestoreStore()
@@ -134,10 +133,7 @@ const overwritePolicy = ref('fail_if_exists')
 const overwriteConfirmed = ref(false)
 const crossAgentConfirmed = ref(false)
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 const agentOptions = computed(() => props.agents.filter(agent => agent.online).map(agent => ({ label: agent.hostname || `Agent #${agent.id}`, value: agent.id })))
 const repositoryOptions = computed(() => props.repositories.map(repo => ({ label: `${repo.name} (${repo.location})`, value: repo.id })))
@@ -220,7 +216,7 @@ function snapshotLabel(snapshot) {
   return `${id} - ${time}`
 }
 
-watch(() => props.modelValue, async value => {
+watch(dialogVisible, async value => {
   if (!value) return
   resetDialog()
   await loadSnapshots()

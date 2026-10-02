@@ -82,7 +82,7 @@ def test_test_and_discovery_use_effective_settings_without_saving(agent, monkeyp
         return [{"vmid": 101}]
 
     monkeypatch.setattr(
-        agent_module, "get_proxmox_guest_driver", lambda: SimpleNamespace(list_supported_guests=guests)
+        agent_module, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=guests)
     )
     response = agent.cmd_test_proxmox_settings(
         SETTINGS, encrypt_for_public_key("unsaved-secret", agent.public_key)
@@ -139,7 +139,7 @@ def test_connection_test_checks_host_tools_and_redacts_errors(agent, monkeypatch
         raise ProxmoxError(f"API rejected {api.token_secret}")
 
     monkeypatch.setattr(
-        agent_module, "get_proxmox_guest_driver", lambda: SimpleNamespace(list_supported_guests=fail)
+        agent_module, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=fail)
     )
     report = agent.cmd_test_proxmox_settings(SETTINGS, envelope)
     assert report.state == AgentReportState.failed

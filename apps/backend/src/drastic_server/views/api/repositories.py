@@ -26,7 +26,7 @@ from drastic_server.schemas.repository import (
     UnlockInputSchema,
 )
 from drastic_server.services.agent import (
-    AgentCommand,
+    AgentService,
     is_agent_conflict_response,
     is_agent_timeout_response,
 )
@@ -282,7 +282,8 @@ class RepositoryUnlock(MethodView):
             msg="Repository unlock started",
             log_message="Repository unlock queued",
         )
-        response = AgentCommand(agent=agent).unlock_repository(
+        response = AgentService.unlock_repository(
+            agent,
             repository_id=repository.id,
             operation_uuid=operation.uuid,
         )
@@ -328,7 +329,8 @@ class RepositoryCheck(MethodView):
             log_message="Repository check queued",
             data={"read_data": data.get("read_data_subset")},
         )
-        response = AgentCommand(agent=agent).check_repository(
+        response = AgentService.check_repository(
+            agent,
             repository_id=repository.id,
             read_data_subset=data.get("read_data_subset"),
             operation_uuid=operation.uuid,

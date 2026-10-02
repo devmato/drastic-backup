@@ -11,9 +11,6 @@ from uuid import UUID, uuid4
 
 from flask import current_app
 
-from drastic_common.restic import ResticApi, ResticRepository
-from drastic_common.restic.exceptions import ResticError
-from drastic_server.config import DefaultConfig
 from drastic_server.utils.urls import normalize_restic_repository_path
 
 
@@ -31,43 +28,6 @@ _QUARANTINE_MANIFEST = "manifest.json"
 _QUARANTINE_PAYLOAD = "repository"
 _QUARANTINE_MANIFEST_VERSION = 1
 _MAX_MANIFEST_BYTES = 4096
-
-
-def restic_binary_path() -> str:
-    return str(current_app.config.get("RESTIC_BINARY_PATH") or "restic").strip() or "restic"
-
-
-def init_native_repository(repository_path: str, password: str) -> dict:
-    normalized_path = normalize_restic_repository_path(repository_path)
-    internal_base_url = str(
-        current_app.config.get("REST_SERVER_URL") or DefaultConfig.REST_SERVER_URL
-    ).rstrip("/")
-    repository = ResticRepository(
-        location=f"rest:{internal_base_url}/{normalized_path}",
-        password=password,
-    )
-    restic = ResticApi(binary_path=restic_binary_path(), repository=repository)
-    restic.init()
-    return restic.cat_config()
-
-
-def ensure_native_repository_initialized(repository_path: str, password: str) -> dict:
-    try:
-        return init_native_repository(repository_path=repository_path, password=password)
-    except ResticError as exc:
-        if "config file already exists" not in str(exc):
-            raise
-
-    normalized_path = normalize_restic_repository_path(repository_path)
-    internal_base_url = str(
-        current_app.config.get("REST_SERVER_URL") or DefaultConfig.REST_SERVER_URL
-    ).rstrip("/")
-    repository = ResticRepository(
-        location=f"rest:{internal_base_url}/{normalized_path}",
-        password=password,
-    )
-    restic = ResticApi(binary_path=restic_binary_path(), repository=repository)
-    return restic.cat_config()
 
 
 def generate_native_repository_path() -> str:

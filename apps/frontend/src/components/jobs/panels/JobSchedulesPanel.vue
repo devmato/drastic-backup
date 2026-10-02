@@ -42,24 +42,19 @@
 <script setup>
 import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
-import { useJobStore } from 'stores/job'
 import { useRetentionStore } from 'stores/retention'
-import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import JobScheduleManageDialog from 'components/jobs/JobScheduleManageDialog.vue'
 
 const props = defineProps({
-  jobId: { type: [Number, String], default: null },
   modelValue: { type: Array, default: () => [] },
   repositories: { type: Array, default: () => [] },
   allRepositories: { type: Array, default: () => [] },
-  persistImmediately: { type: Boolean, default: false },
   disabled: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'updated'])
+const emit = defineEmits(['update:modelValue'])
 
 const $q = useQuasar()
-const jobStore = useJobStore()
 const retentionStore = useRetentionStore()
 
 const scheduleDialogVisible = ref(false)
@@ -133,41 +128,21 @@ function showScheduleDialog(schedule) {
   scheduleDialogVisible.value = true
 }
 
-async function onScheduleSubmit(data) {
-  try {
-    if (props.persistImmediately) {
-      if (editingSchedule.value) {
-        await jobStore.updateSchedule(editingSchedule.value.id, data)
-      } else {
-        await jobStore.createSchedule(props.jobId, data)
-      }
-      emit('updated')
-      $q.notify({ message: 'Schedule saved', color: 'green', position: 'top' })
-    } else if (editingSchedule.value) {
-      emit('update:modelValue', props.modelValue.map(schedule => schedule.id === editingSchedule.value.id ? { ...cloneSchedule(schedule), ...data } : cloneSchedule(schedule)))
-    } else {
-      emit('update:modelValue', [
-        ...props.modelValue.map(cloneSchedule),
-        { id: `draft-${Date.now()}`, ...data },
-      ])
-    }
-
-    scheduleDialogVisible.value = false
-  } catch (e) {
-    if (shouldIgnoreApiError(e)) return
-    $q.notify({ message: getApiErrorMessage(e, e.message || 'Error'), color: 'red', position: 'top' })
+function onScheduleSubmit(data) {
+  if (editingSchedule.value) {
+    emit('update:modelValue', props.modelValue.map(schedule => schedule.id === editingSchedule.value.id ? { ...cloneSchedule(schedule), ...data } : cloneSchedule(schedule)))
+  } else {
+    emit('update:modelValue', [
+      ...props.modelValue.map(cloneSchedule),
+      { id: `draft-${Date.now()}`, ...data },
+    ])
   }
+
+  scheduleDialogVisible.value = false
 }
 
 function confirmDeleteSchedule(schedule) {
-  $q.dialog({ title: 'Delete Schedule', message: 'Delete this schedule?', cancel: true }).onOk(async () => {
-    if (props.persistImmediately) {
-      await jobStore.deleteSchedule(schedule.id)
-      emit('updated')
-      $q.notify({ message: 'Schedule deleted', color: 'green', position: 'top' })
-      return
-    }
-
+  $q.dialog({ title: 'Delete Schedule', message: 'Delete this schedule?', cancel: true }).onOk(() => {
     emit('update:modelValue', props.modelValue.filter(item => item.id !== schedule.id).map(cloneSchedule))
   })
 }

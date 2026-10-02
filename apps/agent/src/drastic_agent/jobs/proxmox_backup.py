@@ -6,8 +6,8 @@ from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.proxmox import (
     ProxmoxError,
+    QemuVolumeGuestDriver,
     ensure_vzdump_available,
-    get_proxmox_guest_driver,
 )
 
 
@@ -23,7 +23,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
         if not api.configured:
             raise ProxmoxError("Proxmox API token is not configured on the agent")
 
-        driver = get_proxmox_guest_driver()
+        driver = QemuVolumeGuestDriver()
         guests = driver.list_supported_guests(api)
         if selection_mode == "include":
             guests = [guest for guest in guests if int(guest["vmid"]) in selected_guest_ids]

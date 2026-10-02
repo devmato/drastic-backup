@@ -85,11 +85,11 @@ def test_json_defaults_are_independent_and_in_place_action_updates_are_persisted
         assert first_operation.data is not second_operation.data
         assert artifact.data == {}
 
-        action.command = "touch /tmp/marker"
+        action.data["command"] = "touch /tmp/marker"
         db.session.commit()
         db.session.expire(action)
 
-        assert action.command == "touch /tmp/marker"
+        assert action.data["command"] == "touch /tmp/marker"
 
 
 def test_notification_list_defaults_are_independent_and_mutable():

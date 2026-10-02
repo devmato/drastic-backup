@@ -71,9 +71,7 @@ class _FakeApi:
 
 @pytest.mark.parametrize("guest_ids", [(101,), (101, 102)])
 def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch, guest_ids):
-    driver = QemuVolumeGuestDriver()
     monkeypatch.setattr(proxmox_backup_module, "ensure_vzdump_available", lambda: None)
-    monkeypatch.setattr(proxmox_backup_module, "get_proxmox_guest_driver", lambda: driver)
 
     handler = ProxmoxBackupJobHandler(
         agent=_FakeAgent(),

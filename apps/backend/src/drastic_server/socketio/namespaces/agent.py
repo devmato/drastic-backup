@@ -9,7 +9,7 @@ from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_server.extensions import db, socketio
 from drastic_server.models.agent import Agent, AgentSession
-from drastic_server.services.agent import AgentRequest
+from drastic_server.services.agent import AgentRequestService
 from drastic_server.utils.realtime import emit_agent_state
 
 
@@ -92,7 +92,7 @@ class AgentNamespace(Namespace):
 
     def on_request(self, data):
         try:
-            agent_request = AgentRequest.get_by_sid( request.sid )
+            agent_request = AgentRequestService.get_by_sid( request.sid )
             return {'success': True, 'result': getattr(agent_request, data['action'])( **data['args'] ) }
         except Exception as e:
             print(e)

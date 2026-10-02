@@ -13,7 +13,7 @@ from drastic_server.schemas.retention import (
     RetentionResponseSchema,
     RetentionUpdateInputSchema,
 )
-from drastic_server.services.agent import AgentCommand
+from drastic_server.services.agent import AgentService
 
 blp = Blueprint(
     "retentions", __name__, url_prefix="/api/retentions", description="Retention policy operations"
@@ -106,7 +106,7 @@ class RetentionDetail(MethodView):
         )
         for agent in agents:
             if agent.online:
-                AgentCommand(agent=agent).sync()
+                AgentService.sync(agent)
 
         return {"msg": "Retention updated"}
 

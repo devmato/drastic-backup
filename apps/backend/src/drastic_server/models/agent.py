@@ -14,9 +14,6 @@ from drastic_common.agent.enums import (
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
-# import drastic_server.utils.agent
-
-
 agent_repositories = db.Table(
     "agent_repositories",
     db.Column(
@@ -78,12 +75,6 @@ class Agent(IdMixin, TimeMixin, db.Model):
         if normalized in {"docker", "release", "git", "manual"}:
             return normalized
         return "manual"
-
-    # Expose AgentCommand instance as property
-    # @property
-    # def command(self):
-    #     drastic_server.utils.agent
-    #     return drastic_server.utils.agent.agent.AgentCommand(self)
 
 
 class AgentSession(IdMixin, TimeMixin, db.Model):

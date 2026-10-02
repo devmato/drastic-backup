@@ -1,5 +1,4 @@
 import copy
-import json
 from datetime import datetime
 from uuid import uuid4
 
@@ -61,14 +60,6 @@ class Job(IdMixin, TimeMixin, db.Model):
     def config_envelope(self, value):
         self._config = {"data": copy.deepcopy((value or {}).get("data") or {})}
 
-    @property
-    def pathlist(self):
-        return [path["path"] for path in self.config.get("paths", [])]
-
-    @property
-    def excludelist(self):
-        return [exclude_pattern["path"] for exclude_pattern in self.config.get("exclude_patterns", [])]
-
 
 class JobAction(IdMixin, TimeMixin, db.Model):
     __tablename__ = "job_actions"
@@ -89,39 +80,6 @@ class JobAction(IdMixin, TimeMixin, db.Model):
 
     hook = db.Column(db.String(255), nullable=False)
     data = db.Column(MutableDict.as_mutable(db.JSON), default=dict, nullable=False)
-
-    def data_getter(self, key):
-        if self.data and key in self.data:
-            return self.data[key]
-
-    def data_setter(self, key, value):
-        if not self.data:
-            self.data = {}
-        self.data[key] = value
-
-    @property
-    def command(self):
-        return self.data_getter("command")
-
-    @command.setter
-    def command(self, value):
-        self.data_setter("command", value)
-
-    @property
-    def container(self):
-        return self.data_getter("container")
-
-    @container.setter
-    def container(self, value):
-        self.data_setter("container", value)
-
-    @property
-    def action(self):
-        return self.data_getter("action")
-
-    @action.setter
-    def action(self, value):
-        self.data_setter("action", value)
 
 
 class JobSchedule(IdMixin, TimeMixin, db.Model):
@@ -169,26 +127,6 @@ class JobSchedule(IdMixin, TimeMixin, db.Model):
     @config_envelope.setter
     def config_envelope(self, value):
         self._config = {"data": copy.deepcopy((value or {}).get("data") or {})}
-
-    @property
-    def minute(self):
-        if not self.advanced:
-            return self.cron_string.split(" ")[0]
-
-    @property
-    def hour(self):
-        if not self.advanced:
-            return self.cron_string.split(" ")[1]
-
-    @property
-    def day_of_week(self):
-        if not self.advanced:
-            week_string = self.cron_string.split(" ")[-1]
-
-            if week_string == "*":
-                return [0, 1, 2, 3, 4, 5, 6]
-            else:
-                return json.loads(f"[{week_string}]")
 
     @property
     def cron_description(self):

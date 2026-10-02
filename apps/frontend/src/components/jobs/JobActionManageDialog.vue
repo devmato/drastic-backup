@@ -30,11 +30,10 @@
 import { computed, reactive, watch } from 'vue'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   action: { type: Object, default: null },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit'])
+const emit = defineEmits(['submit'])
 
 const hookOptions = [
   { label: 'Before Start', value: 'start' },
@@ -58,10 +57,7 @@ const form = reactive({ module: 'command', hook: 'start', command: '', container
 
 const isEdit = computed(() => Boolean(props.action))
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 function resetForm() {
   const action = props.action
@@ -85,12 +81,12 @@ function submitForm() {
   emit('submit', { module: form.module, hook: form.hook, data: actionData })
 }
 
-watch(() => props.modelValue, value => {
+watch(dialogVisible, value => {
   if (value) resetForm()
 })
 
 watch(() => props.action, () => {
-  if (props.modelValue) resetForm()
+  if (dialogVisible.value) resetForm()
 })
 
 defineOptions({ name: 'JobActionManageDialog' })

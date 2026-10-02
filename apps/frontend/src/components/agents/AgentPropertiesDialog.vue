@@ -178,12 +178,12 @@ import AgentProxmoxSettings from 'components/agents/AgentProxmoxSettings.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   agent: { type: Object, default: null },
   initialTab: { type: String, default: 'info' },
 })
 
-const emit = defineEmits(['update:modelValue', 'updated', 'proxmox-updated'])
+const emit = defineEmits(['updated', 'proxmox-updated'])
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
@@ -195,17 +195,12 @@ const supportsConfiguration = computed(() => (props.agent?.protocol_version || 0
 const supportsUpdate = computed(() => supportsConfiguration.value
   && props.agent?.install_type === 'git' && props.agent?.os?.toLowerCase() === 'linux')
 
-watch([() => props.modelValue, () => props.agent?.protocol_version], () => {
-  if (props.modelValue) {
+watch([dialogVisible, () => props.agent?.protocol_version], () => {
+  if (dialogVisible.value) {
     activeTab.value = props.initialTab === 'configuration' && !supportsConfiguration.value
       ? 'info' : props.initialTab
   }
 }, { immediate: true })
-
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
 
 const agentRepositories = computed(() => props.agent?.repositories || [])
 

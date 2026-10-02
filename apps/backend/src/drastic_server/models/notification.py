@@ -2,7 +2,6 @@ from flask import current_app
 from sqlalchemy.ext.mutable import MutableList
 
 from drastic_server.extensions import db
-from drastic_server.models.agent import AgentOperationState, AgentOperationType
 from drastic_server.models.mixins import IdMixin, TimeMixin
 from drastic_server.utils.crypto import CryptoError, decrypt, encrypt
 
@@ -30,25 +29,6 @@ class NotificationConfig(IdMixin, TimeMixin, db.Model):
     @url.setter
     def url(self, value):
         self._url = encrypt(plaintext=value, key=current_app.config['ENCRYPTION_KEY'])
-
-    @property
-    def operation_type_enums(self):
-        operation_type_enums = []
-
-        for operation_type in self.operation_types:
-            operation_type_enums.append( AgentOperationType[operation_type] )
-
-        return operation_type_enums
-    
-
-    @property
-    def operation_state_enums(self):
-        operation_state_enums = []
-
-        for operation_state in self.operation_states:
-            operation_state_enums.append( AgentOperationState[operation_state] )
-
-        return operation_state_enums
 
 
 class NotificationDelivery(IdMixin, TimeMixin, db.Model):

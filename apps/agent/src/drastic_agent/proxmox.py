@@ -2,7 +2,6 @@ import os
 import platform
 import re
 import subprocess
-import time
 
 import requests
 
@@ -32,9 +31,6 @@ class ProxmoxApiClient:
             self.source = "agent"
         self.command_timeout = env_int(
             "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS
-        )
-        self.task_timeout = env_int(
-            "DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS
         )
         self._node = None
 
@@ -135,66 +131,8 @@ class ProxmoxApiClient:
         node = self.get_node()
         return self._request("GET", f"/nodes/{node}/qemu/{vmid}/config") or {}
 
-    def create_qemu_snapshot(self, vmid, snapname):
-        node = self.get_node()
-        return self._request(
-            "POST",
-            f"/nodes/{node}/qemu/{vmid}/snapshot",
-            data={"snapname": snapname, "vmstate": 0},
-        )
 
-    def delete_qemu_snapshot(self, vmid, snapname):
-        node = self.get_node()
-        return self._request(
-            "DELETE",
-            f"/nodes/{node}/qemu/{vmid}/snapshot/{snapname}",
-            data={"force": 1},
-        )
-
-    def wait_for_task(self, upid, poll_interval=2, timeout=None):
-        node = self.get_node()
-        effective_timeout = timeout or self.task_timeout
-        started = time.monotonic()
-
-        while True:
-            status = self._request("GET", f"/nodes/{node}/tasks/{upid}/status") or {}
-            if status.get("status") == "stopped":
-                if status.get("exitstatus") != "OK":
-                    raise ProxmoxError(
-                        f"Proxmox task failed with exit status {status.get('exitstatus')}"
-                    )
-                return status
-
-            if time.monotonic() - started > effective_timeout:
-                raise ProxmoxError(f"Timed out while waiting for Proxmox task {upid}")
-
-            time.sleep(poll_interval)
-
-
-class ProxmoxGuestDriver:
-    def list_supported_guests(self, api):
-        raise NotImplementedError
-
-    def get_guest_backup_plan(self, config):
-        raise NotImplementedError
-
-    def export_qemu_backup_to_restic(
-        self,
-        api,
-        resticapi,
-        vmid,
-        stdin_filename,
-        tags,
-        callback,
-        callback_args,
-        callback_pid,
-        callback_throttle,
-        progress_callback=None,
-    ):
-        raise NotImplementedError
-
-
-class QemuVolumeGuestDriver(ProxmoxGuestDriver):
+class QemuVolumeGuestDriver:
     _QEMU_VOLUME_KEYS = re.compile(r"^(?:ide|sata|scsi|virtio)\d+$|^(?:efidisk0|tpmstate0)$")
     _BACKUP_PROGRESS = re.compile(
         r"(?:INFO:\s*)?(\d+(?:\.\d+)?)%\s*\((\d+(?:\.\d+)?)\s*([KMGTPE]?i?B) of (\d+(?:\.\d+)?)\s*([KMGTPE]?i?B)\)"
@@ -318,10 +256,6 @@ class QemuVolumeGuestDriver(ProxmoxGuestDriver):
             callback_throttle=callback_throttle,
             producer_stderr_callback=process_stderr if progress_callback else None,
         )
-
-
-def get_proxmox_guest_driver():
-    return QemuVolumeGuestDriver()
 
 
 def ensure_vzdump_available():

@@ -46,20 +46,16 @@
 
                 <q-tab-panel name="actions" class="q-pa-none">
                   <JobActionsPanel
-                    :job-id="editingJob?.id"
                     v-model="draftActions"
-                    :persist-immediately="false"
                     :disabled="!entriesConfigured || !agentOnline"
                   />
                 </q-tab-panel>
 
                 <q-tab-panel name="schedules" class="q-pa-none">
                   <JobSchedulesPanel
-                    :job-id="editingJob?.id"
                     v-model="draftSchedules"
                     :repositories="dialogRepositories"
                     :all-repositories="allRepositories"
-                    :persist-immediately="false"
                     :disabled="!entriesConfigured"
                   />
                 </q-tab-panel>
@@ -89,7 +85,6 @@ import JobSchedulesPanel from 'components/jobs/panels/JobSchedulesPanel.vue'
 const $q = useQuasar()
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   editingJob: { type: Object, default: null },
   agentId: { type: [Number, String], default: null },
   agentOnline: { type: Boolean, default: false },
@@ -98,7 +93,7 @@ const props = defineProps({
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'save'])
+const emit = defineEmits(['save'])
 
 const sections = [
   { name: 'general', label: 'General', icon: 'settings' },
@@ -117,10 +112,7 @@ const activeSection = ref('general')
 const draftActions = ref([])
 const draftSchedules = ref([])
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 const activeSectionIndex = computed(() => sections.findIndex(section => section.name === activeSection.value))
 
@@ -176,7 +168,7 @@ const entriesConfigured = computed(() => {
 })
 
 watch(
-  () => props.modelValue,
+  dialogVisible,
   value => {
     if (value) {
       resetForm()

@@ -2,11 +2,6 @@ import { defineStore } from 'pinia'
 import { api } from 'boot/axios'
 
 export const useRestoreStore = defineStore('restore', () => {
-  async function getOptions(jobId) {
-    const response = await api.get(`/restores/options?job_id=${jobId}`)
-    return response.data
-  }
-
   async function getSnapshots({ jobId, agentId, repositoryId }) {
     const params = new URLSearchParams({
       job_id: jobId,
@@ -28,15 +23,5 @@ export const useRestoreStore = defineStore('restore', () => {
     return response.data.entries || []
   }
 
-  async function startRestore(data) {
-    const response = await api.post('/restores/', data)
-    return response.data
-  }
-
-  async function cancelRestore(reportId) {
-    const response = await api.post(`/restores/${reportId}/cancel`)
-    return response.data
-  }
-
-  return { getOptions, getSnapshots, getEntries, startRestore, cancelRestore }
+  return { getSnapshots, getEntries }
 })

@@ -71,12 +71,11 @@
 import { computed, reactive, watch } from 'vue'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   repository: { type: Object, default: null },
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit'])
+const emit = defineEmits(['submit'])
 
 const kindOptions = [
   { label: 'Custom', value: 'custom' },
@@ -98,10 +97,7 @@ const isSshLocation = computed(() => {
   const location = String(form.location || '').trim().toLowerCase()
   return form.kind === 'custom' && (location.startsWith('sftp:') || location.startsWith('ssh:'))
 })
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 function resetForm() {
   const repository = props.repository
@@ -142,14 +138,14 @@ function submitForm() {
   emit('submit', payload)
 }
 
-watch(() => props.modelValue, value => {
+watch(dialogVisible, value => {
   if (value) {
     resetForm()
   }
 })
 
 watch(() => props.repository, () => {
-  if (props.modelValue) {
+  if (dialogVisible.value) {
     resetForm()
   }
 })

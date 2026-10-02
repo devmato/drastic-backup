@@ -54,8 +54,8 @@ from drastic_agent.jobs.registry import get_job_handler
 from drastic_agent.proxmox import (
     ProxmoxApiClient,
     ProxmoxError,
+    QemuVolumeGuestDriver,
     ensure_vzdump_available,
-    get_proxmox_guest_driver,
 )
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
@@ -200,11 +200,8 @@ def _sha256sum_entry(sums_text: str, archive_name: str) -> str | None:
 
 
 def _sha256_file(path: str) -> str:
-    digest = hashlib.sha256()
     with open(path, "rb") as file:
-        for chunk in iter(lambda: file.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+        return hashlib.file_digest(file, "sha256").hexdigest()
 
 
 def _restic_binary_is_valid(binary_path: str) -> bool:
@@ -1691,7 +1688,7 @@ class Agent:
         try:
             api = self.__proxmox_client_for_update(settings, encrypted_value)
             ensure_vzdump_available()
-            guests = get_proxmox_guest_driver().list_supported_guests(api)
+            guests = QemuVolumeGuestDriver().list_supported_guests(api)
             report.data = {"node": api.get_node(), "guest_count": len(guests)}
         except (ProxmoxError, SecretEnvelopeError, ValidationError) as exc:
             message = str(exc)
@@ -1705,7 +1702,7 @@ class Agent:
 
         try:
             api = self.get_proxmox_client()
-            driver = get_proxmox_guest_driver()
+            driver = QemuVolumeGuestDriver()
             report.data["guests"] = driver.list_supported_guests(api=api)
         except ProxmoxError as exc:
             report.log_message(str(exc), final_state=AgentReportState.failed)

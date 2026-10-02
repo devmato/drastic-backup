@@ -29,23 +29,19 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { ref } from 'vue'
 import PathBrowser from 'components/PathBrowser.vue'
 import { useJobStore } from 'stores/job'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   agentId: { type: [Number, String], default: null },
 })
-const emit = defineEmits(['update:modelValue', 'pick'])
+const emit = defineEmits(['pick'])
 
 const jobStore = useJobStore()
 const currentPath = ref('/')
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 async function loadAgentEntries(path) {
   return jobStore.getDirlist(props.agentId, path)

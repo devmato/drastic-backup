@@ -40,7 +40,7 @@ from drastic_server.schemas.job import (
     ScheduleUpdateInputSchema,
 )
 from drastic_server.services.agent import (
-    AgentCommand,
+    AgentService,
     is_agent_conflict_response,
     is_agent_timeout_response,
 )
@@ -118,7 +118,7 @@ class JobList(MethodView):
         db.session.commit()
         emit_job_state(job)
 
-        AgentCommand(agent=agent).sync()
+        AgentService.sync(agent)
 
         return {"msg": "Job created", "id": job.id}
 
@@ -163,7 +163,7 @@ class JobDetail(MethodView):
 
         db.session.commit()
         emit_job_state(job)
-        AgentCommand(agent=agent).sync()
+        AgentService.sync(agent)
 
         return {"msg": "Job updated"}
 
@@ -184,7 +184,7 @@ class JobDetail(MethodView):
         emit_jobs_update(user_id)
 
         if agent.online:
-            AgentCommand(agent=agent).sync()
+            AgentService.sync(agent)
 
         return {"msg": "Job deleted"}
 
@@ -216,7 +216,7 @@ class JobOperationRun(MethodView):
 
         if newly_assigned:
             db.session.commit()
-            response = AgentCommand(agent=job.agent).sync(await_response=True)
+            response = AgentService.sync(job.agent, await_response=True)
             if response.get("state") != AgentOperationState.success:
                 _abort_agent_command_failure(response)
 
@@ -230,7 +230,8 @@ class JobOperationRun(MethodView):
             log_message="Backup job queued",
             data={"options": run_options},
         )
-        response = AgentCommand(agent=job.agent).run_job(
+        response = AgentService.run_job(
+            job.agent,
             job_id=job.id,
             repository_id=repository_id,
             operation_uuid=operation.uuid,
@@ -262,8 +263,8 @@ class JobCancel(MethodView):
             if job.last_operation and job.last_operation.state == AgentOperationState.running
             else None
         )
-        response = AgentCommand(job.agent).cancel_job(
-            job_id=job.id, operation_uuid=operation_uuid
+        response = AgentService.cancel_job(
+            job.agent, job_id=job.id, operation_uuid=operation_uuid
         )
         if response.get("state") != AgentOperationState.success:
             _abort_agent_command_failure(response)
@@ -303,7 +304,7 @@ class JobDirlist(MethodView):
         if not agent.online:
             abort(400, message="Agent is offline")
 
-        response = AgentCommand(agent=agent).get_dirlist(base_directory=base_directory)
+        response = AgentService.get_dirlist(agent, base_directory=base_directory)
 
         if response.get("state") != AgentOperationState.success:
             _abort_agent_command_failure(response)
@@ -331,7 +332,7 @@ class JobProxmoxGuests(MethodView):
         if not agent.online:
             abort(400, message="Agent is offline")
 
-        response = AgentCommand(agent=agent).get_proxmox_guests()
+        response = AgentService.get_proxmox_guests(agent)
 
         if response.get("state") != AgentOperationState.success:
             _abort_agent_command_failure(response)
@@ -360,7 +361,7 @@ class JobScheduleList(MethodView):
         emit_job_state(job)
 
         if job.agent.online:
-            AgentCommand(agent=job.agent).sync()
+            AgentService.sync(job.agent)
 
         return {"msg": "Schedule created", "id": schedule.id}
 
@@ -394,7 +395,7 @@ class JobScheduleDetail(MethodView):
         emit_job_state(job)
 
         if job.agent.online:
-            AgentCommand(agent=job.agent).sync()
+            AgentService.sync(job.agent)
 
         return {"msg": "Schedule updated"}
 
@@ -418,7 +419,7 @@ class JobScheduleDetail(MethodView):
         emit_job_state(job)
 
         if job.agent.online:
-            AgentCommand(agent=job.agent).sync()
+            AgentService.sync(job.agent)
 
         return {"msg": "Schedule deleted"}
 
@@ -449,7 +450,7 @@ class JobActionList(MethodView):
         emit_job_state(job)
 
         if job.agent.online:
-            AgentCommand(agent=job.agent).sync()
+            AgentService.sync(job.agent)
 
         return {"msg": "Action created", "id": action.id}
 
@@ -491,7 +492,7 @@ class JobActionDetail(MethodView):
         job = action.job
         emit_job_state(job)
         if job.agent.online:
-            AgentCommand(agent=job.agent).sync()
+            AgentService.sync(job.agent)
 
         return {"msg": "Action updated"}
 
@@ -517,7 +518,7 @@ class JobActionDetail(MethodView):
         emit_job_state(job)
 
         if agent.online:
-            AgentCommand(agent=agent).sync()
+            AgentService.sync(agent)
 
         return {"msg": "Action deleted"}
 
@@ -535,7 +536,7 @@ class JobContainers(MethodView):
         if not agent.online:
             abort(400, message="Agent is offline")
 
-        response = AgentCommand(agent=agent).get_containers()
+        response = AgentService.get_containers(agent)
         if response.get("state") != AgentOperationState.success:
             _abort_agent_command_failure(response)
 

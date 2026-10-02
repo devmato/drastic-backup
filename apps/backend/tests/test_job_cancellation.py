@@ -14,7 +14,7 @@ from drastic_server.models.agent import (
 )
 from drastic_server.models.job import Job
 from drastic_server.models.user import User
-from drastic_server.services.agent import AgentRequestService
+from drastic_server.services.agent import AgentRequestService, AgentService
 
 
 def build_app(monkeypatch):
@@ -63,18 +63,12 @@ def test_successful_job_cancellation_waits_for_terminal_agent_report(monkeypatch
         try:
             job, operation = create_running_job()
 
-            class SuccessfulAgentCommand:
-                def __init__(self, agent):
-                    assert agent.id == job.agent_id
+            def cancel_job(agent, **kwargs):
+                assert agent.id == job.agent_id
+                assert kwargs == {"job_id": job.id, "operation_uuid": operation.uuid}
+                return {"state": AgentOperationState.success}
 
-                @staticmethod
-                def cancel_job(**kwargs):
-                    assert kwargs == {"job_id": job.id, "operation_uuid": operation.uuid}
-                    return {"state": AgentOperationState.success}
-
-            monkeypatch.setattr(
-                "drastic_server.views.api.jobs.AgentCommand", SuccessfulAgentCommand
-            )
+            monkeypatch.setattr(AgentService, "cancel_job", cancel_job)
             client = app.test_client()
             login(client)
 
@@ -120,18 +114,14 @@ def test_failed_job_cancellation_leaves_backend_operation_running(monkeypatch):
         try:
             job, operation = create_running_job()
 
-            class FailedAgentCommand:
-                def __init__(self, agent):
-                    assert agent.id == job.agent_id
+            def cancel_job(agent, **kwargs):
+                assert agent.id == job.agent_id
+                return {
+                    "state": AgentOperationState.failed,
+                    "log": "Restic process is no longer running",
+                }
 
-                @staticmethod
-                def cancel_job(**kwargs):
-                    return {
-                        "state": AgentOperationState.failed,
-                        "log": "Restic process is no longer running",
-                    }
-
-            monkeypatch.setattr("drastic_server.views.api.jobs.AgentCommand", FailedAgentCommand)
+            monkeypatch.setattr(AgentService, "cancel_job", cancel_job)
             client = app.test_client()
             login(client)
 

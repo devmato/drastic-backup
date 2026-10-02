@@ -119,7 +119,3 @@ class AgentRequestService:
 
         db.session.commit()
         return {"ok": True}
-
-
-class AgentRequest(AgentRequestService):
-    pass

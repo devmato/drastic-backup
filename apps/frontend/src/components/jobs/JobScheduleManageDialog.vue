@@ -41,14 +41,13 @@ import { useQuasar } from 'quasar'
 import { getApiErrorMessage } from 'src/utils/api-error'
 
 const props = defineProps({
-  modelValue: { type: Boolean, required: true },
   schedule: { type: Object, default: null },
   repositories: { type: Array, default: () => [] },
   allRepositories: { type: Array, default: () => [] },
   retentions: { type: Array, default: () => [] },
 })
 
-const emit = defineEmits(['update:modelValue', 'submit'])
+const emit = defineEmits(['submit'])
 
 const $q = useQuasar()
 
@@ -81,10 +80,7 @@ const retentionOptions = computed(() => [
   ...props.retentions.map(retention => ({ label: retention.name, value: retention.id })),
 ])
 
-const dialogVisible = computed({
-  get: () => props.modelValue,
-  set: value => emit('update:modelValue', value),
-})
+const dialogVisible = defineModel({ type: Boolean, required: true })
 
 function getRepositoryLabel(repository) {
   const name = repository.repository_name || repository.name
@@ -152,16 +148,16 @@ function submitForm() {
   }
 }
 
-watch(() => props.modelValue, value => {
+watch(dialogVisible, value => {
   if (value) resetForm()
 })
 
 watch(() => props.schedule, () => {
-  if (props.modelValue) resetForm()
+  if (dialogVisible.value) resetForm()
 })
 
 watch(repositoryOptions, (options) => {
-  if (!props.modelValue) return
+  if (!dialogVisible.value) return
   if (options.some(option => option.value === form.repository_id)) return
   form.repository_id = options[0]?.value || null
 })

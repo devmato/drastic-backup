@@ -28,7 +28,6 @@ from drastic_server.schemas.agent import (
 )
 from drastic_server.schemas.common import MessageSchema
 from drastic_server.services.agent import (
-    AgentCommand,
     AgentService,
     build_agent_install_targets,
     is_agent_conflict_response,
@@ -195,7 +194,7 @@ class AgentRepositories(MethodView):
         emit_jobs_update(user_id)
 
         if agent.online:
-            AgentCommand(agent=agent).sync()
+            AgentService.sync(agent)
 
         return {"msg": "Agent repositories updated"}
 
@@ -224,7 +223,7 @@ class AgentSync(MethodView):
         if not agent.online:
             abort(400, message="Agent is offline")
 
-        response = AgentCommand(agent=agent).sync(await_response=True)
+        response = AgentService.sync(agent, await_response=True)
         if is_agent_timeout_response(response):
             abort(504, message=response.get("log", "Agent request timed out"))
         if response.get("state") != AgentOperationState.success:
@@ -292,7 +291,7 @@ def _proxmox_command(agent_id, command, data=None):
             except SecretEnvelopeError:
                 abort(400, message="Agent encryption key is unavailable; reconnect or update the agent")
 
-    response = getattr(AgentCommand(agent), command)(**args)
+    response = getattr(AgentService, command)(agent, **args)
     if is_agent_timeout_response(response):
         abort(504, message="Agent request timed out; reload the settings before retrying")
     if response.get("state") != AgentOperationState.success:

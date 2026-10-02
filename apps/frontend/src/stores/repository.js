@@ -33,19 +33,6 @@ export const useRepositoryStore = defineStore('repository', () => {
     await loadRepositories()
   }
 
-  async function unlockRepository(repositoryId, agentId) {
-    const response = await api.post(`/repositories/${repositoryId}/unlock`, { agent_id: agentId })
-    return response.data
-  }
-
-  async function checkRepository(repositoryId, agentId, readDataSubset = null) {
-    const response = await api.post(`/repositories/${repositoryId}/check`, {
-      agent_id: agentId,
-      read_data_subset: readDataSubset || null,
-    })
-    return response.data
-  }
-
   async function revealRepositoryPassword(repositoryId, accountPassword) {
     const response = await api.post(`/repositories/${repositoryId}/reveal-password`, {
       account_password: accountPassword,
@@ -58,5 +45,5 @@ export const useRepositoryStore = defineStore('repository', () => {
     return response.data
   }
 
-  return { repositories, loading, loadRepositories, createRepository, updateRepository, deleteRepository, unlockRepository, checkRepository, revealRepositoryPassword, getUnlockAgents }
+  return { repositories, loading, loadRepositories, createRepository, updateRepository, deleteRepository, revealRepositoryPassword, getUnlockAgents }
 })

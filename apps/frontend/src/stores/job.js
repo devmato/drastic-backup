@@ -37,15 +37,6 @@ export const useJobStore = defineStore('job', () => {
     await loadJobs()
   }
 
-  async function runJob(jobId, repositoryId, recoveryKey = null, options = {}) {
-    await api.post(`/jobs/${jobId}/run`, { repository_id: repositoryId, recovery_key: recoveryKey, options })
-  }
-
-  async function getJobStatus(jobId) {
-    const response = await api.get(`/jobs/${jobId}/status`)
-    return response.data
-  }
-
   async function cancelJob(jobId) {
     await api.post(`/jobs/${jobId}/cancel`)
     await loadJobs()
@@ -101,7 +92,7 @@ export const useJobStore = defineStore('job', () => {
 
   return {
     agentJobs, loading, loadJobs, getJob, createJob, updateJob, deleteJob,
-    runJob, getJobStatus, cancelJob, getDirlist, getProxmoxGuests,
+    cancelJob, getDirlist, getProxmoxGuests,
     createSchedule, updateSchedule, deleteSchedule,
     createAction, updateAction, deleteAction,
     getContainers

@@ -22,30 +22,6 @@ RepositoryCheckConfigSchema = AgentRepositoryCheckConfigSchema
 ScheduleConfigSchema = AgentScheduleConfigSchema
 
 
-class JobActionSchema(Schema):
-    id = fields.Integer(required=True)
-    job_id = fields.Integer(required=True)
-    module = fields.Method("get_module")
-    hook = fields.String(required=True)
-    data = fields.Dict(keys=fields.String(), values=fields.Raw(), required=True)
-
-    def get_module(self, obj):
-        return obj.module.name if obj.module else None
-
-
-class JobScheduleSchema(Schema):
-    id = fields.Integer(required=True)
-    job_id = fields.Integer(required=True)
-    enabled = fields.Boolean(required=True)
-    repository_id = fields.Integer(required=True)
-    retention_id = fields.Integer(allow_none=True)
-    cron_string = fields.String(required=True)
-    config = fields.Method("get_config")
-
-    def get_config(self, obj):
-        return obj.config
-
-
 class JobSchema(Schema):
     id = fields.Integer(required=True)
     uuid = fields.String(required=True)
