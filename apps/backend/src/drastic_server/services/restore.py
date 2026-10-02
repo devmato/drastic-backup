@@ -1,6 +1,8 @@
+from drastic_common.agent.commands import AgentCommandName
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
+    AgentOperationArtifact,
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
@@ -32,13 +34,20 @@ class RestoreService:
 
     @staticmethod
     def modes_for_job(job):
-        return [
+        modes = [
             {
                 "value": RESTORE_MODE_PLAIN_FILE,
                 "label": "Plain file restore",
                 "description": "Restore selected files or directories to a local path on the selected agent.",
             }
         ]
+        if getattr(job.type, "name", None) == "proxmox":
+            modes = [
+                {"value": "proxmox_vm", "label": "Whole VM", "description": "Restore to a free VMID; the VM stays stopped."},
+                {"value": "proxmox_files", "label": "Files from VM", "description": "Export guest files to an agent directory."},
+                *modes,
+            ]
+        return modes
 
     @staticmethod
     def _get_job(user_id, job_id):
@@ -81,11 +90,30 @@ class RestoreService:
         )
         cls._raise_for_agent_failure(response)
         snapshots = response.get("data", {}).get("snapshots", [])
-        if not any(
+        snapshot = next((snapshot for snapshot in snapshots if
             snapshot.get("id") == snapshot_id and job_tag in (snapshot.get("tags") or [])
-            for snapshot in snapshots
-        ):
+        ), None)
+        if snapshot is None:
             raise RestoreServiceException("Snapshot does not belong to this job")
+        return snapshot
+
+    @staticmethod
+    def _annotate_proxmox_snapshots(job, repository, snapshots):
+        artifacts = AgentOperationArtifact.query.join(AgentOperation).filter(
+            AgentOperation.job_id == job.id,
+            AgentOperation.repository_id == repository.id,
+            AgentOperationArtifact.snapshot_id.in_([s.get("id") for s in snapshots]),
+        ).all()
+        by_snapshot = {artifact.snapshot_id: artifact for artifact in artifacts}
+        for snapshot in snapshots:
+            artifact = by_snapshot.get(snapshot.get("id"))
+            tags = snapshot.get("tags") or []
+            snapshot["proxmox_archive"] = {"source:proxmox", "guest_type:qemu", "backup_method:vzdump"}.issubset(tags) and "kind:manifest" not in tags
+            if artifact:
+                snapshot["guest_name"] = (artifact.data or {}).get("guest_name")
+                if artifact.state not in ("success", "warning") or artifact.forgotten_at:
+                    snapshot["restore_error"] = "Backup archive did not complete successfully or was forgotten"
+        return snapshots
 
     @classmethod
     def get_options(cls, user_id, job_id):
@@ -112,7 +140,28 @@ class RestoreService:
             tags=[cls.job_tag(job)],
         )
         cls._raise_for_agent_failure(response)
-        return {"snapshots": response.get("data", {}).get("snapshots", [])}
+        snapshots = response.get("data", {}).get("snapshots", [])
+        if getattr(job.type, "name", None) == "proxmox":
+            snapshots = cls._annotate_proxmox_snapshots(job, repository, snapshots)
+        return {"snapshots": snapshots}
+
+    @classmethod
+    def proxmox_action(cls, user_id, data):
+        agent = cls._get_agent(user_id, data["agent_id"])
+        kwargs = {}
+        if data["action"] != "options":
+            job = cls._get_job(user_id, data["job_id"])
+            repository = cls._get_repository(user_id, data["repository_id"])
+            cls._ensure_agent_repository(agent, repository)
+            kwargs = {
+                "session_id": data["session_id"],
+                "identity": {"job_uuid": job.uuid, "repository_id": repository.id, "snapshot_id": data["snapshot_id"]},
+                "volume": data.get("volume"), "path": data["path"],
+            }
+        response = AgentService.send_command(agent, AgentCommandName.proxmox_restore,
+                                             action=data["action"], timeout=120, **kwargs)
+        cls._raise_for_agent_failure(response)
+        return response.get("data") or {}
 
     @classmethod
     def list_entries(cls, user_id, agent_id, repository_id, snapshot_id, path):
@@ -142,10 +191,25 @@ class RestoreService:
         if not agent.online:
             raise RestoreServiceException("Agent is offline")
 
-        if data["mode"] != RESTORE_MODE_PLAIN_FILE:
+        allowed = {mode["value"] for mode in cls.modes_for_job(job)}
+        if "proxmox_files" in allowed:
+            allowed.add("proxmox_prepare")
+        if data["mode"] not in allowed:
             raise RestoreServiceException("Unsupported restore mode")
 
-        cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
+        proxmox = data["mode"] != RESTORE_MODE_PLAIN_FILE
+        if proxmox and (agent.protocol_version or 0) < 2:
+            raise RestoreServiceException("Update the agent to use Proxmox restore")
+        snapshot = cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
+        if proxmox:
+            cls._annotate_proxmox_snapshots(job, repository, [snapshot])
+            if not snapshot["proxmox_archive"] or snapshot.get("restore_error"):
+                raise RestoreServiceException(snapshot.get("restore_error") or "Select a Proxmox QEMU archive snapshot")
+
+        keys = ("mode", "snapshot_id", "restore_location", "include_paths", "overwrite_policy")
+        if proxmox:
+            keys += ("vmid", "storage", "unique", "session_id", "volume")
+        parameters = {key: data[key] for key in keys if key in data}
 
         operation = start_agent_operation(
             agent=agent,
@@ -155,14 +219,7 @@ class RestoreService:
             source=AgentOperationSource.manual,
             msg="Restore started",
             log_message="Restore queued",
-            data={
-                "mode": data["mode"],
-                "job_uuid": job.uuid,
-                "snapshot_id": data["snapshot_id"],
-                "restore_location": data["restore_location"],
-                "include_paths": data["include_paths"],
-                "overwrite_policy": data["overwrite_policy"],
-            },
+            data={**parameters, "job_uuid": job.uuid},
         )
 
         response = AgentService.run_restore(
@@ -172,12 +229,8 @@ class RestoreService:
             job_uuid=job.uuid,
             repository_id=repository.id,
             repository=cls._repository_payload(repository, agent),
-            mode=data["mode"],
-            snapshot_id=data["snapshot_id"],
-            restore_location=data["restore_location"],
-            include_paths=data["include_paths"],
-            overwrite_policy=data["overwrite_policy"],
             expected_job_tag=cls.job_tag(job),
+            **parameters,
         )
         if is_agent_timeout_response(response):
             return unknown_agent_operation_dispatch_response(

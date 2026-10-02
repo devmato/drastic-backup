@@ -1,4 +1,8 @@
+from contextlib import nullcontext
+from threading import Event
 from types import SimpleNamespace
+
+import pytest
 
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.services.restore import RestoreService
@@ -7,6 +11,8 @@ from drastic_common.restic.exceptions import ResticError
 
 class FakeReport:
     def __init__(self):
+        self.uuid = "operation-1"
+        self.cancel_event = Event()
         self.final_state = AgentReportState.success
         self.logs = []
         self.data = {}
@@ -21,6 +27,9 @@ class FakeReport:
 
 
 class FakeRestic:
+    def operation_cancellation(self, event):
+        return nullcontext()
+
     def __init__(self, snapshots, restore_error=None):
         self._snapshots = snapshots
         self._restore_error = restore_error
@@ -34,6 +43,12 @@ class FakeRestic:
         if self._restore_error:
             raise self._restore_error
         return '{"message_type":"summary"}'
+
+
+@pytest.mark.parametrize("target", ["/", "//", "///"])
+def test_agent_rejects_all_root_target_spellings(target):
+    with pytest.raises(ValueError, match="Restoring to /"):
+        RestoreService._normalize_restore_target(target)
 
 
 def run_restore(monkeypatch, tmp_path, snapshots, **overrides):

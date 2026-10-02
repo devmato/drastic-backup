@@ -46,6 +46,21 @@ class ResticApi:
     def repository(self):
         return getattr(self._state, "repository", None)
 
+    @contextmanager
+    def operation_cancellation(self, event):
+        """Scope cancellation to this worker, without changing other repository users."""
+        previous = getattr(self._state, "cancellation_event", None)
+        self._state.cancellation_event = event
+        try:
+            yield
+        finally:
+            self._state.cancellation_event = previous
+
+    def _cancelled(self):
+        event = getattr(self._state, "cancellation_event", None)
+        return bool((event is not None and event.is_set()) or
+                    (self.cancellation_event is not None and self.cancellation_event.is_set()))
+
     def __make_command(self, *args, **kwargs):
         cmd = [self.binary_path]
         cmd.extend(["--json"])
@@ -195,7 +210,7 @@ class ResticApi:
         last_callback_invoked = None
         stream_closed = False
         while not (stream_closed and process.poll() is not None):
-            if self.cancellation_event is not None and self.cancellation_event.is_set():
+            if self._cancelled():
                 raise ResticCancelledError("Restic operation was cancelled")
             if deadline is not None and time.monotonic() >= deadline:
                 raise ResticTimeoutError("Restic operation timed out")
@@ -240,6 +255,8 @@ class ResticApi:
         parser=parsers.default,
     ):
         logging.debug(f"Executing command: {cmd}")
+        if self._cancelled():
+            raise ResticCancelledError("Restic operation was cancelled")
         callback_args = dict(callback_args or {})
         deadline = self.__deadline()
 

@@ -2,7 +2,7 @@ import json
 import logging
 from collections import deque
 from datetime import datetime
-from threading import RLock
+from threading import Event, RLock
 from uuid import uuid4
 
 from drastic_agent.agent.database import agent_operation_artifacts, agent_operations, db
@@ -58,6 +58,7 @@ class AgentOperation:
         persist=True,
     ):
         self._lock = RLock()
+        self.cancel_event = Event()
         self.uuid = operation_uuid or str(uuid4())
         self.type = type
         self.source = source
@@ -477,6 +478,7 @@ class AgentOperation:
         with cls._registry_lock:
             operations = list(cls.running_operations.values())
         for operation in operations:
+            operation.cancel_event.set()
             operation.log_message(message, final_state=AgentOperationState.cancelled)
 
     @classmethod

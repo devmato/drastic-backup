@@ -253,6 +253,116 @@ The default `fail_if_exists` policy refuses to start when a selected destination
 
 If restic fails after writing has started, the operation remains `failed` and is marked with `partial_failure` and `destination_may_contain_restored_data`. dRastic does not roll back files already written. Inspect or clean the destination before retrying. Before restoring into production paths, prefer a temporary restore location and validate the restored data.
 
+### Proxmox VM and Guest File Restore
+
+Open **Backup Jobs → Restore** (the purple restore icon). Proxmox jobs offer
+**Whole VM**, **Files from VM**, and **Archive files**. Snapshots show their source
+VMID, guest name when available, and timestamp. VM modes exclude manifest snapshots
+and archives known to have failed. Successfully backed-up VMs from a partially
+failed multi-VM operation remain usable.
+
+The target agent must be online, updated to agent protocol 2 or later, running
+directly on the Proxmox node with root privileges, and assigned the source
+repository. Another node can be selected; the original backup agent need not be
+online. Local `pvesh`, `vma`, and `qmrestore` perform host operations, so restoring
+does not require the original node's API credentials.
+
+**Whole VM**
+
+1. Choose the restore agent, repository and VM snapshot.
+2. Select a free target VMID and an active storage supporting VM images. The
+   original VMID can be reused only when it is free, including across the cluster.
+3. Keep **Generate new MAC addresses** enabled for a separate recovered VM, or
+   disable it when deliberately preserving the original network identity.
+4. Start the restore. The agent downloads and verifies the VMA archive, then runs
+   `qmrestore` without force/overwrite and without starting the VM.
+5. Check the operation result and the restored VM configuration in Proxmox before
+   starting it. Referenced bridges, ISO images and other host resources must be
+   available on the destination node.
+
+**Files from VM**
+
+Install the optional native dependency on the restore host:
+
+```bash
+apt install python3-guestfs libguestfs-tools
+libguestfs-test-tool
+```
+
+The agent invokes the host's `/usr/bin/python3` for the system libguestfs binding;
+it does not install another Python package into its virtual environment.
+
+1. Choose the agent, repository and VM snapshot, then **Prepare file browser**.
+2. Wait for archive download, verification, extraction and filesystem inspection.
+   Preparation is an asynchronous restore operation and can be cancelled.
+3. Choose a guest filesystem/volume, then select files or directories. Linux LVM
+   logical volumes and additional Windows NTFS partitions appear separately.
+4. Choose an absolute destination directory on the agent and start the export.
+   Paths are relative to the selected volume's root, not Windows drive letters or
+   mountpoints from the guest's `/etc/fstab`.
+
+The worker supports ext2/3/4, XFS, Btrfs, NTFS, FAT and exFAT when supported by the
+host's libguestfs appliance. Encrypted, unsupported or unmountable volumes display
+their reason and cannot be selected. Guest filesystems are opened read-only in
+an isolated libguestfs appliance; no guest filesystem is mounted in the host
+kernel. An appliance is started and closed for each browse/export request, so
+directory listing can take several seconds.
+
+Export preserves regular file contents, basic file permissions/timestamps and
+symbolic links without following them into the host filesystem. It strips
+setuid/setgid bits and reports skipped sockets, device nodes and FIFOs as a
+warning. This is a file recovery export, not a Windows ACL/alternate-stream,
+Linux ownership/xattr, or full filesystem metadata reconstruction.
+
+**Workspace, progress and cleanup**
+
+- Temporary data uses `$DRASTIC_AGENT_DATA_DIR/restore-work`. Set
+  `DRASTIC_RESTORE_WORK_DIR` in the agent's environment to a dedicated absolute
+  directory on a sufficiently large filesystem. Restart the agent after changing
+  it. The directory is private to the agent and must not be shared by multiple
+  agent instances.
+- Whole-VM restore needs workspace for the VMA archive and destination storage
+  for the disks. File browsing needs space for the archive plus extracted disks,
+  even when exporting one small file. Capacity checks conservatively use the
+  disks' logical sizes; allow additional space for the export itself.
+- Prepared images expire after one hour without a browse/export request. They
+  are removed after export (including failed/cancelled exports), when closing the dialog, on periodic
+  expiry, and on agent restart. Active requests lock their workspace against
+  cleanup. **Prepare again** recreates an expired workspace.
+- The existing operation page shows phases, archive download progress and logs.
+  **Cancel restore** stops active work and also applies between subprocesses.
+- Failed/cancelled imports can leave a partial VM and allocated volumes; failed
+  exports can leave files, including temporary `.drastic-*` files. The report
+  identifies partial destination data. Inspect and clean it before retrying;
+  dRastic never destroys a destination VM automatically.
+
+### Proxmox Restore Integration Check
+
+The ordinary tests mock Proxmox tools and cover collision checks, command flags,
+workspace ownership/expiry, failure cleanup, cancellation and symlink-safe file
+export. For a real round trip, run the opt-in agent integration test on a test
+Proxmox node with `restic`, `vma`, `qmrestore` and the guestfs dependencies installed:
+
+```bash
+export DRASTIC_TEST_VMA=/path/to/uncompressed-test-vm.vma
+export DRASTIC_TEST_GUEST_VOLUME=/dev/vg/root
+export DRASTIC_TEST_GUEST_FILE=/etc/hostname
+export DRASTIC_TEST_GUEST_SHA256=<sha256-of-the-original-file>
+# These two settings authorize creating a stopped VM under this FREE VMID:
+export DRASTIC_TEST_RESTORE_VMID=990001
+export DRASTIC_TEST_RESTORE_STORAGE=local-lvm
+cd apps/agent
+.venv/bin/python -m pytest tests/test_proxmox_restore_integration.py -v
+```
+
+The tests back up the supplied VMA into a temporary real restic repository,
+restore/export a selected file and compare its SHA-256, and optionally restore
+a whole stopped VM. Repeat with an unencrypted Windows/NTFS test archive and a
+known file, for example `/Users/Test/Documents/restore-check.txt`, using its
+volume device and a different free VMID. Use `--basetemp` on a sufficiently large
+filesystem if the system temporary directory is too small. The test VMs are left
+stopped for manual boot verification and subsequent removal in Proxmox.
+
 ## Create a User Recovery Export
 
 A signed-in user can generate a Recovery Export repeatedly from the user menu after re-entering the account password. The downloaded ZIP contains a standalone `recovery.html` that works offline and includes plaintext repository passwords, provider environment values, and configuration for agents and assignments, repositories, retention policies, jobs and actions, and schedules.

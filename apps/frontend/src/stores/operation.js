@@ -16,6 +16,11 @@ export const useOperationStore = defineStore('operation', () => {
     return response.data
   }
 
+  async function cancelRestore(operationId) {
+    const response = await api.post(`/restores/${operationId}/cancel`)
+    return response.data
+  }
+
   async function startRepositoryCheck({ repositoryId, agentId, readDataSubset = null }) {
     const response = await api.post(`/repositories/${repositoryId}/check`, {
       agent_id: agentId,
@@ -29,5 +34,5 @@ export const useOperationStore = defineStore('operation', () => {
     return response.data
   }
 
-  return { startBackupJob, startRestore, startRepositoryCheck, startRepositoryUnlock }
+  return { startBackupJob, startRestore, cancelRestore, startRepositoryCheck, startRepositoryUnlock }
 })

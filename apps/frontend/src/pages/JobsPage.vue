@@ -68,8 +68,8 @@
               <q-btn v-else-if="props.row.agent_online" flat dense icon="play_arrow" color="blue" @click="showRunDialog(props.row)">
                 <q-tooltip>Run job</q-tooltip>
               </q-btn>
-              <q-btn flat dense icon="restore" color="purple" @click="showRestore(props.row)">
-                <q-tooltip>Restore files</q-tooltip>
+              <q-btn flat dense icon="restore" color="purple" aria-label="Restore backup" @click="showRestore(props.row)">
+                <q-tooltip>Restore</q-tooltip>
               </q-btn>
               <q-btn v-if="props.row.agent_online" flat dense icon="edit" @click="showEditJob(props.row)">
                 <q-tooltip>Edit job</q-tooltip>

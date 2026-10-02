@@ -10,7 +10,7 @@ def normalize_restore_target(value):
         raise ValidationError("Restore location must be an absolute POSIX path")
     if ".." in value.split("/"):
         raise ValidationError("Restore location must not contain traversal segments")
-    normalized = posixpath.normpath(value)
+    normalized = posixpath.normpath("/" + value.lstrip("/"))
     if normalized == "/":
         raise ValidationError("Restoring to / is not allowed")
     return normalized
@@ -86,25 +86,64 @@ class RestoreStartInputSchema(Schema):
     job_id = fields.Integer(required=True)
     agent_id = fields.Integer(required=True)
     repository_id = fields.Integer(required=True)
-    mode = fields.String(required=True, validate=validate.OneOf(("plain_file",)))
+    mode = fields.String(required=True, validate=validate.OneOf(("plain_file", "proxmox_vm", "proxmox_prepare", "proxmox_files")))
     snapshot_id = fields.String(required=True, validate=validate.Length(min=1))
-    restore_location = fields.String(required=True, validate=validate.Length(min=1))
+    restore_location = fields.String(load_default=None, allow_none=True, validate=validate.Length(min=1))
     include_paths = fields.List(
         fields.String(validate=validate.Length(min=1)),
-        required=True,
-        validate=validate.Length(min=1),
+        load_default=list,
     )
     overwrite_policy = fields.String(
         load_default="fail_if_exists",
         validate=validate.OneOf(("fail_if_exists", "overwrite")),
     )
+    vmid = fields.Integer(strict=True, validate=validate.Range(min=100, max=999999999))
+    storage = fields.String(validate=validate.Regexp(r"^[A-Za-z][A-Za-z0-9_.-]*$"))
+    unique = fields.Boolean(load_default=True)
+    session_id = fields.UUID()
+    volume = fields.String(validate=validate.Length(min=1, max=255))
 
     @post_load
     def normalize_paths(self, data, **kwargs):
-        data["restore_location"] = normalize_restore_target(data["restore_location"])
+        if data["mode"] in ("plain_file", "proxmox_files"):
+            if not data["restore_location"] or not data["include_paths"]:
+                raise ValidationError("Restore location and at least one include path are required")
+            data["restore_location"] = normalize_restore_target(data["restore_location"])
+        if data["mode"] == "proxmox_vm" and ("vmid" not in data or not data.get("storage")):
+            raise ValidationError("VMID and target storage are required")
+        if data["mode"] == "proxmox_files":
+            if not data.get("session_id") or not data.get("volume"):
+                raise ValidationError("Prepared restore session and volume are required")
+        if "session_id" in data:
+            data["session_id"] = str(data["session_id"])
         data["include_paths"] = list(
             dict.fromkeys(normalize_include_path(path) for path in data["include_paths"])
         )
+        return data
+
+
+class ProxmoxRestoreInputSchema(Schema):
+    class Meta:
+        unknown = EXCLUDE
+
+    action = fields.String(required=True, validate=validate.OneOf(("options", "entries", "close")))
+    agent_id = fields.Integer(required=True)
+    job_id = fields.Integer()
+    repository_id = fields.Integer()
+    snapshot_id = fields.String(validate=validate.Length(min=1))
+    session_id = fields.UUID()
+    volume = fields.String(validate=validate.Length(min=1, max=255))
+    path = fields.String(load_default="/")
+
+    @post_load
+    def validate_session(self, data, **kwargs):
+        if data["action"] != "options":
+            if not all(data.get(key) for key in ("job_id", "repository_id", "snapshot_id", "session_id")):
+                raise ValidationError("Job, repository, snapshot and restore session are required")
+            data["session_id"] = str(data["session_id"])
+            if data["action"] == "entries" and not data.get("volume"):
+                raise ValidationError("Guest volume is required")
+        data["path"] = normalize_include_path(data["path"])
         return data
 
 

@@ -14,6 +14,9 @@
       <div class="col-auto">
         <q-btn color="primary" icon="refresh" label="Refresh" :loading="loading" @click="loadOperation()" />
       </div>
+      <div v-if="isRestoreOperation && operation?.state === 'running'" class="col-auto">
+        <q-btn outline color="negative" label="Cancel restore" :loading="cancelling" @click="cancelRestore" />
+      </div>
     </div>
 
     <q-inner-loading :showing="loading && !operation" />
@@ -40,7 +43,7 @@
                   <q-badge color="white" text-color="black" :label="progressLabel" />
                 </div>
               </q-linear-progress>
-              <div v-if="operation.state === 'running' && proxmoxProgress" class="text-caption">{{ progressBasis }}</div>
+              <div v-if="operation.state === 'running' && progressBasis" class="text-caption" role="status">{{ progressBasis }}</div>
             </div>
 
             <div>
@@ -178,12 +181,28 @@ import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
+import { useOperationStore } from 'stores/operation'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const route = useRoute()
 const $q = useQuasar()
 const agentStore = useAgentStore()
+const operationStore = useOperationStore()
+const cancelling = ref(false)
+
+async function cancelRestore() {
+  cancelling.value = true
+  try {
+    await operationStore.cancelRestore(operation.value.id)
+    $q.notify({ message: 'Restore cancellation requested', color: 'info' })
+    await loadOperation()
+  } catch (e) {
+    if (!shouldIgnoreApiError(e)) $q.notify({ message: getApiErrorMessage(e), color: 'negative' })
+  } finally {
+    cancelling.value = false
+  }
+}
 
 const operation = ref(null)
 const loading = ref(false)
@@ -259,13 +278,18 @@ const progressSource = computed(() => {
       return { value: 1 }
     }
 
+    if (operationData.value.restore_phase && operationData.value.restore_phase !== 'Restoring VMA archive') {
+      return { value: null, basis: operationData.value.restore_phase }
+    }
+
     if (restoreBytesTotal.value && restoreBytesTotal.value > 0) {
       return {
         value: clampProgress((restoreBytesRestored.value || 0) / restoreBytesTotal.value),
+        basis: operationData.value.restore_phase,
       }
     }
 
-    return { value: null }
+    return { value: null, basis: operationData.value.restore_phase }
   }
 
   if (['success', 'warning'].includes(operation.value?.state)) {
@@ -306,6 +330,10 @@ const metricCards = computed(() => {
   }
 
   if (isRestoreOperation.value) {
+    if (operationData.value.target_vmid) {
+      metrics.push({ label: 'Target VM', value: operationData.value.target_vmid })
+      metrics.push({ label: 'Target storage', value: operationData.value.target_storage })
+    }
     if (restoreBytesRestored.value !== null) {
       metrics.push({ label: 'Data restored', value: formatBytes(restoreBytesRestored.value) })
     }

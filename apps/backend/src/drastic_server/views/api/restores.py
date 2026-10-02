@@ -4,6 +4,7 @@ from flask_smorest import Blueprint, abort
 
 from drastic_server.schemas.common import MessageSchema
 from drastic_server.schemas.restore import (
+    ProxmoxRestoreInputSchema,
     RestoreEntriesQuerySchema,
     RestoreEntriesResponseSchema,
     RestoreOptionsQuerySchema,
@@ -43,6 +44,17 @@ class RestoreSnapshots(MethodView):
     def get(self, args):
         try:
             return RestoreService.list_snapshots(int(get_jwt_identity()), **args)
+        except (RestoreServiceException, TimeoutError) as exc:
+            _handle_restore_error(exc)
+
+
+@blp.route("/proxmox")
+class ProxmoxRestore(MethodView):
+    @jwt_required()
+    @blp.arguments(ProxmoxRestoreInputSchema)
+    def post(self, data):
+        try:
+            return RestoreService.proxmox_action(int(get_jwt_identity()), data)
         except (RestoreServiceException, TimeoutError) as exc:
             _handle_restore_error(exc)
 

@@ -2,6 +2,10 @@ import { defineStore } from 'pinia'
 import { api } from 'boot/axios'
 
 export const useRestoreStore = defineStore('restore', () => {
+  async function proxmoxAction(data) {
+    const response = await api.post('/restores/proxmox', data, { timeout: 125000 })
+    return response.data
+  }
   async function getSnapshots({ jobId, agentId, repositoryId }) {
     const params = new URLSearchParams({
       job_id: jobId,
@@ -23,5 +27,5 @@ export const useRestoreStore = defineStore('restore', () => {
     return response.data.entries || []
   }
 
-  return { getSnapshots, getEntries }
+  return { getSnapshots, getEntries, proxmoxAction }
 })

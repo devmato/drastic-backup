@@ -445,6 +445,15 @@ class Agent:
         while not self.__shutdown_event.wait(sleep_time):
             now = datetime.now()
 
+            if monotonic() >= getattr(self, "_next_restore_cleanup", 0):
+                self._next_restore_cleanup = monotonic() + 60
+                try:
+                    from drastic_agent.services.proxmox_restore import cleanup_workspaces
+
+                    cleanup_workspaces()
+                except Exception:
+                    logging.exception("Restore workspace cleanup failed")
+
             if not self.__check_update():
                 self.__run_due_schedules(now)
 
@@ -1075,6 +1084,8 @@ class Agent:
             resources.add(("job", command_args["job_id"]))
         if command_args.get("repository_id") is not None:
             resources.add(("repository", command_args["repository_id"]))
+        if command_name == AgentCommandName.run_restore.value and command_args.get("mode") == "proxmox_vm":
+            resources.add(("proxmox-vmid", command_args.get("vmid")))
         future = self.__execution_manager().submit(
             runner,
             resources=resources,
@@ -1403,6 +1414,9 @@ class Agent:
         self.__recover_schedule_runs()
         AgentReport.recover_interrupted()
         AgentReport.load_queue()
+        from drastic_agent.services.proxmox_restore import cleanup_workspaces
+
+        cleanup_workspaces(all_workspaces=True)
 
         # The installer still performs startup checks after restarting this service.
         if self.install_type == "git":
@@ -1441,6 +1455,10 @@ class Agent:
 
         if hasattr(self, "_Agent__execution"):
             self.__execution.shutdown(wait=True)
+
+        from drastic_agent.services.proxmox_restore import cleanup_workspaces
+
+        cleanup_workspaces(all_workspaces=True)
 
         # Finalize any operations which did not exit through their worker.
         AgentReport.save_queue()
@@ -2032,6 +2050,37 @@ class Agent:
     def cmd_run_restore(self, **kwargs):
         return RestoreService.run_restore(agent=self, **kwargs)
 
+    def cmd_proxmox_restore(self, action, **kwargs):
+        from drastic_agent.services.proxmox_restore import (
+            guest_tools_available,
+            host_options,
+            session_action,
+        )
+
+        report = AgentReport.command_report()
+        cancelled = getattr(self, "_Agent__shutdown_event", Event()).is_set
+        try:
+            if action == "options":
+                report.data = host_options(cancelled)
+                try:
+                    guest_tools_available()
+                    report.data["guest_files_error"] = None
+                except ValueError as exc:
+                    report.data["guest_files_error"] = str(exc)
+            elif action == "entries":
+                future = self.__execution_manager().submit(
+                    session_action, action, cancelled=cancelled,
+                    resources={("restore-session", kwargs.get("session_id"))}, **kwargs,
+                )
+                if future is None:
+                    raise ValueError("Execution capacity or restore workspace is busy")
+                report.data = future.result()
+            else:
+                report.data = session_action(action, **kwargs)
+        except Exception as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        return report.finish()
+
     def cmd_cancel_restore(self, operation_uuid=None, report_uuid=None):
         operation_uuid = operation_uuid or report_uuid
         report = AgentReport.command_report()
@@ -2059,28 +2108,6 @@ class Agent:
             return report.finish()
 
         restore_report.log_message(f"Canceling restore {operation_uuid} by user request")
-        pid = self.__wait_for_report_pid(restore_report)
-        if not pid:
-            report.log_message(
-                f"Failed to cancel restore {operation_uuid}. No restic process became available",
-                final_state=AgentReportState.failed,
-            )
-            return report.finish()
-
-        try:
-            cancelled = self.__resticapi.cancel_process(pid)
-        except Exception as exc:
-            logging.exception("Failed to cancel restic process %s", pid)
-            cancelled = False
-            cancel_reason = str(exc)
-        else:
-            cancel_reason = f"Restic process {pid} is no longer running"
-        if not cancelled:
-            report.log_message(
-                f"Failed to cancel restore {operation_uuid}. {cancel_reason}",
-                final_state=AgentReportState.failed,
-            )
-            return report.finish()
-        restore_report.final_state = AgentReportState.cancelled
-        report.log_message(f"Canceled restore {operation_uuid}")
+        restore_report.cancel_event.set()
+        report.log_message(f"Cancellation requested for restore {operation_uuid}")
         return report.finish()

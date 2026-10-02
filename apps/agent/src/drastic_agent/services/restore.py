@@ -3,7 +3,8 @@ import posixpath
 
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.agent.report import AgentReport
-from drastic_common.restic.exceptions import ResticError
+from drastic_common.process import ProcessCancelledError
+from drastic_common.restic.exceptions import ResticCancelledError
 
 
 class RestoreService:
@@ -23,7 +24,7 @@ class RestoreService:
             raise ValueError("Restore location must be an absolute POSIX path")
         if ".." in value.split("/"):
             raise ValueError("Restore location must not contain traversal segments")
-        normalized = posixpath.normpath(value)
+        normalized = posixpath.normpath("/" + value.lstrip("/"))
         if normalized == "/":
             raise ValueError("Restoring to / is not allowed")
         return normalized
@@ -76,6 +77,24 @@ class RestoreService:
         return normalized
 
     @staticmethod
+    def _restore_files(agent, report, snapshot_id, restore_location, include_paths, overwrite_policy):
+        RestoreService._reject_symlink_components(restore_location)
+        os.makedirs(restore_location, mode=0o700, exist_ok=True)
+        RestoreService._reject_symlink_components(restore_location)
+        for path in include_paths:
+            destination = os.path.join(restore_location, path.lstrip("/"))
+            RestoreService._reject_symlink_components(os.path.dirname(destination))
+            if overwrite_policy == "fail_if_exists" and os.path.lexists(destination):
+                raise ValueError(f"Restore destination already exists: {path}")
+        report.data["destination_may_contain_restored_data"] = True
+        status = agent.resticapi.restore(
+            snapshot_id=snapshot_id, target=restore_location, include_paths=include_paths,
+            overwrite_policy=overwrite_policy, callback=AgentReport.process_restore_status,
+            callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500,
+        )
+        AgentReport.process_restore_status(status, operation_uuid=report.uuid)
+
+    @staticmethod
     def run_restore(
         agent,
         operation_uuid,
@@ -84,11 +103,16 @@ class RestoreService:
         repository_id,
         repository,
         snapshot_id,
-        restore_location,
-        include_paths,
+        restore_location=None,
+        include_paths=None,
         mode="plain_file",
         overwrite_policy="fail_if_exists",
         expected_job_tag=None,
+        vmid=None,
+        storage=None,
+        unique=True,
+        session_id=None,
+        volume=None,
     ):
         report = AgentReport.restore_report(
             report_uuid=operation_uuid,
@@ -101,75 +125,57 @@ class RestoreService:
                 "restore_location": restore_location,
                 "include_paths": include_paths,
                 "overwrite_policy": overwrite_policy,
+                "target_vmid": vmid,
+                "target_storage": storage,
             },
         )
-        report.log_message(
-            f"Starting restore of {len(include_paths)} item(s) from snapshot {snapshot_id} to {restore_location}"
-        )
+        report.log_message(f"Starting {mode} restore from snapshot {snapshot_id}")
 
-        restore_started = False
         try:
-            restore_location = RestoreService._normalize_restore_target(restore_location)
-            include_paths = RestoreService._normalize_include_paths(include_paths)
+            if mode not in ("plain_file", "proxmox_vm", "proxmox_prepare", "proxmox_files"):
+                raise ValueError("Unsupported restore mode")
+            if mode in ("plain_file", "proxmox_files"):
+                restore_location = RestoreService._normalize_restore_target(restore_location)
+                include_paths = RestoreService._normalize_include_paths(include_paths)
             if overwrite_policy not in ("fail_if_exists", "overwrite"):
                 raise ValueError("Unsupported overwrite policy")
             if expected_job_tag != f"job_uuid:{job_uuid}":
                 raise ValueError("Restore job tag does not match the job")
 
-            agent.configure_repository(repository)
-            snapshots = agent.resticapi.snapshots(tags=[expected_job_tag]) or []
-            if isinstance(snapshots, dict):
-                snapshots = [snapshots]
-            if not any(
-                snapshot.get("id") == snapshot_id
-                and expected_job_tag in (snapshot.get("tags") or [])
-                for snapshot in snapshots
-            ):
-                raise ValueError("Snapshot does not belong to this job")
+            with agent.resticapi.operation_cancellation(report.cancel_event):
+                agent.configure_repository(repository)
+                snapshots = agent.resticapi.snapshots(tags=[expected_job_tag]) or []
+                if isinstance(snapshots, dict):
+                    snapshots = [snapshots]
+                snapshot = next((s for s in snapshots if s.get("id") == snapshot_id
+                                 and expected_job_tag in (s.get("tags") or [])), None)
+                if snapshot is None:
+                    raise ValueError("Snapshot does not belong to this job")
+                if mode == "plain_file":
+                    RestoreService._restore_files(agent, report, snapshot_id, restore_location,
+                                                  include_paths, overwrite_policy)
+                else:
+                    from drastic_agent.services.proxmox_restore import run_proxmox_restore
 
-            RestoreService._reject_symlink_components(restore_location)
-            os.makedirs(restore_location, mode=0o700, exist_ok=True)
-            RestoreService._reject_symlink_components(restore_location)
-
-            if overwrite_policy == "fail_if_exists":
-                collisions = []
-                for path in include_paths:
-                    destination = os.path.join(restore_location, path.lstrip("/"))
-                    RestoreService._reject_symlink_components(os.path.dirname(destination))
-                    if os.path.lexists(destination):
-                        collisions.append(path)
-                if collisions:
-                    raise ValueError(f"Restore destination already exists: {collisions[0]}")
-            else:
-                for path in include_paths:
-                    destination = os.path.join(restore_location, path.lstrip("/"))
-                    RestoreService._reject_symlink_components(os.path.dirname(destination))
-
-            restore_started = True
-            restic_status = agent.resticapi.restore(
-                snapshot_id=snapshot_id,
-                target=restore_location,
-                include_paths=include_paths,
-                overwrite_policy=overwrite_policy,
-                callback=AgentReport.process_restore_status,
-                callback_args={"operation_uuid": operation_uuid},
-                callback_pid=True,
-                callback_throttle=500,
-            )
-            AgentReport.process_restore_status(restic_status, operation_uuid=operation_uuid)
-            report.data["restore_completed"] = True
-        except (ResticError, ValueError) as exc:
-            if restore_started:
-                report.data["partial_failure"] = True
-                report.data["destination_may_contain_restored_data"] = True
-            report.log_message(f"Error during restore: {exc}", final_state=AgentReportState.failed)
+                    run_proxmox_restore(
+                        agent, report, snapshot, mode=mode,
+                        identity={"job_uuid": job_uuid, "repository_id": repository_id, "snapshot_id": snapshot_id},
+                        vmid=vmid, storage=storage, unique=unique, session_id=session_id, volume=volume,
+                        include_paths=include_paths, restore_location=restore_location,
+                        overwrite_policy=overwrite_policy)
+                if report.cancel_event.is_set():
+                    raise ProcessCancelledError("Restore cancelled")
+                report.data["restore_completed"] = True
+                report.data.pop("destination_may_contain_restored_data", None)
+        except (ProcessCancelledError, ResticCancelledError) as exc:
+            report.log_message(str(exc), final_state=AgentReportState.cancelled)
         except Exception as exc:
-            if restore_started:
-                report.data["partial_failure"] = True
-                report.data["destination_may_contain_restored_data"] = True
-            report.log_message(
-                f"Unexpected error during restore: {exc}", final_state=AgentReportState.failed
-            )
+            state = AgentReportState.cancelled if report.cancel_event.is_set() else AgentReportState.failed
+            report.log_message(f"Error during restore: {exc}", final_state=state)
+
+        if report.data.get("destination_may_contain_restored_data"):
+            report.data["partial_failure"] = True
+            report.log_message("Destination may contain partially restored data; inspect it before retrying")
 
         report.log_message(f"Restore finished with state: {report.final_state.name}")
         return report.finish()

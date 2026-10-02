@@ -14,6 +14,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
     computed, ref,
     useRoute: () => route,
     useAgentStore: () => store,
+    useOperationStore: () => ({}),
     useQuasar: () => ({ notify: () => assert.fail('background error notification') }),
     subscribeToSocketEvents: async () => () => {},
     watch: () => {},
@@ -102,6 +103,13 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.metricCards.value, 'Restore target'), '/restore')
   assert.equal(field(page.technicalDetails.value, 'Snapshot'), 'restore-snapshot')
   assert.equal(page.progressValue.value, 1)
+
+  page.operation.value = {
+    id: 1, type: 'restore', state: 'running',
+    data: { restore_phase: 'Importing VM 101 into local-lvm', restore_bytes_restored: 1024, restore_bytes_total: 1024, target_vmid: 101 },
+  }
+  assert.equal(page.progressValue.value, null)
+  assert.equal(field(page.metricCards.value, 'Target VM'), 101)
 
   page.operation.value = {
     id: 1, type: 'backup', state: 'running',

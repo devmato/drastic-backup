@@ -4,7 +4,7 @@
       <q-card-section class="row items-start q-col-gutter-sm q-pa-lg">
         <div class="col">
           <div class="text-h6">Restore {{ job?.name }}</div>
-          <div class="text-caption text-grey-7">Restore selected files or directories to a local path on the target agent.</div>
+          <div class="text-caption text-grey-7">{{ job?.type === 'proxmox' ? 'Restore a VM or export files from its backup.' : 'Restore selected files or directories to a local path on the target agent.' }}</div>
         </div>
       </q-card-section>
 
@@ -12,13 +12,13 @@
         <q-card-section class="q-px-lg q-pt-none q-pb-md">
           <div class="row q-col-gutter-sm items-start">
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" />
+              <q-select outlined v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
             </div>
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" />
+              <q-select outlined v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
             </div>
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" disable />
+              <q-select outlined v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" :disable="modeOptions.length === 1 || submitting" />
             </div>
           </div>
 
@@ -31,17 +31,26 @@
             emit-value
             map-options
             :loading="loadingSnapshots"
-            :disable="!canLoadSnapshots"
+            :disable="!canLoadSnapshots || submitting"
             :rules="[val => !!val || 'Required']"
           >
             <template v-slot:after>
-              <q-btn flat dense icon="refresh" :disable="!canLoadSnapshots" :loading="loadingSnapshots" @click="loadSnapshots">
+              <q-btn flat dense icon="refresh" :disable="!canLoadSnapshots || submitting" :loading="loadingSnapshots" @click="loadSnapshots">
                 <q-tooltip>Reload snapshots</q-tooltip>
               </q-btn>
             </template>
           </q-select>
 
-          <div class="q-mt-md">
+          <ProxmoxRestorePanel
+            v-if="dialogVisible && isProxmoxMode && selectedSnapshotId"
+            :key="sourceKey"
+            ref="proxmoxPanel"
+            v-model="proxmoxSelection"
+            :source="restoreSource"
+            :mode="selectedMode"
+            :disabled="submitting"
+          />
+          <div v-if="!isProxmoxMode" class="q-mt-md">
             <PathSelectionPanel
               v-if="selectedSnapshotId"
               mode="include-only"
@@ -59,7 +68,7 @@
             <q-banner v-else class="bg-grey-2 text-grey-8">Select a snapshot to browse files.</q-banner>
           </div>
 
-          <q-input class="q-mt-md" outlined v-model="restoreLocation" label="Restore location on target agent" :rules="[val => !!val || 'Required']">
+          <q-input v-if="isFileMode" class="q-mt-md" outlined v-model="restoreLocation" label="Restore location on target agent" :rules="[val => !!val || 'Required']">
             <template v-slot:after>
               <q-btn flat dense icon="folder_open" :disable="!selectedAgentId" @click="showTargetBrowserDialog = true">
                 <q-tooltip>Browse target agent directories</q-tooltip>
@@ -68,13 +77,14 @@
           </q-input>
 
           <q-option-group
+            v-if="isFileMode"
             class="q-mt-md"
             v-model="overwritePolicy"
             type="radio"
             :options="overwriteOptions"
           />
           <q-checkbox
-            v-if="overwritePolicy === 'overwrite'"
+            v-if="isFileMode && overwritePolicy === 'overwrite'"
             v-model="overwriteConfirmed"
             label="I understand that existing files at the restore destination may be replaced"
           />
@@ -104,6 +114,7 @@ import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import PathSelectionPanel from 'components/PathSelectionPanel.vue'
 import RestoreTargetBrowserDialog from 'components/restore/RestoreTargetBrowserDialog.vue'
+import ProxmoxRestorePanel from 'components/restore/ProxmoxRestorePanel.vue'
 import { useRestoreStore } from 'stores/restore'
 import { useOperationStore } from 'stores/operation'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -132,17 +143,32 @@ const showTargetBrowserDialog = ref(false)
 const overwritePolicy = ref('fail_if_exists')
 const overwriteConfirmed = ref(false)
 const crossAgentConfirmed = ref(false)
+const proxmoxSelection = ref({})
+const proxmoxPanel = ref(null)
+let snapshotsRequest = 0
 
 const dialogVisible = defineModel({ type: Boolean, required: true })
 
 const agentOptions = computed(() => props.agents.filter(agent => agent.online).map(agent => ({ label: agent.hostname || `Agent #${agent.id}`, value: agent.id })))
-const repositoryOptions = computed(() => props.repositories.map(repo => ({ label: `${repo.name} (${repo.location})`, value: repo.id })))
-const modeOptions = [{ label: 'Plain file restore', value: 'plain_file' }]
+const assignedRepositories = computed(() => props.agents.find(agent => agent.id === selectedAgentId.value)?.repositories || props.repositories)
+const repositoryOptions = computed(() => assignedRepositories.value.map(repo => ({ label: `${repo.name} (${repo.location})`, value: repo.id })))
+const modeOptions = computed(() => [
+  ...(props.job?.type === 'proxmox' ? [{ label: 'Whole VM', value: 'proxmox_vm' }, { label: 'Files from VM', value: 'proxmox_files' }] : []),
+  { label: props.job?.type === 'proxmox' ? 'Archive files' : 'Plain file restore', value: 'plain_file' },
+])
+const isProxmoxMode = computed(() => selectedMode.value !== 'plain_file')
+const isFileMode = computed(() => selectedMode.value !== 'proxmox_vm')
+const restoreSource = computed(() => ({ job_id: props.job?.id, agent_id: selectedAgentId.value, repository_id: selectedRepositoryId.value, snapshot_id: selectedSnapshotId.value }))
+const sourceKey = computed(() => `${JSON.stringify(restoreSource.value)}:${selectedMode.value}`)
 const canLoadSnapshots = computed(() => Boolean(props.job?.id && selectedAgentId.value && selectedRepositoryId.value))
-const snapshotOptions = computed(() => snapshots.value.map(snapshot => ({ label: snapshotLabel(snapshot), value: snapshot.id })))
+const snapshotOptions = computed(() => snapshots.value.filter(snapshot => !isProxmoxMode.value || (snapshot.proxmox_archive && !snapshot.restore_error)).map(snapshot => ({ label: snapshotLabel(snapshot), value: snapshot.id })))
 const isCrossAgentRestore = computed(() => Boolean(selectedAgentId.value && props.job?.agent_id && selectedAgentId.value !== props.job.agent_id))
-const canSubmit = computed(() => includePaths.value.length > 0
-  && (overwritePolicy.value !== 'overwrite' || overwriteConfirmed.value)
+const canSubmit = computed(() => Boolean(selectedSnapshotId.value)
+  && !loadingSnapshots.value && !proxmoxPanel.value?.busy
+  && (selectedMode.value === 'proxmox_vm' ? Boolean(proxmoxSelection.value.vmid && proxmoxSelection.value.storage)
+    : selectedMode.value === 'proxmox_files' ? Boolean(proxmoxSelection.value.session_id && proxmoxSelection.value.volume && proxmoxSelection.value.include_paths?.length)
+      : includePaths.value.length > 0)
+  && (!isFileMode.value || overwritePolicy.value !== 'overwrite' || overwriteConfirmed.value)
   && (!isCrossAgentRestore.value || crossAgentConfirmed.value))
 const overwriteOptions = [
   { label: 'Fail if selected files already exist (recommended)', value: 'fail_if_exists' },
@@ -150,9 +176,9 @@ const overwriteOptions = [
 ]
 
 function resetDialog() {
-  selectedAgentId.value = props.job?.agent_id || null
-  selectedRepositoryId.value = props.repositories[0]?.id || null
-  selectedMode.value = 'plain_file'
+  selectedAgentId.value = props.agents.find(agent => agent.id === props.job?.agent_id && agent.online)?.id || props.agents.find(agent => agent.online)?.id || null
+  selectedRepositoryId.value = assignedRepositories.value[0]?.id || null
+  selectedMode.value = props.job?.type === 'proxmox' ? 'proxmox_vm' : 'plain_file'
   selectedSnapshotId.value = null
   snapshots.value = []
   includePaths.value = []
@@ -164,18 +190,22 @@ function resetDialog() {
 }
 
 async function loadSnapshots() {
+  const request = ++snapshotsRequest
   if (!canLoadSnapshots.value) return
   loadingSnapshots.value = true
   try {
-    snapshots.value = await restoreStore.getSnapshots({ jobId: props.job.id, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
-    selectedSnapshotId.value = snapshots.value[0]?.id || null
+    const result = await restoreStore.getSnapshots({ jobId: props.job.id, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
+    if (request !== snapshotsRequest || !dialogVisible.value) return
+    snapshots.value = result
+    selectedSnapshotId.value = snapshotOptions.value[0]?.value || null
   } catch (e) {
+    if (request !== snapshotsRequest) return
     snapshots.value = []
     selectedSnapshotId.value = null
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load snapshots'), color: 'red', position: 'top' })
   } finally {
-    loadingSnapshots.value = false
+    if (request === snapshotsRequest) loadingSnapshots.value = false
   }
 }
 
@@ -191,15 +221,14 @@ async function submitRestore() {
   submitting.value = true
   try {
     const result = await operationStore.startRestore({
-      job_id: props.job.id,
-      agent_id: selectedAgentId.value,
-      repository_id: selectedRepositoryId.value,
+      ...restoreSource.value,
       mode: selectedMode.value,
-      snapshot_id: selectedSnapshotId.value,
-      restore_location: restoreLocation.value,
-      include_paths: includePaths.value,
+      restore_location: isFileMode.value ? restoreLocation.value : null,
+      include_paths: selectedMode.value === 'plain_file' ? includePaths.value : [],
       overwrite_policy: overwritePolicy.value,
+      ...(isProxmoxMode.value ? proxmoxSelection.value : {}),
     })
+    proxmoxPanel.value?.handOff()
     emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job.id })
     dialogVisible.value = false
   } catch (e) {
@@ -213,20 +242,32 @@ async function submitRestore() {
 function snapshotLabel(snapshot) {
   const id = snapshot.short_id || String(snapshot.id || '').slice(0, 8)
   const time = snapshot.time ? new Date(snapshot.time).toLocaleString() : 'unknown time'
-  return `${id} - ${time}`
+  const vmid = snapshot.tags?.find(tag => tag.startsWith('vmid:'))?.slice(5)
+  const guest = vmid ? `VM ${vmid}${snapshot.guest_name ? ` (${snapshot.guest_name})` : ''} — ` : ''
+  return `${guest}${time} — ${id}`
 }
 
-watch(dialogVisible, async value => {
-  if (!value) return
+watch(dialogVisible, value => {
+  if (!value) { snapshotsRequest++; return }
   resetDialog()
-  await loadSnapshots()
 })
 
-watch(selectedSnapshotId, () => {
+watch(sourceKey, () => {
   includePaths.value = []
+  proxmoxSelection.value = {}
 })
 
-watch([selectedAgentId, selectedRepositoryId], async () => {
+watch(selectedMode, () => {
+  selectedSnapshotId.value = snapshotOptions.value[0]?.value || null
+})
+
+watch(selectedAgentId, () => {
+  if (!assignedRepositories.value.some(repo => repo.id === selectedRepositoryId.value)) {
+    selectedRepositoryId.value = assignedRepositories.value[0]?.id || null
+  }
+})
+
+watch([dialogVisible, selectedAgentId, selectedRepositoryId], async () => {
   if (!dialogVisible.value) return
   snapshots.value = []
   selectedSnapshotId.value = null

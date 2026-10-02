@@ -806,34 +806,21 @@ def test_cancel_job_fails_when_no_restic_pid_becomes_available(monkeypatch):
     assert cancel_calls == []
 
 
-def test_cancel_restore_fails_when_no_restic_pid_becomes_available(monkeypatch):
+def test_cancel_restore_can_be_requested_between_processes():
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
-    AgentReport.restore_report(
+    restore_report = AgentReport.restore_report(
         report_uuid="restore-report-1",
         job_id=1,
         repository_id=2,
         data={"snapshot_id": "snap-1"},
     )
-    cancel_calls = []
-    monotonic_values = iter([0, 2])
-
-    class FakeResticApi:
-        @staticmethod
-        def cancel_process(pid):
-            cancel_calls.append(pid)
-
-    agent._Agent__resticapi = FakeResticApi()
-    monkeypatch.setenv("DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS", "1")
-    monkeypatch.setattr(agent_module, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(agent_module, "sleep", lambda seconds: None)
-
     report = Agent.cmd_cancel_restore(agent, report_uuid="restore-report-1")
 
-    assert report.final_state.name == "failed"
-    assert "No restic process became available" in report.log
-    assert cancel_calls == []
+    assert report.final_state.name == "success"
+    assert restore_report.cancel_event.is_set()
+    assert restore_report.state.name == "running"
 
 
 def test_cancel_job_only_marks_operation_cancelled_after_process_was_killed():
@@ -863,7 +850,7 @@ def test_cancel_job_only_marks_operation_cancelled_after_process_was_killed():
     assert "no longer running" in report.log
 
 
-def test_cancel_restore_marks_operation_cancelled_after_process_was_killed():
+def test_cancel_restore_leaves_terminal_reporting_to_the_worker():
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -879,18 +866,11 @@ def test_cancel_restore_marks_operation_cancelled_after_process_was_killed():
         pid=732,
     )
 
-    class RunningProcessResticApi:
-        @staticmethod
-        def cancel_process(pid):
-            assert pid == 732
-            return True
-
-    agent._Agent__resticapi = RunningProcessResticApi()
-
     report = Agent.cmd_cancel_restore(agent, operation_uuid="cancel-restore-32")
 
     assert report.final_state.name == "success"
-    assert restore_report.final_state.name == "cancelled"
+    assert restore_report.cancel_event.is_set()
+    assert restore_report.state.name == "running"
 
 
 def _queue_operation(agent, operation_uuid):

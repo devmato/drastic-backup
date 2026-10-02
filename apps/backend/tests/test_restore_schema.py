@@ -29,7 +29,7 @@ def test_restore_input_normalizes_paths_and_defaults_to_safe_overwrite_policy():
     assert data["overwrite_policy"] == "fail_if_exists"
 
 
-@pytest.mark.parametrize("target", ["relative", "/", "/srv/../etc", "/srv/\x00bad"])
+@pytest.mark.parametrize("target", ["relative", "/", "//", "///", "/srv/../etc", "/srv/\x00bad"])
 def test_restore_input_rejects_unsafe_target(target):
     with pytest.raises(ValidationError):
         RestoreStartInputSchema().load(restore_payload(restore_location=target))
