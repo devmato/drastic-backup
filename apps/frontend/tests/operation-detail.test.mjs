@@ -10,7 +10,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const route = { params: { operationId: '1', agentId: '1' }, query: {} }
   let resolveRequest
   const store = { getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
-  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
+  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
     computed, ref,
     useRoute: () => route,
     useAgentStore: () => store,
@@ -35,6 +35,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.operation.value.data.bytes_processed, 512)
   assert.equal(page.metricCards.value[0].value, '512 B')
   assert.equal(page.progressValue.value, null)
+  assert.equal(page.progressLabel.value, null)
 
   store.getOperation = async () => { throw new Error('temporary failure') }
   const previousOperation = page.operation.value
@@ -43,6 +44,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
 
   page.operation.value = { id: 1, type: 'backup', state: 'success', data: { bytes_processed: 1024, bytes_total: 2048 } }
   assert.equal(page.progressValue.value, 1)
+  assert.equal(page.progressLabel.value, '100%')
   page.operation.value.state = 'warning'
   assert.equal(page.progressValue.value, 1)
   page.operation.value.state = 'failed'
@@ -108,4 +110,9 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.metricCards.value, 'VM data processed'), '1 KiB')
   assert.equal(field(page.metricCards.value, 'Total VM size'), '2 KiB')
   assert.equal(page.progressValue.value, 0.5)
+  assert.equal(page.progressLabel.value, '50%')
+  page.operation.value.data.proxmox_progress.percent_done = 0
+  assert.equal(page.progressLabel.value, '0%')
+  page.operation.value.data.proxmox_progress.percent_done = null
+  assert.equal(page.progressLabel.value, null)
 })

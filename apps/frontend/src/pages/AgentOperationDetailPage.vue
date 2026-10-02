@@ -36,7 +36,7 @@
                 aria-label="Operation progress"
                 :aria-valuetext="progressLabel"
               >
-                <div class="absolute-full flex flex-center">
+                <div v-if="progressLabel" class="absolute-full flex flex-center">
                   <q-badge color="white" text-color="black" :label="progressLabel" />
                 </div>
               </q-linear-progress>
@@ -290,12 +290,7 @@ const progressSource = computed(() => {
 const progressValue = computed(() => progressSource.value.value)
 const progressIndeterminate = computed(() => progressValue.value === null && operation.value?.state === 'running')
 const showProgress = computed(() => !!proxmoxProgress.value || progressValue.value !== null || progressIndeterminate.value)
-const progressLabel = computed(() => {
-  if (progressIndeterminate.value) return 'Running'
-  if (proxmoxProgress.value && progressValue.value === null) return 'Unknown'
-  if (proxmoxProgress.value) return `${Math.round((progressValue.value || 0) * 100)}% (VM data)`
-  return `${Math.round((progressValue.value || 0) * 100)}%`
-})
+const progressLabel = computed(() => progressValue.value === null ? null : `${Math.round(progressValue.value * 100)}%`)
 const progressBasis = computed(() => progressSource.value.basis)
 
 const metricCards = computed(() => {
