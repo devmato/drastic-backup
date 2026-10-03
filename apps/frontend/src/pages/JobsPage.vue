@@ -70,7 +70,7 @@
           </template>
           <template v-slot:body-cell-last_run="props">
             <q-td :props="props">
-              <router-link v-if="props.row.last_operation" :to="`/agents/${props.row.agent_id}/operations/${props.row.last_operation.id}`" class="row items-center no-wrap q-gutter-x-sm text-primary" aria-label="Show latest backup operation">
+              <router-link v-if="props.row.last_operation" :to="`/agents/${props.row.agent_id}/operations/${props.row.last_operation.id}`" class="row items-center no-wrap q-gutter-x-sm text-primary" style="text-decoration: none" aria-label="Show latest backup operation">
                 <q-spinner v-if="props.row.last_operation.state === 'running'" :color="stateColor(props.row.last_operation.state)" size="sm" />
                 <q-icon v-else :name="backupStates.find(state => state.value === props.row.last_operation.state)?.icon || 'help_outline'" :color="stateColor(props.row.last_operation.state)" />
                 <span>{{ formatDate(props.row.last_operation.started) }}</span>
