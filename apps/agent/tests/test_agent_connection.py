@@ -104,7 +104,7 @@ def test_update_rejects_busy_and_unmanaged_agents(managed_agent, monkeypatch, fa
     calls = []
     def run(command, **kwargs):
         calls.append(command)
-        if failure == "preflight":
+        if failure in {"preflight", "docker"}:
             raise subprocess.CalledProcessError(1, command)
     monkeypatch.setattr(agent_module.subprocess, "run", run)
     release = Event()
@@ -122,6 +122,38 @@ def test_update_rejects_busy_and_unmanaged_agents(managed_agent, monkeypatch, fa
         assert not agent._Agent__execution_manager().maintenance
     finally:
         release.set()
+
+
+def test_container_update_reuses_installer_and_pauses_until_launcher_finishes(managed_agent, monkeypatch):
+    agent = managed_agent
+    monkeypatch.setenv("DRASTIC_AGENT_DEPLOYMENT", "docker")
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", "/app/data")
+    request = agent_module.AGENT_INSTALL_ROOT / "update-request.json"
+    request.parent.mkdir()
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(command)
+        if command[-1] == "update":
+            request.write_text("{}")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    assert agent.cmd_update().state == AgentReportState.success
+    assert calls == [[str(agent_module.AGENT_COMMAND), "status"], [str(agent_module.AGENT_COMMAND), "update"]]
+    assert agent.cmd_update().state == AgentReportState.failed
+    assert agent._Agent__execution.submit(lambda: None) is None
+    restarted = build_agent()
+    try:
+        assert restarted._Agent__check_update(startup=True)
+        request.unlink()
+        restarted._Agent__next_update_check_at = 0
+        assert not restarted._Agent__check_update()
+    finally:
+        restarted._Agent__execution.shutdown()
+    agent._Agent__next_update_check_at = 0
+    assert not agent._Agent__check_update()
+    agent._Agent__execution.submit(lambda: None).result(timeout=2)
 
 
 def file_mode(path):

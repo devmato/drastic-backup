@@ -22,9 +22,9 @@
       bordered
       :rows-per-page-options="[0]"
     >
-      <template #body-cell-hostname="props">
+      <template #body-cell-display_name="props">
         <q-td :props="props">
-          <router-link :to="`/agents/${props.row.id}`" class="text-weight-medium text-primary">{{ props.row.hostname || `Agent #${props.row.id}` }}</router-link>
+          <router-link :to="`/agents/${props.row.id}`" class="text-weight-medium text-primary">{{ props.row.display_name }}</router-link>
         </q-td>
       </template>
       <template #body-cell-status="props">
@@ -63,7 +63,7 @@ const userStore = useUserStore()
 
 const columns = [
   { name: 'id', label: 'ID', field: 'id', align: 'left', sortable: true },
-  { name: 'hostname', label: 'Name', field: 'hostname', align: 'left', sortable: true },
+  { name: 'display_name', label: 'Name', field: 'display_name', align: 'left', sortable: true },
   { name: 'os', label: 'OS', field: 'os', align: 'left' },
   { name: 'version', label: 'Version', field: 'version', align: 'left' },
   { name: 'status', label: 'Status', field: 'online', align: 'left' },
@@ -73,7 +73,7 @@ const columns = [
 function confirmDelete(agent) {
   $q.dialog({
     title: 'Delete Agent',
-    message: `Really delete agent ${agent.hostname}? Warning: This will delete all assigned jobs!`,
+    message: `Really delete agent ${agent.display_name}? Warning: This will delete all assigned jobs!`,
     cancel: true,
     persistent: true,
   }).onOk(async () => {

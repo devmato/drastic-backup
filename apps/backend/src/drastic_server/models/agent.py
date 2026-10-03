@@ -54,12 +54,17 @@ class Agent(IdMixin, TimeMixin, db.Model):
     connections = db.Column(db.JSON, nullable=True)
     install_type = db.Column(db.String(32), nullable=False, default="manual")
     hostname = db.Column(db.String(255), nullable=True)
+    alias = db.Column(db.String(255), nullable=True)
     last_connection = db.Column(db.DateTime, nullable=True)
     repositories = db.relationship(
         "Repository",
         secondary=agent_repositories,
         backref=db.backref("agents"),
     )
+    @property
+    def display_name(self):
+        return self.alias or self.hostname or f"Agent #{self.id}"
+
     # Online property
     @hybrid_property
     def online(self):

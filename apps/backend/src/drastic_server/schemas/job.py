@@ -91,6 +91,7 @@ class JobResponseSchema(Schema):
     name = fields.String(required=True)
     agent_id = fields.Integer(required=True)
     agent_hostname = fields.Method("get_agent_hostname")
+    agent_display_name = fields.String(attribute="agent.display_name", allow_none=True)
     agent_online = fields.Method("get_agent_online")
     agent_repositories = fields.Method("get_agent_repositories")
     type = fields.Method("get_type")
@@ -130,6 +131,7 @@ class JobResponseSchema(Schema):
 class AgentJobsResponseSchema(Schema):
     id = fields.Integer(required=True)
     hostname = fields.String(allow_none=True)
+    display_name = fields.String(required=True)
     online = fields.Boolean(required=True)
     repositories = fields.Method("get_repositories")
     jobs = fields.List(fields.Nested(JobResponseSchema), required=True)

@@ -21,6 +21,11 @@ export const useAgentStore = defineStore('agent', () => {
     await loadAgents()
   }
 
+  async function updateAgent(agentId, alias) {
+    const response = await api.put(`/agents/${agentId}`, { alias })
+    agents.value = agents.value.map(agent => agent.id === agentId ? response.data : agent)
+  }
+
   async function updateAgentRepositories(agentId, repositoryIds, recoveryKey = null) {
     const payload = { repository_ids: repositoryIds }
     if (recoveryKey) {
@@ -105,5 +110,5 @@ export const useAgentStore = defineStore('agent', () => {
     return response.data
   }
 
-  return { agents, loading, loadAgents, deleteAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings, deleteConnection, getTrueNASSettings, updateTrueNASSettings, testTrueNASSettings, cleanupTrueNAS, getTrueNASDatasets }
+  return { agents, loading, loadAgents, deleteAgent, updateAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings, deleteConnection, getTrueNASSettings, updateTrueNASSettings, testTrueNASSettings, cleanupTrueNAS, getTrueNASDatasets }
 })

@@ -474,6 +474,14 @@ class Agent:
             return False
         if monotonic() >= getattr(self, "_Agent__next_update_check_at", 0):
             self.__next_update_check_at = monotonic() + 5
+            if self.install_type == "docker":
+                updating = (AGENT_INSTALL_ROOT / "update-request.json").exists()
+                if startup and updating:
+                    manager.start_maintenance(lambda: None)
+                elif not updating and manager.maintenance:
+                    manager.finish_maintenance()
+                    logging.info("Container update finished; resuming execution. Details: container logs")
+                return manager.maintenance
             try:
                 result = subprocess.run(
                     ["systemctl", "is-active", AGENT_UPDATE_UNIT],
@@ -1428,7 +1436,7 @@ class Agent:
         recover_snapshots(self)
 
         # The installer still performs startup checks after restarting this service.
-        if self.install_type == "git":
+        if self.install_type in {"git", "docker"}:
             self.__check_update(startup=True)
 
         # Attempt registration/connection to server
@@ -1571,20 +1579,21 @@ class Agent:
 
     def cmd_update(self):
         report = AgentReport.command_report()
-        if self.install_type != "git" or Path(_agent_data_dir()).resolve() != AGENT_INSTALL_ROOT / "data":
+        if self.install_type not in {"git", "docker"} or (
+            self.install_type == "git" and Path(_agent_data_dir()).resolve() != AGENT_INSTALL_ROOT / "data"
+        ):
             report.log_message(
-                "Updates require a managed native Linux installation running as root with systemd",
+                "Updates require a managed Linux installation running as root",
                 final_state=AgentReportState.failed,
             )
             return report.finish()
 
         def start():
-            # ponytail: systemd owns the update lifecycle and journal; reuse the installer.
-            subprocess.run(
-                ["systemd-run", "--collect", f"--unit={AGENT_UPDATE_UNIT}",
-                 "--", str(AGENT_COMMAND), "update"],
-                check=True, capture_output=True, text=True, timeout=10,
-            )
+            command = [str(AGENT_COMMAND), "update"]
+            if self.install_type != "docker":
+                # ponytail: systemd owns the update lifecycle and journal; reuse the installer.
+                command = ["systemd-run", "--collect", f"--unit={AGENT_UPDATE_UNIT}", "--", *command]
+            subprocess.run(command, check=True, capture_output=True, text=True, timeout=10)
 
         def preflight():
             # Reuse the lifecycle manager's platform, ownership and installation checks.
@@ -1598,7 +1607,8 @@ class Agent:
                     final_state=AgentReportState.failed,
                 )
             else:
-                report.log_message("Agent update started; details: journalctl -u drastic-agent-update.service")
+                details = "container logs" if self.install_type == "docker" else "journalctl -u drastic-agent-update.service"
+                report.log_message(f"Agent update started; details: {details}")
         except (OSError, subprocess.SubprocessError) as exc:
             report.log_message(f"Could not start agent update: {exc}", final_state=AgentReportState.failed)
         return report.finish()

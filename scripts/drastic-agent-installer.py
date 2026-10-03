@@ -10,6 +10,7 @@ import getpass
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -23,6 +24,9 @@ WRAPPER = Path('/usr/local/bin/drastic-agent')
 SERVICE = Path('/etc/systemd/system/drastic-agent.service')
 MARKER = '.managed-by-drastic-agent'
 REPOSITORY = 'https://github.com/devmato/drastic-backup.git'
+CONTAINER = False
+PROCESS = None
+SHUTTING_DOWN = False
 
 
 def run(*args, **kwargs):
@@ -81,7 +85,8 @@ def check_owned():
         fail('Installation paths must not contain symlinks.')
     if not (ROOT / MARKER).is_file() or (ROOT / MARKER).is_symlink():
         fail('Installation ownership marker is missing. Run the pipe installer first.')
-    for name in ('data', 'data/config.ini', 'tools', 'cache', 'releases', 'bin', 'install.json', 'drastic-agent.env'):
+    for name in ('data', 'data/config.ini', 'tools', 'cache', 'releases', 'bin', 'install.json', 'drastic-agent.env',
+                 'launcher.pid', 'update-request.json'):
         if (ROOT / name).is_symlink():
             fail(f'Unexpected symlink: {ROOT / name}')
     if WRAPPER.exists() or WRAPPER.is_symlink():
@@ -101,16 +106,69 @@ def systemctl(action, *, check=True):
 
 
 def active():
+    if CONTAINER:
+        return PROCESS is not None and PROCESS.poll() is None
     return run('systemctl', 'is-active', '--quiet', SERVICE.name, check=False).returncode == 0
 
 
 def stop():
+    if CONTAINER:
+        if active():
+            PROCESS.terminate()
+            try:
+                PROCESS.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                fail('The agent process is still running; no installation files were removed.')
+        return
     state = run('systemctl', 'show', '--property=LoadState', '--value', SERVICE.name,
                 stdout=subprocess.PIPE, text=True).stdout.strip()
     if state != 'not-found':
         systemctl('stop', check=False)
     if active():
         fail('The agent service is still running; no installation files were removed.')
+
+
+def start():
+    global PROCESS
+    if CONTAINER:
+        if not SHUTTING_DOWN:
+            PROCESS = subprocess.Popen([str(ROOT / 'current/venv/bin/drastic-agent')],
+                                       env={**os.environ, **installation_settings(read_state())})
+    else:
+        systemctl('start')
+
+
+def data_directory():
+    return Path(os.environ.get('DRASTIC_AGENT_DATA_DIR', '/app/data')) if CONTAINER else ROOT / 'data'
+
+
+def installation_settings(state):
+    settings = {'DRASTIC_ENV': os.environ.get('DRASTIC_ENV', 'prod') if CONTAINER else 'prod',
+                'DRASTIC_AGENT_DATA_DIR': str(data_directory()), 'DRASTIC_AGENT_INSTALL_SOURCE': 'git',
+                'DRASTIC_AGENT_INSTALL_VERSION': state['ref'], 'DRASTIC_AGENT_INSTALL_REF': state['commit'],
+                'XDG_CACHE_HOME': str(ROOT / 'cache'), 'RESTIC_CACHE_DIR': str(ROOT / 'cache/restic')}
+    if state.get('server'):
+        settings['DRASTIC_SERVER'] = state['server']
+    if CONTAINER:
+        settings['DRASTIC_AGENT_DEPLOYMENT'] = 'docker'
+    return settings
+
+
+def write_wrapper(settings):
+    (ROOT / 'bin').mkdir(exist_ok=True)
+    exports = '' if CONTAINER else '\n'.join(f'export {key}={quote(value)}' for key, value in settings.items())
+    write(ROOT / 'bin/drastic-agent', f'''#!/usr/bin/env bash
+set -euo pipefail
+case "${{1:-}}" in
+    install|update|status|uninstall|run)
+        exec "{sys.executable}" "{ROOT}/current/source/scripts/drastic-agent-installer.py" "$@" ;;
+esac
+{exports}
+exec "{ROOT}/current/venv/bin/drastic-agent" "$@"
+''', 0o755)
+    WRAPPER.parent.mkdir(parents=True, exist_ok=True)
+    if not WRAPPER.is_symlink():
+        WRAPPER.symlink_to(ROOT / 'bin/drastic-agent')
 
 
 def switch(release):
@@ -177,13 +235,21 @@ def prepare_release(args, state):
         run(ROOT / 'tools/bin/uv', 'sync', '--project', source / 'apps/agent', '--frozen',
             '--no-dev', '--no-editable', '--python', sys.executable, env=environment)
         run(release / 'venv/bin/drastic-agent', '--help', stdout=subprocess.DEVNULL)
+        if CONTAINER:
+            run(sys.executable, source / 'scripts/drastic-agent-installer.py', 'run', '--help',
+                stdout=subprocess.DEVNULL)
         dependencies = source / 'scripts/install-agent-dependencies.sh'
         if dependencies.is_file():
             try:
-                run('bash', dependencies)
+                run('bash', dependencies, env={**os.environ, **({'DRASTIC_AGENT_DEPLOYMENT': 'docker'} if CONTAINER else {})})
             except (OSError, subprocess.CalledProcessError) as exc:
+                if CONTAINER:
+                    raise
                 print(f'Optional dependencies were not installed: {exc}. Continuing agent installation.', file=sys.stderr)
-        return release, {'repository': repository, 'ref': ref, 'commit': commit}
+        new_state = {'repository': repository, 'ref': ref, 'commit': commit}
+        if CONTAINER:
+            new_state['deployment'] = 'docker'
+        return release, new_state
     except BaseException:
         shutil.rmtree(release)
         raise
@@ -193,14 +259,17 @@ def install(args):
     state = read_state()
     if args.command == 'update' and not state:
         fail('No managed installation exists. Run the pipe installer first.')
-    data = ROOT / 'data'
-    data.mkdir(mode=0o700, exist_ok=True)
+    data = data_directory()
+    if data.is_symlink() or (data / 'config.ini').is_symlink():
+        fail('Agent data paths must not be symlinks.')
+    data.mkdir(mode=0o700, parents=True, exist_ok=True)
     data.chmod(0o700)
     config = configparser.ConfigParser(interpolation=None)
     config.read(data / 'config.ini')
     configured = config.has_section('AGENT')
     saved_server = state.get('server') or config.get('SERVER', 'url', fallback='')
-    server = validate_server(args.server or saved_server or prompt('Server URL'))
+    requested_server = args.server or (os.environ.get('DRASTIC_SERVER') if CONTAINER else None)
+    server = validate_server(requested_server or saved_server or prompt('Server URL'))
     if saved_server and validate_server(saved_server) != server:
         fail('The server cannot change while the agent identity is preserved.')
     user = password = None
@@ -217,17 +286,13 @@ def install(args):
     release, new_state = prepare_release(args, state)
     new_state['server'] = server
     was_active = active()
-    was_enabled = run('systemctl', 'is-enabled', '--quiet', SERVICE.name, check=False).returncode == 0
+    was_enabled = not CONTAINER and run('systemctl', 'is-enabled', '--quiet', SERVICE.name, check=False).returncode == 0
     old_release = (ROOT / 'current').resolve() if (ROOT / 'current').exists() else None
-    (ROOT / 'bin').mkdir(exist_ok=True)
-    files = (ROOT / 'drastic-agent.env', ROOT / 'install.json', ROOT / 'bin/drastic-agent', SERVICE)
+    files = [ROOT / 'drastic-agent.env', ROOT / 'install.json', ROOT / 'bin/drastic-agent']
+    if not CONTAINER:
+        files.append(SERVICE)
     snapshots = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path in files}
-    settings = {'DRASTIC_ENV': 'prod', 'DRASTIC_SERVER': server,
-                'DRASTIC_AGENT_DATA_DIR': str(data), 'DRASTIC_AGENT_INSTALL_SOURCE': 'git',
-                'DRASTIC_AGENT_INSTALL_VERSION': new_state['ref'],
-                'DRASTIC_AGENT_INSTALL_REF': new_state['commit'],
-                'XDG_CACHE_HOME': str(ROOT / 'cache'),
-                'RESTIC_CACHE_DIR': str(ROOT / 'cache/restic')}
+    settings = installation_settings(new_state)
     try:
         stop()
         if not configured:
@@ -243,56 +308,128 @@ def install(args):
         env.extend(f'{key}={json.dumps(value, ensure_ascii=False)}' for key, value in settings.items())
         write(env_path, '\n'.join(env) + '\n')
         write(ROOT / 'install.json', json.dumps(new_state, indent=2) + '\n')
-        exports = '\n'.join(f'export {key}={quote(value)}' for key, value in settings.items())
-        write(ROOT / 'bin/drastic-agent', f'''#!/usr/bin/env bash
-set -euo pipefail
-case "${{1:-}}" in
-    install|update|status|uninstall)
-        exec "{sys.executable}" "{ROOT}/current/source/scripts/drastic-agent-installer.py" "$@" ;;
-esac
-{exports}
-exec "{ROOT}/current/venv/bin/drastic-agent" "$@"
-''', 0o755)
+        write_wrapper(settings)
         switch(release)
-        WRAPPER.parent.mkdir(parents=True, exist_ok=True)
-        if not WRAPPER.is_symlink():
-            WRAPPER.symlink_to(ROOT / 'bin/drastic-agent')
-        write(SERVICE, service_text(), 0o644)
-        run('systemctl', 'daemon-reload')
-        systemctl('enable')
-        systemctl('start')
+        if not CONTAINER:
+            write(SERVICE, service_text(), 0o644)
+            run('systemctl', 'daemon-reload')
+            systemctl('enable')
+        start()
         for _ in range(3):
             time.sleep(1)
             if not active():
-                fail('The new agent service failed to start.')
+                fail('The new agent failed to start.' if CONTAINER else 'The new agent service failed to start.')
     except BaseException:
         try:
             stop()
         except (OSError, RuntimeError) as exc:
+            recovery = 'stop the container' if CONTAINER else 'stop drastic-agent.service'
             raise RuntimeError(
-                'Rollback blocked: the agent service could not be confirmed stopped. '
-                'Both releases were kept; stop drastic-agent.service and retry the installation.'
+                'Rollback blocked: the agent could not be confirmed stopped. '
+                f'Both releases were kept; {recovery} and retry the installation.'
             ) from exc
         if old_release:
             switch(old_release)
         else:
             (ROOT / 'current').unlink(missing_ok=True)
             WRAPPER.unlink(missing_ok=True)
-        if not was_enabled:
+        if not CONTAINER and not was_enabled:
             systemctl('disable', check=False)
         for path, snapshot in snapshots.items():
             if snapshot is None:
                 path.unlink(missing_ok=True)
             else:
                 write(path, snapshot[0].decode(), snapshot[1])
-        run('systemctl', 'daemon-reload')
+        if not CONTAINER:
+            run('systemctl', 'daemon-reload')
         if was_active:
-            systemctl('start')
+            start()
         shutil.rmtree(release)
         raise
     if old_release:
         shutil.rmtree(old_release)
     print(f'Agent installed at {ROOT}. Status: sudo drastic-agent status')
+
+
+def initialize_image(args):
+    """Adopt the release already built by Docker; no downloads or registration."""
+    global CONTAINER
+    if read_state():
+        fail('An installation already exists.')
+    CONTAINER = True
+    (ROOT / MARKER).touch()
+    ROOT.chmod(0o700)
+    check_owned()
+    state = {'deployment': 'docker', 'repository': args.repository, 'ref': args.ref, 'commit': args.commit}
+    write(ROOT / 'install.json', json.dumps(state, indent=2) + '\n')
+    switch(ROOT / 'releases/image')
+    write_wrapper(installation_settings(state))
+
+
+def check_launcher():
+    try:
+        os.kill(int((ROOT / 'launcher.pid').read_text()), 0)
+    except (OSError, ValueError):
+        fail('The managed container launcher is not running.')
+
+
+def request_update(args):
+    check_launcher()
+    if (ROOT / 'update-request.json').exists():
+        fail('An update is already running.')
+    if args.server or args.user or args.password:
+        fail('Container updates preserve registration; configure credentials through the container environment.')
+    write(ROOT / 'update-request.json', json.dumps({key: getattr(args, key) for key in ('repository', 'ref', 'source')}) + '\n')
+    print('Agent update requested; details: docker logs <agent-container>', flush=True)
+
+
+def run_container():
+    """Own the agent and reuse install() for updates, without systemd."""
+    global SHUTTING_DOWN
+    if not CONTAINER:
+        fail('The run command requires a managed container installation.')
+    pid = ROOT / 'launcher.pid'
+    request = ROOT / 'update-request.json'
+    if pid.exists():
+        try:
+            check_launcher()
+        except RuntimeError:
+            pass
+        else:
+            if int(pid.read_text()) != os.getpid():
+                fail('The container launcher is already running.')
+
+    def shutdown(_signum, _frame):
+        global SHUTTING_DOWN
+        SHUTTING_DOWN = True
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, shutdown)
+    signal.signal(signal.SIGINT, shutdown)
+    write(pid, str(os.getpid()) + '\n')
+    # ponytail: updates live in the container layer; a restart retries an interrupted request.
+    try:
+        start()
+        while active():
+            if request.exists():
+                descriptor = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                    options = json.loads(request.read_text())
+                    install(argparse.Namespace(command='update', server=None, user=None, password=None, **options))
+                except (OSError, ValueError, RuntimeError, subprocess.SubprocessError) as exc:
+                    print(f'Agent update failed: {exc}', file=sys.stderr, flush=True)
+                finally:
+                    request.unlink(missing_ok=True)
+                    os.close(descriptor)
+            time.sleep(0.5)
+        raise SystemExit(PROCESS.returncode or 0)
+    except KeyboardInterrupt:
+        if not SHUTTING_DOWN:
+            raise
+    finally:
+        stop()
+        pid.unlink(missing_ok=True)
 
 
 def uninstall(args):
@@ -322,6 +459,7 @@ def uninstall(args):
 
 
 def main():
+    global CONTAINER
     parser = argparse.ArgumentParser(description='dRastic Agent lifecycle manager')
     commands = parser.add_subparsers(dest='command', required=True)
     for command in ('install', 'update'):
@@ -333,6 +471,11 @@ def main():
         sub.add_argument('--user')
         sub.add_argument('--password')
     commands.add_parser('status')
+    commands.add_parser('run')
+    image = commands.add_parser('image', help='Initialize a prebuilt Docker release')
+    image.add_argument('--repository', default=REPOSITORY)
+    image.add_argument('--ref', default='main')
+    image.add_argument('--commit', default='unknown')
     sub = commands.add_parser('uninstall')
     sub.add_argument('--purge', action='store_true')
     sub.add_argument('--yes', action='store_true')
@@ -340,16 +483,30 @@ def main():
     try:
         if sys.platform != 'linux' or os.geteuid() != 0:
             fail('Run this command as root on Linux (sudo drastic-agent ...).')
+        if args.command == 'image':
+            initialize_image(args)
+            return
+        CONTAINER = read_state().get('deployment') == 'docker'
         check_owned()
+        if args.command == 'run':
+            run_container()
+            return
+        if CONTAINER and args.command not in {'update', 'status'}:
+            fail('Manage installation and removal through the container deployment.')
         # Lock the directory itself; there is no stale lock file after a purge.
         descriptor = os.open(ROOT, os.O_RDONLY | os.O_DIRECTORY)
         try:
             fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            if args.command in {'install', 'update'}:
+            if CONTAINER and args.command == 'update':
+                request_update(args)
+            elif args.command in {'install', 'update'}:
                 install(args)
             elif args.command == 'status':
                 print(json.dumps(read_state(), indent=2))
-                systemctl('status', check=False)
+                if CONTAINER:
+                    check_launcher()
+                else:
+                    systemctl('status', check=False)
             else:
                 uninstall(args)
         finally:

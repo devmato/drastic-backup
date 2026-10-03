@@ -22,6 +22,12 @@ dRastic Backup separates the web server from the machines that actually read fil
 7. Add a schedule or run the job manually.
 8. Monitor job reports in the web UI.
 
+## Agent Display Names
+
+Open an agent under **Agents** and set **Display name (optional)** on the **Info** tab. Save it to use this alias in lists, agent selections, reports, and recovery exports. This also works while the agent is offline.
+
+Clear the field and save to use the hostname again. Names are limited to 255 characters; surrounding whitespace is removed. If no hostname is available, the agent ID is shown instead. The technical hostname remains visible in the agent properties, and reconnecting does not overwrite the alias.
+
 ## Repositories
 
 dRastic supports two repository types:

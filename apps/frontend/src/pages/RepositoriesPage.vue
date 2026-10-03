@@ -44,7 +44,7 @@
         <q-card-section><div class="text-h6">Unlock Repository</div></q-card-section>
         <q-form @submit="onUnlockSubmit">
           <q-card-section>
-            <q-select outlined v-model="unlockAgentId" :options="unlockAgents" option-label="hostname" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="unlocking" />
+            <q-select outlined v-model="unlockAgentId" :options="unlockAgents" option-label="display_name" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="unlocking" />
           </q-card-section>
           <q-card-actions align="right" class="q-pa-md">
             <q-btn flat no-caps label="Cancel" :disable="unlocking" v-close-popup />
@@ -63,7 +63,7 @@
         </q-card-section>
         <q-form @submit="onCheckSubmit">
           <q-card-section class="q-gutter-sm">
-            <q-select outlined v-model="checkAgentId" :options="checkAgents" option-label="hostname" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="checking" />
+            <q-select outlined v-model="checkAgentId" :options="checkAgents" option-label="display_name" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="checking" />
             <q-input outlined v-model="checkReadDataSubset" label="Read data subset" hint="Optional, e.g. 1/10 or 5%" :disable="checking" />
           </q-card-section>
           <q-card-actions align="right" class="q-pa-md">

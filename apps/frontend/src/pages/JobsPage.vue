@@ -35,7 +35,7 @@
             <div class="col-12 col-sm">
               <div class="row items-center no-wrap">
                 <q-icon :name="agentData.online ? 'desktop_windows' : 'desktop_access_disabled'" :color="agentData.online ? 'positive' : 'negative'" size="sm" class="q-mr-sm" />
-                <h2 class="db-page-title text-subtitle1 text-weight-medium q-my-none">{{ agentData.hostname }}</h2>
+                <h2 class="db-page-title text-subtitle1 text-weight-medium q-my-none">{{ agentData.display_name }}</h2>
               </div>
             </div>
             <div class="col-12 col-sm-auto">

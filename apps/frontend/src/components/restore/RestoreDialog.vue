@@ -150,7 +150,7 @@ let snapshotsRequest = 0
 
 const dialogVisible = defineModel({ type: Boolean, required: true })
 
-const agentOptions = computed(() => props.agents.filter(agent => agent.online).map(agent => ({ label: agent.hostname || `Agent #${agent.id}`, value: agent.id })))
+const agentOptions = computed(() => props.agents.filter(agent => agent.online).map(agent => ({ label: agent.display_name, value: agent.id })))
 const assignedRepositories = computed(() => props.agents.find(agent => agent.id === selectedAgentId.value)?.repositories || props.repositories)
 const repositoryOptions = computed(() => assignedRepositories.value.map(repo => ({ label: `${repo.name} (${repo.location})`, value: repo.id })))
 const modeOptions = computed(() => [

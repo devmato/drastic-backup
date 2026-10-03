@@ -4,7 +4,7 @@
       <template #breadcrumbs>
         <q-breadcrumbs>
           <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-          <q-breadcrumbs-el :label="operation?.agent_hostname || `Agent #${route.params.agentId}`" :to="`/agents/${route.params.agentId}`" />
+          <q-breadcrumbs-el :label="agentDisplayName" :to="`/agents/${route.params.agentId}`" />
           <q-breadcrumbs-el label="Operations" :to="operationListRoute" />
           <q-breadcrumbs-el :label="`Operation #${route.params.operationId}`" />
         </q-breadcrumbs>
@@ -220,6 +220,8 @@ async function cancelRestore() {
 }
 
 const operation = ref(null)
+const agentDisplayName = computed(() => agentStore.agents.find(agent => String(agent.id) === String(route.params.agentId))?.display_name
+  || operation.value?.agent_display_name || `Agent #${route.params.agentId}`)
 const loading = ref(false)
 const logFilter = ref('')
 const logPagination = ref({ rowsPerPage: 0, sortBy: 'time', descending: false })
@@ -431,7 +433,7 @@ const summaryColumns = computed(() => {
       ...(current.repository_id ? [{ label: 'Repository', value: current.repository_name || `#${current.repository_id}` }] : []),
     ],
     [
-      { label: 'Device', value: current.agent_hostname || `Agent #${route.params.agentId}`, to: operationListRoute.value },
+      { label: 'Device', value: agentDisplayName.value, to: operationListRoute.value },
       ...metricCards.value,
     ],
   ]

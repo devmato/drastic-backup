@@ -48,15 +48,25 @@ for tag in "${TAGS[@]}"; do
     BUILD_TAGS+=("-t" "$tag")
 done
 
+BUILD_ARGS=()
+if [[ "$DOCKERFILE" = apps/agent/Dockerfile ]]; then
+    AGENT_REF=main
+    if [[ "${GITHUB_REF_TYPE:-}" = branch ]]; then
+        AGENT_REF=${GITHUB_REF_NAME:?GITHUB_REF_NAME is required.}
+    fi
+    BUILD_ARGS=(--build-arg "DRASTIC_AGENT_REF=$AGENT_REF" --build-arg "DRASTIC_AGENT_COMMIT=$GITHUB_SHA")
+fi
+
 if [[ -n "${CONTAINER_PLATFORMS:-}" ]]; then
     docker buildx build \
         --platform "$CONTAINER_PLATFORMS" \
         --push \
         "${BUILD_TAGS[@]}" \
+        "${BUILD_ARGS[@]}" \
         -f "$DOCKERFILE" \
         "$CONTEXT"
 else
-    docker build "${BUILD_TAGS[@]}" -f "$DOCKERFILE" "$CONTEXT"
+    docker build "${BUILD_TAGS[@]}" "${BUILD_ARGS[@]}" -f "$DOCKERFILE" "$CONTEXT"
 
     for tag in "${TAGS[@]}"; do
         docker push "$tag"

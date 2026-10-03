@@ -80,4 +80,5 @@ class UnlockResponseSchema(Schema):
 class UnlockAgentResponseSchema(Schema):
     id = fields.Integer(required=True)
     hostname = fields.String(allow_none=True)
+    display_name = fields.String(required=True)
     online = fields.Boolean(required=True)

@@ -10,7 +10,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const route = { params: { operationId: '1', agentId: '1' }, query: {} }
   let resolveRequest
-  const store = { getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
+  const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
     computed, ref, stateColor: getBackupStateColor,
     useRoute: () => route,
@@ -56,7 +56,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
 
   page.operation.value = {
     id: 1, type: 'backup', state: 'success', source: 'manual',
-    agent_hostname: 'Backup host', job_id: 2, job_name: 'Documents', repository_id: 3, repository_name: 'Offsite',
+    agent_hostname: 'Backup host', agent_display_name: 'Backup host', job_id: 2, job_name: 'Documents', repository_id: 3, repository_name: 'Offsite',
     started: '2026-10-01T22:38:44', ended: '2026-10-01T23:47:32',
     data: {
       bytes_processed: 544, files_processed: 1, files_total: 1,

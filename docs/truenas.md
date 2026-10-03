@@ -29,7 +29,7 @@ services:
       - /mnt/hddpool01/medien:/mnt/host/mnt/hddpool01/medien:ro,rslave
 ```
 
-Write `$$` for a literal `$` in a Compose password. After successful registration, remove `DRASTIC_USER` and `DRASTIC_PASSWORD` and save the app again. Keep `/app/data`: it contains the agent identity, encryption keys, configuration and cleanup state. Update the agent image through TrueNAS.
+Write `$$` for a literal `$` in a Compose password. After successful registration, remove `DRASTIC_USER` and `DRASTIC_PASSWORD` and save the app again. Keep `/app/data`: it contains the agent identity, encryption keys, configuration and cleanup state. Protocol 4 images also support agent updates through dRastic's **Agent Properties > Actions > Update**, without a Docker socket mount. These updates survive container restarts; recreating the app returns software and system packages to the selected image while retaining `/app/data`. Update the image through TrueNAS to replace the base image or adopt this support in an older deployment. See [Docker Updates](agent-installation.md#docker-updates).
 
 ### Dataset and snapshot mounts
 

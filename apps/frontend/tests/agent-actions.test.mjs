@@ -47,4 +47,11 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   assert.equal(calls.length, before)
   agent.install_type = 'docker'
   assert.equal(action('update'), undefined)
+  agent.protocol_version = 4
+  assert.equal(action('update').name, 'update')
+  agent.install_type = 'manual'
+  assert.equal(action('update'), undefined)
+  agent.install_type = 'docker'
+  agent.os = 'Windows'
+  assert.equal(action('update'), undefined)
 })

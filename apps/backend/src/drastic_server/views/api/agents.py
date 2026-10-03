@@ -29,6 +29,7 @@ from drastic_server.schemas.agent import (
     AgentTrueNASSettingsInputSchema,
     AgentTrueNASSettingsResponseSchema,
     AgentTrueNASTestResponseSchema,
+    AgentUpdateInputSchema,
     TrueNASDatasetsResponseSchema,
 )
 from drastic_server.schemas.common import MessageSchema
@@ -123,6 +124,18 @@ class AgentDetail(MethodView):
     def get(self, agent_id):
         user_id = get_jwt_identity()
         return Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
+
+    @jwt_required()
+    @blp.arguments(AgentUpdateInputSchema)
+    @blp.response(200, AgentResponseSchema)
+    def put(self, data, agent_id):
+        user_id = get_jwt_identity()
+        agent = Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
+        agent.alias = (data["alias"] or "").strip() or None
+        db.session.commit()
+        emit_agents_update(user_id)
+        emit_jobs_update(user_id)
+        return agent
 
     @jwt_required()
     @blp.response(200, MessageSchema)
@@ -256,13 +269,17 @@ class AgentAction(MethodView):
         if not agent.online:
             abort(400, message="Agent is offline")
         if command == AgentCommandName.update and (
-            agent.install_type != "git" or str(agent.os or "").lower() != "linux"
+            str(agent.os or "").lower() != "linux" or not (
+                agent.install_type == "git" or (
+                    agent.install_type == "docker" and (agent.protocol_version or 0) >= 4
+                )
+            )
         ):
-            abort(400, message="Updates require a managed native Linux installation")
+            abort(400, message="Updates require a managed Linux installation; Docker agents require protocol 4")
 
         response = AgentService.send_command(agent, command)
         if is_agent_timeout_response(response):
-            abort(504, message="Update acknowledgement timed out; check the agent journal before retrying"
+            abort(504, message="Update acknowledgement timed out; check the agent logs before retrying"
                   if command == AgentCommandName.update else response.get("log", "Agent request timed out"))
         if command == AgentCommandName.update and is_agent_conflict_response(response):
             abort(409, message=response.get("log"))

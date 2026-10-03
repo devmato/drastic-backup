@@ -1,6 +1,15 @@
 #!/usr/bin/env bash
-# Optional host packages: failure leaves the agent usable without guest file restore.
+# Required container packages and optional Proxmox host packages.
 set -u
+
+if [ "${DRASTIC_AGENT_DEPLOYMENT:-}" = docker ]; then
+    # Required packages are shared by the image build and Git-based container updates.
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get -o DPkg::Lock::Timeout=60 update &&
+        apt-get -o DPkg::Lock::Timeout=60 install -y --no-remove --no-install-recommends \
+            ca-certificates git openssh-client
+    exit $?
+fi
 
 command -v pveversion >/dev/null 2>&1 || exit 0
 PACKAGES=(python3-guestfs libguestfs-tools)

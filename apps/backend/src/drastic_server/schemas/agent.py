@@ -22,6 +22,8 @@ __all__ = ["AgentOperationSchema"]
 class AgentResponseSchema(Schema):
     id = fields.Integer(required=True)
     hostname = fields.String(allow_none=True)
+    alias = fields.String(allow_none=True)
+    display_name = fields.String(required=True)
     os = fields.String(allow_none=True)
     version = fields.String(allow_none=True)
     protocol_version = fields.Integer(required=True)
@@ -34,6 +36,10 @@ class AgentResponseSchema(Schema):
     repositories = fields.List(fields.Nested(RepositoryResponseSchema), required=True)
     last_connection = fields.DateTime(allow_none=True)
     created = fields.DateTime(allow_none=True)
+
+
+class AgentUpdateInputSchema(Schema):
+    alias = fields.String(required=True, allow_none=True, validate=validate.Length(max=255))
 
 
 class AgentRepositoryAssignInputSchema(Schema):
@@ -150,6 +156,7 @@ class AgentOperationResponseSchema(Schema):
 
 class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
     agent_hostname = fields.String(attribute="agent.hostname", dump_default=None, allow_none=True)
+    agent_display_name = fields.String(attribute="agent.display_name", dump_default=None, allow_none=True)
     job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
     repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
 

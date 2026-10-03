@@ -2,27 +2,40 @@
 
 FROM python:3.11-slim-bookworm
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /opt/drastic-agent/tools/bin/uv
 
-WORKDIR /app
+ARG DRASTIC_AGENT_GIT_REPOSITORY=https://github.com/devmato/drastic-backup.git
+ARG DRASTIC_AGENT_REF=main
+ARG DRASTIC_AGENT_COMMIT=unknown
 
-# Update package lists and install openssh-client for ssh-keygen command
-RUN apt-get update && apt-get install -y --no-install-recommends openssh-client && rm -rf /var/lib/apt/lists/*
+ENV PATH="/opt/drastic-agent/tools/bin:${PATH}" \
+    UV_PROJECT_ENVIRONMENT=/opt/drastic-agent/releases/image/venv \
+    UV_CACHE_DIR=/opt/drastic-agent/cache/uv \
+    UV_PYTHON_DOWNLOADS=never \
+    DRASTIC_AGENT_DEPLOYMENT=docker \
+    DRASTIC_AGENT_INSTALL_SOURCE=git \
+    DRASTIC_AGENT_DATA_DIR=/app/data \
+    PYTHONUNBUFFERED=1
 
-COPY libs/python/common /libs/python/common
+COPY scripts/install-agent-dependencies.sh /opt/drastic-agent/releases/image/source/scripts/
+RUN bash /opt/drastic-agent/releases/image/source/scripts/install-agent-dependencies.sh \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/drastic-agent/releases/image/source/apps/agent
+
+COPY libs/python/common ../../libs/python/common
 COPY apps/agent/pyproject.toml apps/agent/uv.lock apps/agent/README.md ./
-RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 
 # Install python dependencies via uv
-RUN uv sync --frozen --no-dev --no-install-project
+RUN uv sync --frozen --no-dev --no-editable --no-install-project
 
 COPY apps/agent/ ./
-RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
-RUN uv sync --frozen --no-dev
+RUN uv sync --frozen --no-dev --no-editable
 
-# Set excecution rights for run script
-RUN chmod +x /app/run.sh
+COPY scripts/drastic-agent-installer.py ../../scripts/
+RUN python ../../scripts/drastic-agent-installer.py image \
+    --repository "$DRASTIC_AGENT_GIT_REPOSITORY" --ref "$DRASTIC_AGENT_REF" --commit "$DRASTIC_AGENT_COMMIT"
 
-# Set start script
+WORKDIR /app
+COPY apps/agent/run.sh /app/run.sh
 CMD ["sh", "/app/run.sh"]

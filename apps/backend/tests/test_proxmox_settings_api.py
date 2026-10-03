@@ -53,6 +53,33 @@ def api_client(monkeypatch):
             db.drop_all()
 
 
+def test_agent_alias_can_be_set_offline_and_cleared_with_validated_owner_access(api_client):
+    client, agent, foreign_agent, _ = api_client
+    url = f"/api/agents/{agent.id}"
+    assert client.application.test_client().put(url, json={"alias": "Denied"}).status_code == 401
+    assert client.put(f"/api/agents/{foreign_agent.id}", json={"alias": "Denied"}).status_code == 404
+    for payload in ({}, {"alias": "x" * 256}, {"alias": 123}, {"alias": "Name", "hostname": "override"}):
+        assert client.put(url, json=payload).status_code == 422
+    db.session.delete(agent.session)
+    agent.hostname = "backup-host"
+    db.session.commit()
+    response = client.put(url, json={"alias": "  Home server  "})
+    assert response.status_code == 200
+    assert response.json["online"] is False
+    assert response.json["alias"] == response.json["display_name"] == "Home server"
+    assert response.json["hostname"] == "backup-host"
+    assert client.get(url).json["display_name"] == "Home server"
+    assert client.put(url, json={"alias": "x" * 255}).json["alias"] == "x" * 255
+    for value in ("", "   ", None):
+        response = client.put(url, json={"alias": value})
+        assert response.status_code == 200
+        assert response.json["alias"] is None
+        assert response.json["display_name"] == "backup-host"
+    agent.hostname = None
+    db.session.commit()
+    assert client.get(url).json["display_name"] == f"Agent #{agent.id}"
+
+
 def test_settings_commands_encrypt_tokens_and_return_only_public_settings(api_client, monkeypatch):
     client, agent, _, private_key = api_client
     calls = []
@@ -143,6 +170,7 @@ def test_agent_handshake_persists_protocol_and_rejects_unknown_versions(api_clie
     client, agent, _, _ = api_client
     db.session.delete(agent.session)
     agent.secret = bcrypt.hashpw(b"agent-secret", bcrypt.gensalt()).decode()
+    agent.alias = "Backup alias"
     db.session.commit()
     auth = {
         "agent_id": agent.id, "agent_secret": "agent-secret", "agent_os": "Linux",
@@ -152,6 +180,7 @@ def test_agent_handshake_persists_protocol_and_rejects_unknown_versions(api_clie
         connection = socketio.test_client(client.application, namespace="/agent", auth=payload)
         assert connection.is_connected("/agent")
         assert client.get(f"/api/agents/{agent.id}").json["protocol_version"] == payload.get("protocol_version", 0)
+        assert client.get(f"/api/agents/{agent.id}").json["display_name"] == "Backup alias"
         connection.disconnect(namespace="/agent")
 
     for version in (None, True, "1", -1, AGENT_PROTOCOL_VERSION + 1):
@@ -199,6 +228,16 @@ def test_actions_keep_dispatch_identity_permissions_and_errors(api_client, monke
     if action == "rotate-ssh-key":
         assert agent.ssh_key_algorithm == ssh_public_key_algorithm(public_key)
         assert agent.ssh_key_fingerprint == ssh_public_key_fingerprint(public_key)
+    if action == "update":
+        agent.install_type = "docker"
+        agent.protocol_version = 3
+        db.session.commit()
+        assert client.post(url).status_code == 400
+        assert len(calls) == 1
+        agent.protocol_version = 4
+        db.session.commit()
+        assert client.post(url).json == {"msg": message}
+        assert calls[-1] == {"command": "update", "args": {}}
     monkeypatch.setattr(agent_command, "call", lambda *_args, **_kwargs:
                         {"type": "command", "state": "failed",
                          "logs": [{"sequence": 1, "message": "execution capacity is busy"}]})

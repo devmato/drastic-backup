@@ -1,10 +1,10 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader title="Agent Properties" :description="agent?.hostname || `Agent #${route.params.agentId}`">
+    <PageHeader title="Agent Properties" :description="agent?.display_name || `Agent #${route.params.agentId}`">
       <template #breadcrumbs>
         <q-breadcrumbs>
           <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-          <q-breadcrumbs-el :label="agent?.hostname || `Agent #${route.params.agentId}`" />
+          <q-breadcrumbs-el :label="agent?.display_name || `Agent #${route.params.agentId}`" />
         </q-breadcrumbs>
       </template>
       <template v-if="agent" #actions>
@@ -35,6 +35,14 @@
 
       <q-tab-panels v-model="activeTab">
         <q-tab-panel name="info">
+          <q-form class="q-mb-md" @submit="saveAlias">
+            <q-input v-model="alias" outlined clearable maxlength="255" label="Display name (optional)"
+              hint="Leave empty to use the hostname." :disable="savingAlias" />
+            <div class="row justify-end q-mt-sm">
+              <q-btn unelevated no-caps color="primary" type="submit" label="Save display name"
+                :loading="savingAlias" :disable="(alias || '').trim() === (agent.alias || '')" />
+            </div>
+          </q-form>
           <div class="row q-col-gutter-md">
             <div class="col-12 col-sm-6">
               <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Hostname</div>
@@ -217,6 +225,11 @@ const agentStore = useAgentStore()
 const route = useRoute()
 const router = useRouter()
 const agent = computed(() => agentStore.agents.find(item => String(item.id) === String(route.params.agentId)))
+const alias = ref('')
+const savingAlias = ref(false)
+watch([() => agent.value?.id, () => agent.value?.alias], () => {
+  alias.value = agent.value?.alias || ''
+}, { immediate: true })
 const loading = ref(false)
 const loadError = ref('')
 const connectionDialogOpen = ref(false)
@@ -240,7 +253,9 @@ const pendingActions = ref({})
 const supportsConfiguration = computed(() => (agent.value?.protocol_version || 0) >= 1)
 const supportsConnections = computed(() => (agent.value?.protocol_version || 0) >= 3)
 const supportsUpdate = computed(() => supportsConfiguration.value
-  && agent.value?.install_type === 'git' && agent.value?.os?.toLowerCase() === 'linux')
+  && agent.value?.os?.toLowerCase() === 'linux'
+  && (agent.value?.install_type === 'git'
+    || (agent.value?.install_type === 'docker' && (agent.value?.protocol_version || 0) >= 4)))
 
 const agentActions = computed(() => [
   ...(supportsUpdate.value ? [{
@@ -273,6 +288,19 @@ async function loadAgent() {
   }
 }
 
+async function saveAlias() {
+  if (!agent.value || savingAlias.value) return
+  savingAlias.value = true
+  try {
+    await agentStore.updateAgent(agent.value.id, alias.value)
+    $q.notify({ message: 'Display name saved', color: 'positive' })
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+  } finally {
+    savingAlias.value = false
+  }
+}
+
 function openConnection(kind) {
   if (!agent.value?.online || removingConnection.value !== null) return
   editingConnection.value = kind
@@ -284,7 +312,7 @@ function confirmRemoveConnection(connection) {
   const agentId = agent.value.id
   $q.dialog({
     title: 'Remove Connection',
-    message: `Remove the ${connection.label} connection from ${agent.value.hostname || `Agent #${agentId}`}? Jobs using it cannot run until it is configured again.`,
+    message: `Remove the ${connection.label} connection from ${agent.value.display_name}? Jobs using it cannot run until it is configured again.`,
     cancel: { label: 'Cancel', flat: true, noCaps: true },
     persistent: true,
     ok: { label: 'Remove', color: 'negative', noCaps: true },
@@ -365,7 +393,7 @@ function confirmResetKnownHosts() {
   if (!agent.value) return
   $q.dialog({
     title: 'Reset SSH known_hosts',
-    message: `Reset SSH known_hosts on ${agent.value.hostname || `Agent #${agent.value.id}`}? SSH hosts will be trusted again on first use.`,
+    message: `Reset SSH known_hosts on ${agent.value.display_name}? SSH hosts will be trusted again on first use.`,
     cancel: true,
     persistent: true,
   }).onOk(() => runAction('reset-known-hosts', 'SSH known_hosts reset', 'Could not reset SSH known_hosts'))
@@ -375,7 +403,7 @@ function confirmRotateSshKey() {
   if (!agent.value) return
   $q.dialog({
     title: 'Rotate Agent SSH key',
-    message: `Rotate the SSH key on ${agent.value.hostname || `Agent #${agent.value.id}`}? Existing SSH/SFTP targets must be updated with the new public key.`,
+    message: `Rotate the SSH key on ${agent.value.display_name}? Existing SSH/SFTP targets must be updated with the new public key.`,
     cancel: true,
     persistent: true,
   }).onOk(() => runAction('rotate-ssh-key', 'Agent SSH key rotated', 'Could not rotate SSH key'))

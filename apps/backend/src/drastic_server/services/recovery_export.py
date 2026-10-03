@@ -50,9 +50,8 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
 
     agents = sorted(
         Agent.query.filter(Agent.user_id == user.id).all(),
-        key=lambda item: ((item.hostname or "").casefold(), item.id),
+        key=lambda item: (item.display_name.casefold(), item.id),
     )
-    agent_names = {agent.id: agent.hostname for agent in agents}
 
     retentions = sorted(
         Retention.query.filter(Retention.user_id == user.id).all(),
@@ -72,7 +71,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 continue
             assignments.append(
                 {
-                    "agent": {"id": agent.id, "hostname": agent.hostname},
+                    "agent": {"id": agent.id, "hostname": agent.hostname, "display_name": agent.display_name},
                     "repository": {
                         "id": repository.id,
                         "name": repository_names[repository.id],
@@ -92,6 +91,8 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 {
                     "id": agent.id,
                     "hostname": agent.hostname,
+                    "alias": agent.alias,
+                    "display_name": agent.display_name,
                     "install_type": agent.install_type,
                     "os": agent.os,
                     "version": agent.version,
@@ -116,7 +117,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 for retention in retentions
             ],
             "jobs": [
-                _job_payload(job, agent_names, repository_names, retention_names) for job in jobs
+                _job_payload(job, repository_names, retention_names) for job in jobs
             ],
         }
     )
@@ -155,7 +156,6 @@ def _repository_payload(repository: Repository, user_id: int, recovery_key: str)
 
 def _job_payload(
     job: Job,
-    agent_names: dict[int, str | None],
     repository_names: dict[int, str],
     retention_names: dict[int, str],
 ) -> dict[str, Any]:
@@ -165,7 +165,11 @@ def _job_payload(
         "id": job.id,
         "uuid": job.uuid,
         "name": job.name,
-        "agent": {"id": job.agent_id, "hostname": agent_names.get(job.agent_id)},
+        "agent": {
+            "id": job.agent_id,
+            "hostname": job.agent.hostname,
+            "display_name": job.agent.display_name,
+        },
         "type": job.type,
         "config": job.config,
         "actions": [

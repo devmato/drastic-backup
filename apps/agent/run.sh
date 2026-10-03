@@ -41,4 +41,8 @@ if [ "${DRASTIC_AGENT_HOT_RELOAD:-0}" = "1" ] && { [ "${DRASTIC_ENV:-prod}" = "d
     exec uv run python -m drastic_agent.dev
 fi
 
+if [ -x /opt/drastic-agent/bin/drastic-agent ]; then
+    exec /opt/drastic-agent/bin/drastic-agent run
+fi
+
 exec uv run drastic-agent

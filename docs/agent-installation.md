@@ -29,6 +29,22 @@ Important agent paths:
 
 The default root path is `/`, which allows file jobs to reference host paths via `/mnt/host/...`.
 
+### Docker Updates
+
+Managed Docker images using protocol 4 or later support **Agent Properties > Actions > Update**. Older containers need one image update through their deployment first. The image still builds directly from the local source checkout, but uses the same `/opt/drastic-agent` release layout and Python lifecycle installer as native installations. A small launcher in that installer runs as PID 1 and restarts the agent after an update; systemd and Docker socket access are not required for updates.
+
+Updates fetch the saved Git repository/ref, prepare a non-editable virtual environment, and install or refresh required Debian packages through the target release's `install-agent-dependencies.sh`. Package or build failures leave the running agent in place. The existing startup checks restore the previous agent release if the new process fails to start; Debian package changes are not rolled back. Running/queued operations and duplicate web updates are rejected, and execution stays paused through the startup checks.
+
+Official branch images follow their source branch (for example `develop`); release images follow `main` for Git updates. Selecting an image tag determines its initial software version. To pin subsequent Git updates to a tag/commit or change their source, use the same lifecycle command inside the running container:
+
+```bash
+docker exec AGENT_CONTAINER drastic-agent status
+docker exec AGENT_CONTAINER drastic-agent update --ref vX.Y.Z
+docker logs -f AGENT_CONTAINER
+```
+
+Agent software, update metadata, caches and Debian package changes stay in the container's writable layer. **Restarting the same container retains updates. Recreating it uses the selected image's software and system packages again.** The existing `/app/data` mount (or `DRASTIC_AGENT_DATA_DIR` override) retains identity, keys and configuration in both cases. Continue updating the image through Docker/Compose or TrueNAS to replace the base image, Python and prebuilt software. Container environment settings are preserved across agent updates.
+
 ## Native Agent
 
 For Linux hosts with systemd (amd64 or arm64), use the pipe installer:
@@ -103,9 +119,9 @@ The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, ot
 
 ### Protocol Compatibility
 
-Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and `update`, protocol 2 adds Proxmox restore support, and protocol 3 adds connection status, connection removal and TrueNAS snapshot backups. Unknown versions are rejected; update the server before its agents.
+Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and native `update`, protocol 2 adds Proxmox restore support, protocol 3 adds connection status, connection removal and TrueNAS snapshot backups, and protocol 4 adds managed Docker updates. Unknown versions are rejected; update the server before its agents.
 
-Existing agents without a protocol number report as protocol 0. Update them once manually with `sudo drastic-agent update` to enable the update button and web-based Proxmox configuration. Docker agents must be updated through their container deployment.
+Existing agents without a protocol number report as protocol 0. Update them once manually with `sudo drastic-agent update` to enable the update button and web-based Proxmox configuration. Docker agents predating protocol 4 need one update through their container deployment before they support web updates.
 
 ### Uninstall
 

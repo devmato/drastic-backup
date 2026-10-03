@@ -60,8 +60,9 @@
     <h2>Agents</h2>
     {% for agent in export.agents %}
       <div class="item">
-        <h3>{{ agent.hostname or "Unnamed agent" }} <small>(ID {{ agent.id }})</small></h3>
+        <h3>{{ agent.display_name }} <small>(ID {{ agent.id }})</small></h3>
         <table>
+          <tr><th>Hostname</th><td>{{ agent.hostname or "Not set" }}</td></tr>
           <tr><th>Install type</th><td>{{ agent.install_type or "Not set" }}</td></tr>
           <tr><th>Operating system</th><td>{{ agent.os or "Not set" }}</td></tr>
           <tr><th>Version</th><td>{{ agent.version or "Not set" }}</td></tr>
@@ -80,7 +81,7 @@
       <tbody>
       {% for assignment in export.repository_assignments %}
         <tr>
-          <td>{{ assignment.agent.hostname or "Unnamed agent" }} (ID {{ assignment.agent.id }})</td>
+          <td>{{ assignment.agent.display_name }} (ID {{ assignment.agent.id }})</td>
           <td>{{ assignment.repository.name }} (ID {{ assignment.repository.id }})</td>
         </tr>
       {% else %}<tr><td colspan="2">No repository assignments.</td></tr>{% endfor %}
@@ -127,7 +128,7 @@
       <div class="item">
         <h3>{{ job.name }} <small>(ID {{ job.id }}, UUID {{ job.uuid }})</small></h3>
         <table>
-          <tr><th>Agent</th><td>{{ job.agent.hostname or "Unnamed agent" }} (ID {{ job.agent.id }})</td></tr>
+          <tr><th>Agent</th><td>{{ job.agent.display_name }} (ID {{ job.agent.id }})</td></tr>
           <tr><th>Type</th><td>{{ job.type }}</td></tr>
           <tr><th>Configuration</th><td><pre>{{ job.config | tojson(indent=2) }}</pre></td></tr>
         </table>

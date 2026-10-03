@@ -4,9 +4,11 @@ import importlib.util
 import json
 import os
 import pty
+import signal
 import subprocess
 import termios
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -158,6 +160,116 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     installer.check_owned()
     installer.uninstall(arguments(purge=True))
     assert not root.exists()
+
+
+def test_container_uses_prebuilt_release_and_shared_update_rollback(installer, monkeypatch, repository, tmp_path):
+    data = tmp_path / "mounted-data"
+    data.mkdir()
+    identity = b"[AGENT]\nidentifier = retained\nsecret = retained-secret\n[SERVER]\nurl = https://backup.example.net\n"
+    (data / "config.ini").write_bytes(identity)
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(data))
+    monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_SECRET", "keep-me")
+    image = installer.ROOT / "releases/image"
+    image.mkdir(parents=True)
+    installer.initialize_image(arguments(repository=str(repository), ref="v1", commit="image-commit"))
+    installer.check_owned()
+    assert not installer.SERVICE.exists()
+    assert (installer.ROOT / "current").resolve() == image
+    assert not (installer.ROOT / "data").exists()
+    assert installer.read_state()["deployment"] == "docker"
+    mock_runtime(installer, monkeypatch)
+    processes = []
+    fail_start = False
+
+    class Process:
+        def __init__(self, command, env):
+            nonlocal fail_start
+            self.returncode = 1 if fail_start else None
+            fail_start = False
+            self.env = env
+            processes.append(self)
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout):
+            return self.returncode
+
+    monkeypatch.setattr(installer, "subprocess", SimpleNamespace(**{**vars(subprocess), "Popen": Process}))
+    installer.start()
+    fail_start = True
+    with pytest.raises(RuntimeError, match="failed to start"):
+        installer.install(arguments("update", server=None))
+    assert (installer.ROOT / "current").resolve() == image
+    assert installer.active()
+    assert installer.read_state()["commit"] == "image-commit"
+
+    installer.install(arguments("update", server=None))
+    current = (installer.ROOT / "current").resolve()
+    assert current != image and not image.exists()
+    assert not installer.SERVICE.exists()
+    assert processes[-1].env["DRASTIC_AGENT_DATA_DIR"] == str(data)
+    assert processes[-1].env["DRASTIC_PROXMOX_TOKEN_SECRET"] == "keep-me"
+    assert (data / "config.ini").read_bytes() == identity
+    assert installer.read_state()["deployment"] == "docker"
+
+    dependencies = repository / "scripts/install-agent-dependencies.sh"
+    dependencies.write_text("#!/bin/bash\nexit 9\n")
+    subprocess.run(["git", "-C", str(repository), "add", str(dependencies)], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: required packages fail"], check=True, capture_output=True)
+    with pytest.raises(subprocess.CalledProcessError):
+        installer.install(arguments("update", server=None, ref="main"))
+    assert (installer.ROOT / "current").resolve() == current
+    assert installer.active()
+    assert (data / "config.ini").read_bytes() == identity
+
+
+def test_container_update_request_requires_launcher_and_rejects_duplicates(installer):
+    args = arguments("update", server=None, user=None, password=None, ref="develop")
+    with pytest.raises(RuntimeError, match="launcher is not running"):
+        installer.request_update(args)
+    (installer.ROOT / "launcher.pid").write_text(str(os.getpid()))
+    installer.request_update(args)
+    request = installer.ROOT / "update-request.json"
+    assert json.loads(request.read_text()) == {"repository": None, "ref": "develop", "source": None}
+    with pytest.raises(RuntimeError, match="already running"):
+        installer.request_update(args)
+    request.unlink()
+    with pytest.raises(RuntimeError, match="preserve registration"):
+        installer.request_update(arguments("update"))
+    assert not request.exists()
+
+
+def test_container_launcher_processes_request_and_handles_shutdown_with_stale_own_pid(installer, monkeypatch):
+    monkeypatch.setattr(installer, "CONTAINER", True)
+    pid = installer.ROOT / "launcher.pid"
+    pid.write_text(str(os.getpid()))  # A recreated PID namespace can reuse the old launcher's PID.
+    request = installer.ROOT / "update-request.json"
+    request.write_text(json.dumps({"repository": None, "ref": "develop", "source": None}))
+    handlers = {}
+    calls = []
+    monkeypatch.setattr(installer, "signal", SimpleNamespace(
+        SIGTERM=signal.SIGTERM, SIGINT=signal.SIGINT,
+        signal=lambda number, handler: handlers.update({number: handler})))
+    monkeypatch.setattr(installer, "start", lambda: calls.append("start"))
+    monkeypatch.setattr(installer, "active", lambda: True)
+    monkeypatch.setattr(installer, "stop", lambda: calls.append("stop"))
+
+    def update(args):
+        assert request.exists()
+        assert args.command == "update" and args.ref == "develop"
+        calls.append("update")
+
+    monkeypatch.setattr(installer, "install", update)
+    monkeypatch.setattr(installer.time, "sleep", lambda _: handlers[signal.SIGTERM](signal.SIGTERM, None))
+    installer.run_container()
+    assert calls == ["start", "update", "stop"]
+    assert installer.SHUTTING_DOWN
+    assert not request.exists() and not pid.exists()
 
 
 def test_update_rolls_back_when_stop_reports_error_but_service_is_inactive(installer, monkeypatch, repository):
@@ -454,3 +566,23 @@ esac
         assert expected in error
         assert "Continuing without Proxmox file restore" in error
         assert not (tmp_path / "installed").exists()
+
+
+@pytest.mark.parametrize("exit_code", [0, 8])
+def test_container_dependencies_are_required_and_shared_with_build(tmp_path, exit_code):
+    commands = tmp_path / "bin"
+    commands.mkdir()
+    apt = commands / "apt-get"
+    apt.write_text('#!/bin/bash\nprintf "%s\\n" "$*" >> "$TEST_CALLS"\nexit "$TEST_APT_CODE"\n')
+    apt.chmod(0o755)
+    script = Path(__file__).resolve().parents[3] / "scripts/install-agent-dependencies.sh"
+    calls = tmp_path / "calls"
+    result = subprocess.run(["/bin/bash", str(script)], capture_output=True, text=True,
+                            env={**os.environ, "DRASTIC_AGENT_DEPLOYMENT": "docker", "PATH": str(commands),
+                                 "TEST_CALLS": str(calls), "TEST_APT_CODE": str(exit_code)})
+    assert result.returncode == exit_code
+    assert calls.read_text().splitlines() == [
+        "-o DPkg::Lock::Timeout=60 update",
+        *(["-o DPkg::Lock::Timeout=60 install -y --no-remove --no-install-recommends ca-certificates git openssh-client"]
+          if exit_code == 0 else []),
+    ]

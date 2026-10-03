@@ -2,6 +2,10 @@
 
 ## Release Notes
 
+- Managed Docker agents now support WebUI updates using the same Git lifecycle installer as native agents, including required Debian packages and startup rollback. Updates survive container restarts; recreating the container restores the selected image's software and packages while preserving agent data. Older deployments need one image update to enable protocol 4 support.
+
+- Agents can now have an optional display name, editable on their Info tab even while offline. Aliases replace hostnames in the UI and recovery reports and persist across reconnects; clearing an alias restores the hostname display.
+
 - Agent properties now have a full detail page with Proxmox and TrueNAS connections. Protocol 3 agents expose backup types according to their configuration. TrueNAS jobs select filesystem datasets, back up temporary ZFS snapshot contents through Restic and track cleanup across interrupted runs. See the new TrueNAS Custom App installation guide for snapshot mount requirements.
 
 - Proxmox API access can now be configured and tested in the agent properties, with a shortcut from the backup job form. Tokens are stored encrypted on the agent and settings apply without restarting. Tab content switches are now instant throughout the web UI.

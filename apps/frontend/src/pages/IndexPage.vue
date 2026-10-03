@@ -139,7 +139,7 @@ const attentionItems = computed(() => [
     const state = backupStates.find(state => state.value === getBackupState(job))
     return { key: `job-${job.id}`, label: job.name, description: `Latest backup: ${state.label}`, icon: state.icon, color: state.color, to: `/agents/${job.agent_id}/operations/${job.last_operation.id}` }
   }),
-  ...agentStore.agents.filter(agent => !agent.online).map(agent => ({ key: `agent-${agent.id}`, label: agent.hostname || `Agent #${agent.id}`, description: 'Agent is offline', icon: 'desktop_access_disabled', color: 'negative', to: `/agents/${agent.id}` })),
+  ...agentStore.agents.filter(agent => !agent.online).map(agent => ({ key: `agent-${agent.id}`, label: agent.display_name, description: 'Agent is offline', icon: 'desktop_access_disabled', color: 'negative', to: `/agents/${agent.id}` })),
   ...jobs.value.filter(job => getBackupState(job) === 'never').map(job => ({ key: `job-${job.id}`, label: job.name, description: 'No backup has run yet', icon: 'schedule', color: 'blue-grey-4', to: { path: '/jobs', query: { last_state: 'never' } } })),
 ])
 

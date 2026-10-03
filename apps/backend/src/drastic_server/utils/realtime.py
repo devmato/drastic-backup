@@ -22,6 +22,7 @@ def emit_agent_state(agent, online=None):
             "agent_id": agent.id,
             "online": agent.online if online is None else online,
             "hostname": agent.hostname,
+            "display_name": agent.display_name,
             "os": agent.os,
             "version": agent.version,
         },
