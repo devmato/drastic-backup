@@ -65,6 +65,93 @@ def initialize_schema():
         )
         agent_schema.upsert({"name": "agent", "version": 2}, ["name"])
 
+    if current < 3:
+        # Prepare all known columns before networking/workers start. Runtime
+        # transactions must not rely on dataset's lazy schema creation.
+        schemas = {
+            "agent": {
+                "name": db.types.text,
+                "settings": db.types.text,
+            },
+            "repositories": {
+                "kind": db.types.text,
+                "location": db.types.text,
+                "environment": db.types.json,
+                "password_secret_id": db.types.bigint,
+                "encrypted_restic_access_key": db.types.json,
+            },
+            "retentions": {
+                "name": db.types.text,
+                "keep_last": db.types.bigint,
+                "keep_hourly": db.types.bigint,
+                "keep_weekly": db.types.bigint,
+                "keep_monthly": db.types.bigint,
+                "keep_yearly": db.types.bigint,
+            },
+            "jobs": {
+                "uuid": db.types.text,
+                "type": db.types.text,
+                "config": db.types.json,
+            },
+            "job_actions": {
+                "job_id": db.types.bigint,
+                "module": db.types.text,
+                "hook": db.types.text,
+                "data": db.types.json,
+            },
+            "job_schedules": {
+                "job_id": db.types.bigint,
+                "enabled": db.types.boolean,
+                "repository_id": db.types.bigint,
+                "retention_id": db.types.bigint,
+                "cron_string": db.types.text,
+                "config": db.types.json,
+            },
+            "agent_operations": {
+                "uuid": db.types.text,
+                "type": db.types.text,
+                "source": db.types.text,
+                "job_id": db.types.bigint,
+                "repository_id": db.types.bigint,
+                "schedule_id": db.types.bigint,
+                "retention_id": db.types.bigint,
+                "parent_operation_uuid": db.types.text,
+                "state": db.types.text,
+                "started": db.types.text,
+                "ended": db.types.text,
+                "data": db.types.json,
+            },
+            "agent_operation_artifacts": {
+                "uuid": db.types.text,
+                "operation_id": db.types.bigint,
+                "artifact_key": db.types.text,
+                "snapshot_id": db.types.text,
+                "state": db.types.text,
+                "data": db.types.json,
+                "forgotten_at": db.types.text,
+            },
+            "agent_operation_queue": {
+                "uuid": db.types.text,
+                "status": db.types.text,
+                "payload": db.types.text,
+            },
+            "truenas_snapshots": {
+                "snapshot_id": db.types.text,
+                "api_url": db.types.text,
+                "host_id": db.types.text,
+                "operation_uuid": db.types.text,
+                "created_at": db.types.float,
+                "confirmed": db.types.boolean,
+            },
+        }
+        for table_name, columns in schemas.items():
+            for column_name, column_type in columns.items():
+                db[table_name].create_column(column_name, column_type)
+        # dataset.upsert() creates these indexes lazily as well.
+        db["agent"].create_index(["name"])
+        db["agent_operation_queue"].create_index(["uuid"])
+        agent_schema.upsert({"name": "agent", "version": 3}, ["name"])
+
 
 initialize_schema()
 

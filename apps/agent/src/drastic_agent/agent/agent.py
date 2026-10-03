@@ -1911,27 +1911,18 @@ class Agent:
 
             with db:
                 repository_secrets.delete()
-
-                repositories.delete()
-                repositories.insert_many(
-                    synced_repositories,
-                    types={
-                        "environment": db.types.json,
-                        "encrypted_restic_access_key": db.types.json,
-                    },
-                )
-
-                retentions.delete()
-                retentions.insert_many(server_data["retentions"])
-
-                jobs.delete()
-                jobs.insert_many(server_data["jobs"], types={"config": db.types.json})
-
-                schedules.delete()
-                schedules.insert_many(server_data["schedules"], types={"config": db.types.json})
-
-                actions.delete()
-                actions.insert_many(server_data["actions"])
+                for table, rows in (
+                    (repositories, synced_repositories),
+                    (retentions, server_data["retentions"]),
+                    (jobs, server_data["jobs"]),
+                    (schedules, server_data["schedules"]),
+                    (actions, server_data["actions"]),
+                ):
+                    table.delete()
+                    # dataset.insert_many() uses the table's bound connection;
+                    # insert() uses this thread's transaction connection.
+                    for row in rows:
+                        table.insert(row)
         except Exception as exc:
             logging.exception("Agent sync transaction failed")
             report.log_message(f"Agent sync failed: {exc}", final_state=AgentReportState.failed)

@@ -568,8 +568,8 @@ def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
             inserted_repositories.clear()
 
         @staticmethod
-        def insert_many(rows, **kwargs):
-            inserted_repositories.extend(rows)
+        def insert(row, **kwargs):
+            inserted_repositories.append(row)
 
     class FakeSecrets:
         @staticmethod
@@ -582,7 +582,7 @@ def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
             return None
 
         @staticmethod
-        def insert_many(*args, **kwargs):
+        def insert(*args, **kwargs):
             return None
 
     def fake_send_request(action, **kwargs):
