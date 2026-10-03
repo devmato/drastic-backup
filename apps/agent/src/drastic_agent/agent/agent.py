@@ -12,6 +12,7 @@ import stat
 import subprocess
 import tempfile
 from concurrent.futures import CancelledError
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from threading import Event
@@ -625,9 +626,9 @@ class Agent:
 
     def __flush_report_queue(self):
         # Send update for pending job reports
-        for report in AgentReport.pending_reports:
+        for report in list(AgentReport.pending_reports):
             if not report.sent:
-                report.sent = self.__send_report(report)
+                self.__send_report(report)
 
         # A triggered child must not overtake its parent. Blocked children and
         # failed sends rotate so unrelated reports still make progress.
@@ -707,15 +708,23 @@ class Agent:
 
     def __send_report(self, report):
         try:
-            report_json = AgentReportSchema().dump(report)
+            with report._lock:
+                report_json = deepcopy(AgentReportSchema().dump(report))
+                # Updates during network I/O must leave the report dirty for the next send.
+                report.sent = True
             logging.debug(f"Sending Report {report.uuid}")
             logging.debug(f"JSON-Data: {report_json}")
             request = self.__send_request("operation", operation_json=report_json)
             success = bool(request.get("success"))
             if success:
-                report.mark_logs_sent()
+                logs = report_json.get("logs") or []
+                if logs:
+                    report.mark_logs_sent(logs[-1]["sequence"])
+            else:
+                report.sent = False
             return success
         except Exception as e:
+            report.sent = False
             logging.debug(f"Failed to send report {report.uuid}: {e}")
 
         return False

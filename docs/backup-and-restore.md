@@ -150,7 +150,7 @@ vzdump <vmid> --mode snapshot --stdout --compress 0 --node <node>
 
 ## TrueNAS Backups
 
-Configure **Connections > TrueNAS** on a protocol 3 agent running as a TrueNAS app to enable the **TrueNAS-Backup** job type. Select datasets explicitly; the agent creates temporary ZFS snapshots, backs up their files through Restic, and cleans up on completion or interruption. Each dataset has its own backup artifact and normal file restore support. See [TrueNAS](truenas.md) for required mounts, permissions and the deployment smoke test.
+Configure **Connections > TrueNAS** on a protocol 3 agent running as a TrueNAS app to enable the **TrueNAS-Backup** job type. Select datasets and enable **Include child datasets** to include descendants automatically, including datasets added later. The agent creates temporary ZFS snapshots, backs up their files through Restic, and cleans up on completion or interruption. Each dataset has its own backup artifact and normal file restore support. See [TrueNAS](truenas.md) for required mounts, permissions and the deployment smoke test.
 
 ## Actions
 

@@ -263,7 +263,11 @@ function parseDayOfWeek(cronString) {
 }
 
 function cloneConfig(type, config = {}) {
-  if (type === 'truenas') return { datasets: [...(config.datasets || [])], exclude_patterns: [...(config.exclude_patterns || [])] }
+  if (type === 'truenas') return {
+    datasets: [...(config.datasets || [])],
+    include_children: config.include_children ?? !props.editingJob,
+    exclude_patterns: [...(config.exclude_patterns || [])],
+  }
   if (type === 'proxmox') {
     return cloneProxmoxConfig(config)
   }

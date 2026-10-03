@@ -9,6 +9,7 @@ import dataset
 import pytest
 
 import drastic_agent.agent.agent as agent_module
+import drastic_agent.jobs.base as base_module
 import drastic_agent.jobs.truenas_backup as backup_module
 import drastic_agent.truenas as truenas_module
 from drastic_agent.agent.agent import Agent, _encode_config_secret
@@ -130,7 +131,7 @@ def make_handler(api, restic):
     agent = SimpleNamespace(identifier="agent-1", get_truenas_client=lambda: api, resticapi=restic)
     handler = TrueNASBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {"datasets": ["tank/data"]}}, 1)
     artifacts = []
-    handler.start_artifact = lambda key, data: artifacts.append({"uuid": "artifact", "artifact_key": key, "data": data}) or artifacts[-1]
+    handler.start_artifact = lambda key, data, report=None: artifacts.append({"uuid": "artifact", "artifact_key": key, "data": data}) or artifacts[-1]
     handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs)
     return handler, artifacts
 
@@ -212,6 +213,91 @@ def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapsh
     assert artifacts[0]["state"] == AgentOperationState.failed
     assert artifacts[1]["snapshot_id"] == "successful-dataset"
     assert not snapshots and state["snapshots"].count() == 0
+
+
+@pytest.mark.parametrize("include_children", [None, False, True])
+@pytest.mark.parametrize("select_pool", [False, True])
+def test_child_selection_expands_at_run_time_without_duplicates(nas, state, include_children, select_pool):
+    api, controls, calls, snapshots, _ = nas
+    children = ["tank/data/photos", "tank/data/photos/new", "tank/database"]
+    for name in children:
+        path = api.local_path(f"/mnt/{name}")
+        path.mkdir(parents=True)
+        (path / "example.txt").write_text(name)
+    (api.local_path("/mnt/tank") / "example.txt").write_text("pool root content")
+    # Discovery happens at run time, not when the job configuration is saved.
+    restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [],
+                             backup=lambda **_: {"snapshot_id": "saved"})
+    handler, artifacts = make_handler(api, restic)
+    handler.job["config"]["datasets"] = ["tank"] if select_pool else ["tank/data/photos", "tank/data"]
+    if include_children is not None:
+        handler.job["config"]["include_children"] = include_children
+    controls["datasets"].extend([*reversed(children), "tank"])
+    report = AgentReport.command_report()
+    handler.run_backup(report)
+    expected = ["tank/data", "tank/data/photos"] + (["tank/data/photos/new"] if include_children else [])
+    if select_pool:
+        expected = sorted(controls["datasets"]) if include_children else ["tank"]
+    created = [params[0]["dataset"] for method, params in calls if method == "pool.snapshot.create"]
+    assert created == expected
+    assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
+    assert report.data["backup_items_total"] == report.data["truenas_progress"]["datasets_total"] == len(expected)
+    assert not snapshots and state["snapshots"].count() == 0
+
+
+@pytest.mark.parametrize("missing_parent", [False, True])
+def test_recursive_selection_rejects_unavailable_sources_before_snapshots(nas, state, monkeypatch, missing_parent):
+    api, _, calls, snapshots, _ = nas
+    datasets = api.datasets()
+    datasets.append({"id": "tank/data/locked", "available": False, "error": "Dataset is locked"})
+    monkeypatch.setattr(api, "datasets", lambda: datasets)
+    handler, artifacts = make_handler(api, SimpleNamespace())
+    handler.job["config"]["include_children"] = True
+    if missing_parent:
+        handler.job["config"]["datasets"] = ["tank/missing"]
+    message = "tank/missing: not found" if missing_parent else "tank/data/locked: Dataset is locked"
+    with pytest.raises(TrueNASError, match=message):
+        handler.run_backup(AgentReport.command_report())
+    assert not any(method == "pool.snapshot.create" for method, _ in calls)
+    assert not artifacts and not snapshots and state["snapshots"].count() == 0
+
+
+@pytest.mark.parametrize("fail_first", [False, True])
+def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, state, monkeypatch, fail_first):
+    api, controls, _, snapshots, live = nas
+    other = live.parent / "other"
+    other.mkdir()
+    (other / "example.txt").write_text("other content")
+    controls["datasets"].append("tank/other")
+    report = AgentReport.command_report()
+    monkeypatch.setattr(base_module, "agent_operation_artifacts", state["artifacts"])
+
+    def backup(**kwargs):
+        first = "/data/" in kwargs["cwd"]
+        size = 1000 if first else 10
+        assert report.artifacts[-1]["state"] == "running"
+        assert report.data["backup_progress"]["total_known"] is False
+        kwargs["callback"]({"message_type": "status", "bytes_done": 5})
+        if first and fail_first:
+            raise OSError("read failed")
+        kwargs["callback"]({"message_type": "verbose_status", "action": "scan_finished", "data_size": size, "total_files": 1})
+        # No callback for the summary: the returned summary must still be processed.
+        return {"message_type": "summary", "snapshot_id": str(size), "total_bytes_processed": size, "total_files_processed": 1}
+
+    restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=backup)
+    handler, _ = make_handler(api, restic)
+    del handler.start_artifact, handler.finish_artifact
+    handler.operation = {"id": 1}
+    handler.job["config"]["datasets"] = controls["datasets"]
+    with pytest.raises(TrueNASError, match="tank/data") if fail_first else nullcontext():
+        handler.run_backup(report)
+    assert report.data["bytes_processed"] == (15 if fail_first else 1010)
+    assert report.data["bytes_total"] == (None if fail_first else 1010)
+    assert report.data["current_files"] == []
+    assert report.data["truenas_progress"]["phase"] == "cleanup"
+    assert len(report.artifacts) == 2
+    assert report.artifacts[0]["state"] == ("failed" if fail_first else "success")
+    assert not snapshots
 
 
 def test_mount_detection_requires_exact_dataset_and_unescapes_paths(monkeypatch, tmp_path):

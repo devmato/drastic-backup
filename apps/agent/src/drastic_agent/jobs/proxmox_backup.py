@@ -2,7 +2,6 @@ import json
 from datetime import datetime, timezone
 
 from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.proxmox import (
     ProxmoxError,
@@ -32,6 +31,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             raise ProxmoxError("No supported Proxmox guests matched this job configuration")
 
         report.set_data("guests", [guest["vmid"] for guest in guests])
+        report.set_data("backup_items_total", len(guests) * 2)
         report.log_message(f"Launching Proxmox backup for {len(guests)} guest(s)")
 
         completed_guests = []
@@ -121,6 +121,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
         ]
         artifact = self.start_artifact(
             f"vm:{vmid}",
+            report=report,
             data={"vmid": vmid, "guest_name": guest.get("name"), "archive_filename": archive_filename},
         )
         tags.extend([f"artifact_uuid:{artifact['uuid']}", f"artifact_key:{artifact['artifact_key']}"])
@@ -135,8 +136,8 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 vmid=vmid,
                 stdin_filename=archive_filename,
                 tags=tags,
-                callback=AgentReport.process_job_status,
-                callback_args={"job_id": self.job["id"]},
+                callback=report.process_backup_status,
+                callback_args={},
                 callback_pid=True,
                 callback_throttle=500,
                 progress_callback=process_progress,
@@ -150,7 +151,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             )
             raise
 
-        report.process_job_status(status=restic_status, job_id=self.job["id"])
+        report.process_backup_status(restic_status)
         update_progress({
             "phase": "manifest",
             "archive_bytes": restic_status.get("total_bytes_processed") if isinstance(restic_status, dict) else None,
@@ -171,7 +172,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             f"vmid:{vmid}",
             "kind:manifest",
         ]
-        manifest_artifact = self.start_artifact(f"vm:{vmid}:manifest", data={"vmid": vmid})
+        manifest_artifact = self.start_artifact(f"vm:{vmid}:manifest", data={"vmid": vmid}, report=report)
         manifest_tags.extend(
             [
                 f"artifact_uuid:{manifest_artifact['uuid']}",
@@ -183,8 +184,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 stdin_data=json.dumps(manifest, indent=2, sort_keys=True),
                 stdin_filename=manifest_filename,
                 tags=manifest_tags,
-                callback=AgentReport.process_job_status,
-                callback_args={"job_id": self.job["id"]},
+                callback=report.process_backup_status,
                 callback_pid=True,
                 callback_throttle=500,
             )
@@ -198,7 +198,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             report.set_data("partial_failure", True)
             raise
 
-        report.process_job_status(status=manifest_status, job_id=self.job["id"])
+        report.process_backup_status(manifest_status)
         self.finish_artifact(
             manifest_artifact,
             snapshot_id=manifest_status.get("snapshot_id") if isinstance(manifest_status, dict) else None,

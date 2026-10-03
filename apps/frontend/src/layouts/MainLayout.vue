@@ -2,9 +2,8 @@
   <q-layout view="hHh Lpr lff">
     <q-header class="bg-primary text-white">
       <q-toolbar class="q-px-md">
-        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" class="q-mr-sm" />
+        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" />
         <q-toolbar-title class="row items-center no-wrap q-gutter-sm">
-          <q-icon name="img:/app/icons/drastic-backup-icon.svg" size="sm" class="col-auto" />
           <span class="ellipsis">dRastic Backup</span>
           <q-badge
             v-if="environmentBadgeLabel"

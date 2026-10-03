@@ -39,6 +39,7 @@ class TrueNASSettingsSchema(Schema):
 
 class TrueNASBackupConfigSchema(Schema):
     datasets = fields.List(fields.String(validate=validate_dataset), required=True, validate=validate.Length(min=1))
+    include_children = fields.Boolean(load_default=False)
     exclude_patterns = fields.List(fields.String(validate=validate.Length(min=1)), load_default=list)
 
     @validates_schema

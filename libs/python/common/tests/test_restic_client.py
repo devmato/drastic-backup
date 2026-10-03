@@ -1,3 +1,4 @@
+import json
 import os
 import subprocess
 import threading
@@ -125,6 +126,29 @@ def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):
         "job-1",
     ]
     assert result["snapshot_id"] == "snap-1"
+
+
+def test_backup_delivers_scan_and_summary_despite_throttle(monkeypatch):
+    scan = {"message_type": "verbose_status", "action": "scan_finished", "data_size": 100, "total_files": 2}
+    summary = {"message_type": "summary", "snapshot_id": "snap-1", "total_bytes_processed": 100}
+
+    def popen(cmd, **kwargs):
+        assert "--verbose" in cmd
+        process = _FakeResticProcess(cmd)
+        process.stdout = _FakeTextStream(lines=[json.dumps(message) + "\n" for message in [
+            {"message_type": "status", "bytes_done": 1},
+            {"message_type": "verbose_status", "action": "new", "item": "file"},
+            scan,
+            {"message_type": "status", "bytes_done": 50},
+            summary,
+        ]])
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    events = []
+    result = ResticApi("restic").backup(["/data"], callback=lambda line: events.append(json.loads(line)), callback_throttle=60000)
+    assert events == [{"message_type": "status", "bytes_done": 1}, scan, summary]
+    assert result == summary
 
 
 def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
@@ -622,8 +646,14 @@ def test_real_restic_backup_restore_smoke(tmp_path):
     )
 
     api.init()
-    backup_result = api.backup(paths=[str(source_path)], tags=["smoke-test"])
+    events = []
+    backup_result = api.backup(paths=[str(source_path)], tags=["smoke-test"],
+                               callback=lambda line: events.append(json.loads(line)), callback_throttle=60000)
     assert backup_result["snapshot_id"]
+    scan = next(event for event in events if event.get("action") == "scan_finished")
+    assert scan["data_size"] == backup_result["total_bytes_processed"] == 25
+    assert scan["total_files"] == backup_result["total_files_processed"] == 2
+    assert events[-1] == backup_result
 
     (source_path / "hello.txt").write_text("changed after backup\n", encoding="utf-8")
     (source_path / "nested" / "data.txt").unlink()

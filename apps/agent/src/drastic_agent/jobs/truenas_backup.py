@@ -3,7 +3,6 @@ from time import time
 
 from drastic_agent.agent.database import truenas_snapshots
 from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASError
 from drastic_common.restic.exceptions import ResticCancelledError
@@ -66,8 +65,12 @@ class TrueNASBackupJobHandler(BackupJobHandler):
             if truenas_snapshots.count():
                 raise TrueNASError("Clean up pending snapshots before starting another TrueNAS backup")
             available = {item["id"]: item for item in api.datasets()}
+            names = set(config["datasets"])
+            if config["include_children"]:
+                prefixes = tuple(f"{parent}/" for parent in config["datasets"])
+                names.update(name for name in available if name.startswith(prefixes))
             selected = []
-            for name in config["datasets"]:
+            for name in sorted(names):
                 dataset = available.get(name)
                 if not dataset or not dataset["available"]:
                     raise TrueNASError(f"Dataset {name}: {dataset['error'] if dataset else 'not found or unsupported'}")
@@ -75,6 +78,7 @@ class TrueNASBackupJobHandler(BackupJobHandler):
             host_id = api.call("system.host_id")
             name = f"drastic-{report.uuid}"
             paths = []
+            report.set_data("backup_items_total", len(selected))
             report.set_data("truenas_progress", {"phase": "snapshots", "datasets_total": len(selected)})
             for dataset in selected:
                 self._check_cancelled(report)
@@ -96,7 +100,7 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                 self._check_cancelled(report)
                 report.set_data("truenas_progress", {"phase": "backup", "dataset": dataset["id"],
                                                     "dataset_index": index, "datasets_total": len(paths)})
-                artifact = self.start_artifact(f"dataset:{dataset['id']}", data={
+                artifact = self.start_artifact(f"dataset:{dataset['id']}", report=report, data={
                     "dataset": dataset["id"], "mountpoint": dataset["mountpoint"], "zfs_snapshot": f"{dataset['id']}@{name}",
                 })
                 try:
@@ -109,9 +113,10 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                             tags=[f"job_uuid:{self.job['uuid']}", f"operation_uuid:{report.uuid}", "source:truenas",
                                   f"dataset:{dataset['id']}", f"artifact_uuid:{artifact['uuid']}",
                                   f"artifact_key:{artifact['artifact_key']}"],
-                            callback=AgentReport.process_job_status, callback_args={"job_id": self.job["id"]},
+                            callback=report.process_backup_status,
                             callback_pid=True, callback_throttle=500,
                         )
+                    report.process_backup_status(status)
                     self.finish_artifact(artifact, snapshot_id=status.get("snapshot_id"))
                 except Exception as exc:
                     self.finish_artifact(artifact, state=AgentOperationState.failed, snapshot_id=getattr(exc, "snapshot_id", None))

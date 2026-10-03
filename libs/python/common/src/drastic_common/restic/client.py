@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import shutil
@@ -221,8 +222,18 @@ class ResticApi:
             if line is None:
                 stream_closed = True
                 continue
+            try:
+                message = json.loads(line)
+            except (ValueError, TypeError):
+                message = None
+            message_type = message.get("message_type") if isinstance(message, dict) else None
+            if message_type == "verbose_status" and message.get("action") != "scan_finished":
+                continue
+            # One-shot scan and summary events must survive status throttling.
+            essential = message_type in {"summary", "verbose_status"}
             if callback is not None and (
-                callback_throttle is None
+                essential
+                or callback_throttle is None
                 or last_callback_invoked is None
                 or datetime.now() - last_callback_invoked >= timedelta(milliseconds=callback_throttle)
             ):
@@ -347,7 +358,7 @@ class ResticApi:
         cwd=None,
         parent=None,
     ):
-        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent)
+        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent, verbose=True)
 
         return self.__execute_command(
             cmd,

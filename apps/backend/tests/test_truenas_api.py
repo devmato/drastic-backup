@@ -62,3 +62,11 @@ def test_truenas_job_validation_preserves_existing_jobs_and_rejects_unready_agen
     job_id = response.json["id"]
     assert client.put(f"/api/jobs/{job_id}", json={"config": {"datasets": []}}).status_code == 400
     assert client.get(f"/api/jobs/{job_id}").json["config"]["datasets"] == ["tank/data"]
+    assert client.get(f"/api/jobs/{job_id}").json["config"]["include_children"] is False
+    config = {"datasets": ["tank"], "include_children": True}
+    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").json["config"]["include_children"] is True
+    response = client.post("/api/jobs/", json={**payload, "config": config})
+    assert response.status_code == 201
+    assert client.get(f"/api/jobs/{response.json['id']}").json["config"]["include_children"] is True
+    assert client.post("/api/jobs/", json={**payload, "config": {**config, "include_children": "invalid"}}).status_code == 422

@@ -69,6 +69,8 @@ class AgentOperation:
         self.parent_operation_uuid = parent_operation_uuid
         self.data = data if data is not None else {}
         self.artifacts = []
+        self._backup_stats = {}
+        self._backup_artifact_key = None
         self._logs = []
         self._log_cursor = 0
         self.started = datetime.now()
@@ -255,10 +257,34 @@ class AgentOperation:
 
     command_report = command_operation
 
-    @classmethod
-    def process_job_status(cls, status, job_id, pid=_PID_UNSET):
-        operation = cls.get_operation(job_id=job_id)
-        cls._process_restic_status(operation=operation, status=status, pid=pid)
+    def begin_backup_artifact(self, artifact_key):
+        with self._lock:
+            self._backup_artifact_key = artifact_key
+            self._backup_stats[artifact_key] = {
+                "artifact_key": artifact_key,
+                "bytes_processed": 0, "files_processed": 0,
+                "bytes_total": None, "files_total": None,
+                "total_known": False, "complete": False, "current_files": [],
+            }
+            self._publish_backup_progress()
+
+    def _publish_backup_progress(self):
+        """Replace cumulative counters per artifact; never add the same summary twice."""
+        current = self._backup_stats[self._backup_artifact_key]
+        stats = list(self._backup_stats.values())
+        self.set_data("backup_progress", dict(current))
+        self.set_data("current_files", current["current_files"])
+        for key in ("bytes_processed", "files_processed", "files_new", "files_changed", "files_unmodified",
+                    "dirs_new", "dirs_changed", "dirs_unmodified", "data_added", "data_added_packed", "duration"):
+            if any(key in item for item in stats):
+                self.set_data(key, sum(item.get(key, 0) for item in stats))
+        total_known = len(stats) == self.data.get("backup_items_total", 1) and all(item["total_known"] for item in stats)
+        for key in ("bytes_total", "files_total"):
+            self.set_data(key, sum(item[key] for item in stats) if total_known else None)
+        if self.data.get("backup_items_total", 1) == 1 and current.get("snapshot_id"):
+            self.set_data("snapshot_id", current["snapshot_id"])
+        else:
+            self.remove_data("snapshot_id")
 
     @classmethod
     def process_restore_status(
@@ -297,56 +323,57 @@ class AgentOperation:
             if parameter in status_dict:
                 operation.set_data(target_key, status_dict[parameter])
 
-    @classmethod
-    def _process_restic_status(cls, operation, status, pid=_PID_UNSET):
-        if operation is None:
-            return
+    def process_backup_status(self, status, pid=_PID_UNSET):
         if pid is not _PID_UNSET:
             if pid is None:
-                operation.remove_data("pid")
+                self.remove_data("pid")
             else:
-                operation.set_data("pid", pid)
-        param_dict = {
-            "status": {
-                "total_files": "files_total",
-                "files_done": "files_processed",
-                "total_bytes": "bytes_total",
-                "bytes_done": "bytes_processed",
-                "current_files": "current_files",
-            },
-            "summary": {
-                "total_files_processed": "files_processed",
-                "files_new": "files_new",
-                "files_changed": "files_changed",
-                "files_unmodified": "files_unmodified",
-                "dirs_new": "dirs_new",
-                "dirs_changed": "dirs_changed",
-                "dirs_unmodified": "dirs_unmodified",
-                "total_bytes_processed": "bytes_processed",
-                "data_added": "data_added",
-                "data_added_packed": "data_added_packed",
-                "total_duration": "duration",
-                "snapshot_id": "snapshot_id",
-            },
+                self.set_data("pid", pid)
+        summary_params = {
+            "total_files_processed": "files_processed",
+            "files_new": "files_new",
+            "files_changed": "files_changed",
+            "files_unmodified": "files_unmodified",
+            "dirs_new": "dirs_new",
+            "dirs_changed": "dirs_changed",
+            "dirs_unmodified": "dirs_unmodified",
+            "total_bytes_processed": "bytes_processed",
+            "data_added": "data_added",
+            "data_added_packed": "data_added_packed",
+            "total_duration": "duration",
+            "snapshot_id": "snapshot_id",
         }
         if not status:
             return
         if isinstance(status, list):
             for item in status:
-                cls._process_restic_status(operation=operation, status=item)
+                self.process_backup_status(status=item)
             return
         status_dict = json.loads(status) if isinstance(status, str) else status
-        message_param_dict = param_dict.get(status_dict.get("message_type"), {})
-        for parameter in message_param_dict:
-            if parameter in status_dict:
-                operation.set_data(message_param_dict[parameter], status_dict[parameter])
-            elif parameter == "current_files":
-                operation.set_data("current_files", [])
-        if status_dict.get("message_type") == "summary":
-            if "total_bytes_processed" in status_dict:
-                operation.set_data("bytes_total", status_dict["total_bytes_processed"])
-            if "total_files_processed" in status_dict:
-                operation.set_data("files_total", status_dict["total_files_processed"])
+        if not isinstance(status_dict, dict):
+            return
+        message_type = status_dict.get("message_type")
+        scan_finished = message_type == "verbose_status" and status_dict.get("action") == "scan_finished"
+        if message_type not in {"status", "summary"} and not scan_finished:
+            return
+        with self._lock:
+            if self._backup_artifact_key is None:
+                self.begin_backup_artifact("default")
+            current = self._backup_stats[self._backup_artifact_key]
+            if scan_finished:
+                current.update(bytes_total=status_dict["data_size"], files_total=status_dict["total_files"], total_known=True)
+            elif message_type == "status":
+                # Restic omits zero counters; missing fields must not retain the previous value.
+                current.update(bytes_processed=status_dict.get("bytes_done", 0),
+                               files_processed=status_dict.get("files_done", 0),
+                               current_files=status_dict.get("current_files", []))
+            else:
+                for source, target in summary_params.items():
+                    if source in status_dict:
+                        current[target] = status_dict[source]
+                current.update(bytes_total=current["bytes_processed"], files_total=current["files_processed"],
+                               total_known=True, complete=True, current_files=[])
+            self._publish_backup_progress()
 
     @property
     def state(self):
@@ -449,10 +476,10 @@ class AgentOperation:
                 return "\n".join(self.log_list)
             return "\n".join(log["message"] for log in self._logs[self._log_cursor :])
 
-    def mark_logs_sent(self):
+    def mark_logs_sent(self, sequence=None):
         with self._lock:
             if not self._full_log:
-                self._log_cursor = len(self._logs)
+                self._log_cursor = len(self._logs) if sequence is None else sequence
 
     mark_log_sent = mark_logs_sent
 

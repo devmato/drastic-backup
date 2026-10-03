@@ -588,6 +588,26 @@ def test_send_report_only_marks_log_sent_after_success(monkeypatch):
     assert report.log == ""
 
 
+def test_progress_and_logs_created_during_send_remain_pending(monkeypatch):
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    report = AgentReport.command_report()
+    report.set_data("bytes_processed", 10)
+    report.log_message("before send")
+
+    def send_request(action, **kwargs):
+        report.set_data("bytes_processed", 20)
+        report.log_message("during send")
+        assert kwargs["operation_json"]["data"]["bytes_processed"] == 10
+        return {"success": True}
+
+    monkeypatch.setattr(agent, "_Agent__send_request", send_request)
+    monkeypatch.setattr(AgentReport, "pending_reports", [report])
+    monkeypatch.setattr(AgentReport, "finished_reports", [])
+    Agent._Agent__flush_report_queue(agent)
+    assert report.sent is False
+    assert report.log == "during send"
+
+
 def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     agent._Agent__config["AGENT"] = {"private_key": "private-key"}

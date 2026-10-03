@@ -11,7 +11,8 @@
     <q-banner v-if="!agentOnline">Bring the agent online to discover datasets.</q-banner>
     <q-banner v-if="error" class="bg-negative text-white">{{ error }}</q-banner>
     <q-select outlined :model-value="modelValue.datasets || []" :options="options" label="Datasets" multiple use-chips emit-value map-options :loading="loading" @update:model-value="value => update({ datasets: value })" />
-    <div class="text-caption">Select each dataset explicitly, including child datasets. Each selected dataset gets its own temporary ZFS snapshot and file backup. Snapshots are removed after the run.</div>
+    <q-toggle :model-value="modelValue.include_children ?? false" label="Include child datasets" @update:model-value="value => update({ include_children: value })" />
+    <div class="text-caption">Include child datasets to back up all supported filesystem datasets below your selection, including ones added later. Every included dataset must be mounted and readable by the agent. Each dataset gets its own temporary ZFS snapshot and file backup. Snapshots are removed after the run.</div>
     <q-list v-if="datasets.length" bordered separator>
       <q-item v-for="dataset in datasets" :key="dataset.id">
         <q-item-section>

@@ -72,10 +72,12 @@ The API key is stored encrypted on the agent and is never returned by the settin
 
 Choose **Add job > TrueNAS-Backup** on the configured agent, select datasets, and configure the normal repository, schedule and retention settings.
 
-- Select each filesystem dataset explicitly. Selecting a parent does not include its child datasets. Zvols, locked datasets and internal system datasets are not usable file-backup sources.
+- Enable **Include child datasets** to select a pool or parent dataset and include all supported filesystem datasets below it. Children are discovered at every run, so newly created datasets are included automatically; overlapping parent and child selections are backed up only once. New jobs enable this option by default. Existing jobs keep their explicit selection until you enable it.
+- Every included dataset must be unlocked, mounted and readable by the agent. An unavailable dataset fails validation before temporary snapshots are created. Zvols and internal system datasets are excluded from discovery. With **Include child datasets** disabled, select each filesystem dataset explicitly.
 - The job creates a non-recursive snapshot of every selected dataset before reading files. Separate datasets are snapshotted sequentially, not atomically as a group.
 - Exclusions are relative to each dataset root. For example, `cache/**` excludes a root-level cache; `**/cache/**` excludes nested caches too.
 - Each dataset produces a separate Restic artifact in the operation report. Restore paths start at the dataset's contents, without temporary `.zfs/snapshot/...` prefixes. Successive backups reuse the previous backup of that dataset as their parent.
+- The progress bar measures the current dataset, identified by its name and position in the job. Until its scan has finished, and during snapshot creation, cleanup and finalization, the bar runs without a percentage and the phase is shown below it. Dataset counters describe the current dataset; job counters accumulate across datasets. The animation indicates a running operation, not a measured transfer rate.
 - ZFS snapshots provide a fixed filesystem state. Application-consistent database backups still require appropriate application preparation. Existing start/end actions remain available.
 - One TrueNAS backup runs at a time per agent. A concurrent TrueNAS run fails with a busy message; existing schedules retain their normal no-catch-up behavior.
 

@@ -1,5 +1,4 @@
 from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 
 
@@ -8,7 +7,7 @@ class FileBackupJobHandler(BackupJobHandler):
         config = self.job.get("config") or {}
         paths = [path["path"] for path in config.get("paths", [])]
         exclude_patterns = [pattern["path"] for pattern in config.get("exclude_patterns", [])]
-        artifact = self.start_artifact("default")
+        artifact = self.start_artifact("default", report=report)
         tags = [
             f"job_uuid:{self.job['uuid']}",
             f"operation_uuid:{self.operation['uuid']}",
@@ -26,8 +25,7 @@ class FileBackupJobHandler(BackupJobHandler):
                 paths=paths,
                 exclude_patterns=exclude_patterns,
                 tags=tags,
-                callback=AgentReport.process_job_status,
-                callback_args={"job_id": self.job["id"]},
+                callback=report.process_backup_status,
                 callback_pid=True,
                 callback_throttle=500,
             )
@@ -39,7 +37,7 @@ class FileBackupJobHandler(BackupJobHandler):
             )
             raise
 
-        report.process_job_status(status=restic_status, job_id=self.job["id"])
+        report.process_backup_status(restic_status)
         self.finish_artifact(
             artifact,
             snapshot_id=restic_status.get("snapshot_id") if isinstance(restic_status, dict) else None,

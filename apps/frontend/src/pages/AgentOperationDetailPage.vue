@@ -46,26 +46,25 @@
                 :color="stateColor(operation.state)"
                 :value="progressValue || 0"
                 :indeterminate="progressIndeterminate"
-                aria-label="Operation progress"
+                :aria-label="progressBasis || 'Operation progress'"
                 :aria-valuetext="progressLabel"
               >
                 <div v-if="progressLabel" class="absolute-full flex flex-center">
                   <q-badge color="white" text-color="black" :label="progressLabel" />
                 </div>
               </q-linear-progress>
-              <div v-if="operation.state === 'running' && progressBasis" class="text-caption" role="status">{{ progressBasis }}</div>
             </div>
+            <div v-if="operation.state === 'running' && progressBasis" class="text-caption db-break-word" role="status">{{ progressBasis }}</div>
 
             <div>
               <div class="row q-col-gutter-md text-body2">
                 <div v-for="(column, index) in summaryColumns" :key="index" class="col-12 col-md-6">
                   <div v-for="field in column" :key="field.label" class="row no-wrap items-baseline q-py-xs">
                     <span class="col-auto q-mr-sm">{{ field.label }}:</span>
-                    <div class="col ellipsis">
+                    <div class="col db-break-word">
                       <q-badge v-if="field.color" :color="field.color" text-color="grey-10" :label="field.value" class="text-capitalize" />
                       <router-link v-else-if="field.to" :to="field.to" class="text-primary">{{ field.value }}</router-link>
                       <span v-else class="text-weight-medium">{{ field.value }}</span>
-                      <q-tooltip>{{ field.fullValue || field.value }}</q-tooltip>
                     </div>
                   </div>
                 </div>
@@ -76,9 +75,8 @@
               <q-item-label header class="q-px-none">Current files</q-item-label>
               <q-item v-for="(file, index) in currentFiles" :key="`${index}-${file}`" class="q-px-none">
                 <q-item-section>
-                  <q-item-label class="text-monospace ellipsis">
+                  <q-item-label class="text-monospace db-break-word">
                     {{ file }}
-                    <q-tooltip>{{ file }}</q-tooltip>
                   </q-item-label>
                 </q-item-section>
               </q-item>
@@ -90,9 +88,8 @@
             >
               <div v-for="field in technicalDetails" :key="field.label" class="row no-wrap items-center q-mt-sm">
                 <span class="col-auto q-mr-sm">{{ field.label }}:</span>
-                <span class="col ellipsis">
+                <span class="col db-break-word">
                   {{ field.value }}
-                  <q-tooltip>{{ field.value }}</q-tooltip>
                 </span>
                 <q-btn
                   v-if="field.label === 'Snapshot'"
@@ -257,21 +254,44 @@ const logColumns = [
 
 const operationData = computed(() => operation.value?.data || {})
 const proxmoxProgress = computed(() => operationData.value.proxmox_progress)
+const truenasProgress = computed(() => operationData.value.truenas_progress)
+const backupProgress = computed(() => operationData.value.backup_progress)
+const isBackupOperation = computed(() => operation.value?.type === 'backup')
 const isRestoreOperation = computed(() => operation.value?.type === 'restore')
 const bytesProcessed = computed(() => numberOrNull(operationData.value.bytes_processed))
 const bytesTotal = computed(() => {
+  if (isBackupOperation.value && operation.value?.state === 'running' && !backupProgress.value) return null
   const total = numberOrNull(operationData.value.bytes_total)
   return total === 0 && bytesProcessed.value > 0 ? null : total
 })
 const filesProcessed = computed(() => numberOrNull(operationData.value.files_processed))
-const filesTotal = computed(() => numberOrNull(operationData.value.files_total))
+const filesTotal = computed(() => isBackupOperation.value && operation.value?.state === 'running' && !backupProgress.value
+  ? null : numberOrNull(operationData.value.files_total))
 const restoreBytesRestored = computed(() => numberOrNull(operationData.value.restore_bytes_restored ?? operationData.value.bytes_restored))
 const restoreBytesTotal = computed(() => numberOrNull(operationData.value.restore_bytes_total ?? operationData.value.total_bytes))
 const restoreFilesRestored = computed(() => numberOrNull(operationData.value.restore_files_restored ?? operationData.value.files_restored))
 const restoreFilesTotal = computed(() => numberOrNull(operationData.value.restore_files_total ?? operationData.value.total_files))
 
 const progressSource = computed(() => {
-  if (proxmoxProgress.value) {
+  if (isBackupOperation.value) {
+    if (operation.value?.state !== 'running') {
+      return { value: ['success', 'warning'].includes(operation.value?.state) && !operationData.value.partial_failure ? 1 : null }
+    }
+
+    const phases = {
+      preparing: 'Preparing backup',
+      finalizing: 'Finalizing backup',
+      check: 'Checking repository',
+      retention: 'Applying retention policy',
+      statistics: 'Updating repository statistics',
+      hooks: 'Running backup actions',
+    }
+    if (operationData.value.backup_phase && operationData.value.backup_phase !== 'backup') {
+      return { value: null, basis: phases[operationData.value.backup_phase] || 'Finalizing backup' }
+    }
+  }
+
+  if (isBackupOperation.value && proxmoxProgress.value) {
     const progress = proxmoxProgress.value
     const phases = {
       backing_up: `Backing up VM ${progress.vmid}`,
@@ -281,8 +301,26 @@ const progressSource = computed(() => {
       failed: 'VM backup failed',
     }
     return {
-      value: progress.percent_done == null ? null : clampProgress(progress.percent_done / 100),
-      basis: `VM ${progress.guest_index} of ${progress.guests_total} — ${phases[progress.phase] || 'Running'}`,
+      value: progress.phase === 'backing_up' && progress.bytes_total > 0
+        && numberOrNull(progress.percent_done) !== null && progress.percent_done >= 0 && progress.percent_done < 100
+        ? progress.percent_done / 100 : null,
+      basis: `VM ${progress.guest_index} of ${progress.guests_total} — ${phases[progress.phase] || 'Running'}${progress.percent_done == null && progress.phase === 'backing_up' ? ' — progress not yet known' : ''}`,
+    }
+  }
+
+  if (isBackupOperation.value) {
+    const dataset = truenasProgress.value
+    if (dataset?.phase === 'snapshots') return { value: null, basis: 'Creating TrueNAS snapshots' }
+    if (dataset?.phase === 'cleanup') return { value: null, basis: 'Cleaning up TrueNAS snapshots' }
+    const scope = dataset ? `Dataset ${dataset.dataset_index} of ${dataset.datasets_total} · ${dataset.dataset} — ` : ''
+    const progress = backupProgress.value
+    if (progress?.complete) return { value: null, basis: `${scope}Finalizing snapshot` }
+    if (!progress?.total_known) return { value: null, basis: `${scope}Backing up · Total size not yet known` }
+    const total = numberOrNull(progress.bytes_total)
+    const processed = numberOrNull(progress.bytes_processed)
+    return {
+      value: total > 0 && processed !== null && processed >= 0 && processed <= total ? processed / total : null,
+      basis: `${scope}${total === 0 ? 'No file data to back up' : processed > total ? 'Backing up · Source size changed' : 'Backing up'}`,
     }
   }
 
@@ -326,20 +364,27 @@ const progressSource = computed(() => {
 
 const progressValue = computed(() => progressSource.value.value)
 const progressIndeterminate = computed(() => progressValue.value === null && operation.value?.state === 'running')
-const showProgress = computed(() => !!proxmoxProgress.value || progressValue.value !== null || progressIndeterminate.value)
-const progressLabel = computed(() => progressValue.value === null ? null : `${Math.round(progressValue.value * 100)}%`)
+const showProgress = computed(() => progressValue.value !== null || progressIndeterminate.value)
+const progressLabel = computed(() => progressValue.value === null ? null : `${Math.floor(progressValue.value * 100)}%`)
 const progressBasis = computed(() => progressSource.value.basis)
 
 const metricCards = computed(() => {
   const metrics = []
 
-  if (proxmoxProgress.value) {
+  if (proxmoxProgress.value && operation.value?.state === 'running') {
     const progress = proxmoxProgress.value
     return [
+      ...(bytesProcessed.value !== null ? [{ label: 'Data processed (job)', value: formatBytes(bytesProcessed.value) }] : []),
       ...(progress.bytes_processed != null ? [{ label: 'VM data processed', value: formatBytes(progress.bytes_processed) }] : []),
       ...(progress.bytes_total > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.bytes_total) }] : []),
       ...(progress.archive_bytes != null ? [{ label: 'VMA archive size', value: formatBytes(progress.archive_bytes) }] : []),
     ]
+  }
+
+  if (truenasProgress.value?.phase === 'backup' && operation.value?.state === 'running' && backupProgress.value) {
+    const progress = backupProgress.value
+    metrics.push({ label: 'Dataset data processed', value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
+    metrics.push({ label: 'Dataset files', value: formatProcessed(numberOrNull(progress.files_processed), numberOrNull(progress.files_total), formatNumber) })
   }
 
   if (isRestoreOperation.value) {
@@ -367,7 +412,6 @@ const metricCards = computed(() => {
       metrics.push({
         label: 'Selected paths',
         value: operationData.value.include_paths.join(', '),
-        fullValue: operationData.value.include_paths.join('\n'),
       })
     }
 
@@ -376,14 +420,14 @@ const metricCards = computed(() => {
 
   if (bytesProcessed.value !== null || bytesTotal.value !== null) {
     metrics.push({
-      label: bytesProcessed.value === null ? 'Total data' : 'Data processed',
+      label: bytesProcessed.value === null ? 'Total data' : truenasProgress.value ? 'Data processed (job)' : 'Data processed',
       value: formatProcessed(bytesProcessed.value, bytesTotal.value, formatBytes),
     })
   }
 
   if (filesProcessed.value !== null || filesTotal.value !== null) {
     metrics.push({
-      label: filesProcessed.value === null ? 'Total files' : 'Files',
+      label: filesProcessed.value === null ? 'Total files' : proxmoxProgress.value ? 'Archive / manifest files' : truenasProgress.value ? 'Files (job)' : 'Files',
       value: formatProcessed(filesProcessed.value, filesTotal.value, formatNumber),
     })
   }
@@ -477,7 +521,9 @@ function formatProcessed(processed, total, formatter) {
 
 const currentFiles = computed(() => {
   if (isRestoreOperation.value || operation.value?.state !== 'running') return []
-  if (proxmoxProgress.value) return [proxmoxProgress.value.archive_filename]
+  if (operationData.value.backup_phase && operationData.value.backup_phase !== 'backup') return []
+  if (truenasProgress.value && truenasProgress.value.phase !== 'backup') return []
+  if (proxmoxProgress.value) return proxmoxProgress.value.phase === 'backing_up' ? [proxmoxProgress.value.archive_filename].filter(Boolean) : []
 
   const files = Array.isArray(operationData.value.current_files) ? operationData.value.current_files : []
   return files.map(formatCurrentFile).filter(Boolean).slice(0, 8)

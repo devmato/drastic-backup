@@ -201,7 +201,7 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     monkeypatch.setattr(base_module, "actions", _FakeActions())
-    monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    monkeypatch.setattr(base_module, "retentions", _ConfiguredRetentions())
     resticapi = _CheckingResticApi()
     handler = _Handler(
         _CheckingAgent(resticapi),
@@ -210,11 +210,36 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
             "uuid": "job-uuid-1",
         },
         repository_id=2,
+        retention_id=3,
         run_options={"repository_check": {"enabled": True, "read_data": "1/10"}},
     )
 
+    phases = []
+
+    def record_phase(expected):
+        assert handler.report.state == AgentReportState.running
+        assert handler.report.data["backup_phase"] == expected
+        assert handler.report.artifacts[0]["state"] == "success"
+        phases.append(expected)
+
+    def check(**kwargs):
+        record_phase("check")
+        return _CheckingResticApi.check(resticapi, **kwargs)
+
+    def retention(**kwargs):
+        record_phase("retention")
+        return _SuccessfulReport()
+
+    def stats(**kwargs):
+        record_phase("statistics")
+        return _SuccessfulReport()
+
+    monkeypatch.setattr(resticapi, "check", check)
+    monkeypatch.setattr(handler.agent, "cmd_run_retention", retention, raising=False)
+    monkeypatch.setattr(handler.agent, "cmd_get_repository_stats", stats)
     report = handler.run()
 
+    assert phases == ["check", "retention", "statistics"]
     assert report.final_state == AgentReportState.success
     assert resticapi.check_calls == [{"read_data": False, "read_data_subset": "1/10"}]
     assert report.data["check"] == {"message_type": "summary", "errors": 0}

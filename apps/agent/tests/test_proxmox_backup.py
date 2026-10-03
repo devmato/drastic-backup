@@ -1,8 +1,11 @@
 import json
 
+import dataset
 import pytest
 
+import drastic_agent.jobs.base as base_module
 import drastic_agent.jobs.proxmox_backup as proxmox_backup_module
+from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.proxmox_backup import ProxmoxBackupJobHandler
 from drastic_agent.proxmox import QemuVolumeGuestDriver
 from drastic_common.restic.exceptions import ResticFailedError
@@ -23,8 +26,8 @@ class _FakeReport:
     def log_message(self, message, final_state=None):
         self.messages.append(message)
 
-    def process_job_status(self, status, job_id):
-        self.statuses.append({"status": status, "job_id": job_id})
+    def process_backup_status(self, status):
+        self.statuses.append(status)
 
 
 class _FakeResticApi:
@@ -36,11 +39,11 @@ class _FakeResticApi:
         self.backup_stdin_from_command_calls.append(kwargs)
         for line in ("INFO: starting backup", "INFO: 25% (16 GiB of 64 GiB) in 1s", "INFO: 100% (64 GiB of 64 GiB) in 2s"):
             kwargs["producer_stderr_callback"](line)
-        return {"snapshot_id": "backup-snap", "total_bytes_processed": 20 * 1024**3}
+        return {"message_type": "summary", "snapshot_id": "backup-snap", "total_bytes_processed": 20 * 1024**3, "total_files_processed": 1}
 
     def backup_stdin(self, **kwargs):
         self.backup_stdin_calls.append(kwargs)
-        return {"snapshot_id": "manifest-snap", "total_bytes_processed": 512}
+        return {"message_type": "summary", "snapshot_id": "manifest-snap", "total_bytes_processed": 512, "total_files_processed": 1}
 
 
 class _FakeAgent:
@@ -81,7 +84,7 @@ def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch, guest_ids)
     handler.agent.proxmox_client.guest_ids = guest_ids
     artifacts = []
     handler.operation = {"id": 1, "uuid": "operation-uuid-1"}
-    handler.start_artifact = lambda artifact_key, data=None: artifacts.append(
+    handler.start_artifact = lambda artifact_key, data=None, report=None: artifacts.append(
         {"id": len(artifacts) + 1, "uuid": f"artifact-{len(artifacts) + 1}", "artifact_key": artifact_key, "data": data or {}}
     ) or artifacts[-1]
     handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs) or artifact
@@ -132,6 +135,24 @@ def test_proxmox_backup_uses_vzdump_archive_and_manifest(monkeypatch, guest_ids)
     assert report.data["completed_guests"] == list(guest_ids)
 
 
+def test_multiple_vm_archives_and_manifests_are_aggregated(monkeypatch):
+    db = dataset.connect("sqlite:///:memory:")
+    monkeypatch.setattr(base_module, "agent_operation_artifacts", db["artifacts"])
+    monkeypatch.setattr(proxmox_backup_module, "ensure_vzdump_available", lambda: None)
+    report = AgentReport.command_report()
+    handler = ProxmoxBackupJobHandler(_FakeAgent(), {"id": 7, "uuid": "job-7", "config": {}}, 1)
+    handler.operation = {"id": 1, "uuid": report.uuid}
+    handler.agent.proxmox_client.guest_ids = (101, 102)
+    try:
+        handler.run_backup(report)
+        assert report.data["bytes_processed"] == report.data["bytes_total"] == 40 * 1024**3 + 1024
+        assert report.data["files_processed"] == 4
+        assert "snapshot_id" not in report.data
+        assert len(report.artifacts) == 4
+    finally:
+        db.engine.dispose()
+
+
 @pytest.mark.parametrize(("line", "expected"), [
     ("INFO:  25% (16.0 GiB of 64.0 GiB) in 1m, read: 1 GiB/s", {
         "percent_done": 25, "bytes_processed": 16 * 1024**3, "bytes_total": 64 * 1024**3,
@@ -166,7 +187,7 @@ def test_manifest_failure_keeps_successful_archive_artifact_visible():
     )
     handler.operation = {"id": 1, "uuid": "operation-uuid-1"}
     artifacts = []
-    handler.start_artifact = lambda artifact_key, data=None: artifacts.append(
+    handler.start_artifact = lambda artifact_key, data=None, report=None: artifacts.append(
         {
             "id": len(artifacts) + 1,
             "uuid": f"artifact-{len(artifacts) + 1}",
@@ -201,7 +222,7 @@ def test_failed_archive_artifact_keeps_snapshot_id():
     )
     handler.operation = {"id": 1, "uuid": "operation-uuid-1"}
     artifacts = []
-    handler.start_artifact = lambda artifact_key, data=None: artifacts.append(
+    handler.start_artifact = lambda artifact_key, data=None, report=None: artifacts.append(
         {"uuid": "artifact-1", "artifact_key": artifact_key, "data": data or {}}
     ) or artifacts[-1]
     handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs) or artifact

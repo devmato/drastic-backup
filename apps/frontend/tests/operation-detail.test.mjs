@@ -11,7 +11,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const route = { params: { operationId: '1', agentId: '1' }, query: {} }
   let resolveRequest
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
-  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
+  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
     computed, ref, stateColor: getBackupStateColor,
     useRoute: () => route,
     useAgentStore: () => store,
@@ -50,7 +50,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   page.operation.value.state = 'warning'
   assert.equal(page.progressValue.value, 1)
   page.operation.value.state = 'failed'
-  assert.equal(page.progressValue.value, 0.5)
+  assert.equal(page.progressValue.value, null)
   page.operation.value.data.bytes_total = 1024
   assert.equal(page.metricCards.value[0].value, '1 KiB')
 
@@ -83,6 +83,10 @@ test('background operation updates stay quiet and preserve data on failure', asy
   page.operation.value.ended = null
   page.operation.value.data.bytes_total = 1024
   assert.equal(field(page.summaryColumns.value[0], 'Status'), 'running')
+  // Older agents' scan-in-progress totals are not a reliable denominator.
+  assert.equal(page.progressValue.value, null)
+  assert.equal(field(page.metricCards.value, 'Data processed'), '544 B')
+  page.operation.value.data.backup_progress = { total_known: true, bytes_total: 1024, bytes_processed: 544 }
   assert.equal(page.progressValue.value, 544 / 1024)
   assert.equal(field(page.metricCards.value, 'Data processed'), '544 B / 1 KiB')
   assert.equal(page.currentFiles.value[0], '/old/file')
@@ -124,4 +128,85 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.progressLabel.value, '0%')
   page.operation.value.data.proxmox_progress.percent_done = null
   assert.equal(page.progressLabel.value, null)
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+
+  for (const phase of ['finalizing', 'manifest', 'complete', 'failed']) {
+    page.operation.value.data.proxmox_progress.phase = phase
+    page.operation.value.data.proxmox_progress.percent_done = 100
+    assert.equal(page.showProgress.value, true, phase)
+    assert.equal(page.progressIndeterminate.value, true, phase)
+    assert.equal(page.currentFiles.value.length, 0)
+  }
+  page.operation.value.state = 'success'
+  page.operation.value.data.proxmox_progress.percent_done = null
+  assert.equal(page.progressValue.value, 1)
+  assert.equal(page.progressIndeterminate.value, false)
+  page.operation.value.state = 'warning'
+  page.operation.value.data.partial_failure = true
+  assert.equal(page.showProgress.value, false)
+  assert.equal(page.progressIndeterminate.value, false)
+
+  page.operation.value = {
+    id: 1, type: 'backup', state: 'running',
+    data: {
+      backup_phase: 'backup', bytes_processed: 2048, bytes_total: null,
+      truenas_progress: { phase: 'backup', dataset: 'tank/photos', dataset_index: 2, datasets_total: 3 },
+      backup_progress: { total_known: false, complete: false, bytes_processed: 100, bytes_total: null },
+    },
+  }
+  const data = page.operation.value.data
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+  assert.equal(page.progressLabel.value, null)
+  assert.match(page.progressBasis.value, /Dataset 2 of 3 · tank\/photos/)
+  assert.match(page.progressBasis.value, /Total size not yet known/)
+  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '2 KiB')
+  assert.equal(field(page.metricCards.value, 'Dataset data processed'), '100 B')
+  data.backup_progress.total_known = true
+  data.backup_progress.bytes_total = 200
+  assert.equal(page.progressValue.value, 0.5)
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, false)
+  assert.equal(field(page.metricCards.value, 'Dataset data processed'), '100 B / 200 B')
+
+  data.backup_progress.bytes_processed = 199.9
+  assert.equal(page.progressLabel.value, '99%')
+  data.backup_progress.bytes_processed = 201
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+  assert.match(page.progressBasis.value, /Source size changed/)
+  data.backup_progress.bytes_processed = 200
+  data.backup_progress.complete = true
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+  assert.match(page.progressBasis.value, /Finalizing snapshot/)
+
+  data.backup_progress = { total_known: false, complete: false, bytes_total: null, bytes_processed: 0 }
+  data.truenas_progress.dataset_index = 3
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+  assert.match(page.progressBasis.value, /Dataset 3 of 3/)
+  data.backup_progress = { total_known: true, complete: false, bytes_total: 0, bytes_processed: 0 }
+  assert.equal(page.showProgress.value, true)
+  assert.equal(page.progressIndeterminate.value, true)
+  assert.match(page.progressBasis.value, /No file data/)
+
+  for (const phase of ['snapshots', 'cleanup']) {
+    data.truenas_progress.phase = phase
+    data.backup_progress = { total_known: true, bytes_total: 100, bytes_processed: 100 }
+    assert.equal(page.showProgress.value, true)
+    assert.equal(page.progressIndeterminate.value, true)
+    assert.equal(page.currentFiles.value.length, 0)
+  }
+  for (const phase of ['preparing', 'finalizing', 'check', 'retention', 'statistics', 'hooks']) {
+    data.backup_phase = phase
+    assert.equal(page.showProgress.value, true, phase)
+    assert.equal(page.progressIndeterminate.value, true, phase)
+    assert.ok(page.progressBasis.value)
+  }
+  for (const state of ['success', 'warning', 'failed', 'cancelled']) {
+    page.operation.value.state = state
+    assert.equal(page.progressIndeterminate.value, false, state)
+  }
 })

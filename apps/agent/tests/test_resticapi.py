@@ -86,6 +86,7 @@ def test_restic_api_uses_repository_env_and_argument_list(monkeypatch):
         "*.tmp",
         "--tag",
         "job-1",
+        "--verbose",
     ]
     assert FakePopen.last_env["RESTIC_PASSWORD"] == "secret"
     assert FakePopen.last_env["AWS_ACCESS_KEY_ID"] == "key-1"

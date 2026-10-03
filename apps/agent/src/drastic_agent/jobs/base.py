@@ -29,6 +29,7 @@ class BackupJobHandler:
         self.run_options = run_options or {}
         self.repository = None
         self.operation = None
+        self.report = None
 
     def run(self):
         running_job = AgentReport.get_report(job_id=self.job["id"])
@@ -45,6 +46,8 @@ class BackupJobHandler:
             ),
         )
         self.operation = report.history_operation
+        self.report = report
+        report.set_data("backup_phase", "preparing")
         self._sync_operation(report)
 
         hook_actions = {}
@@ -113,6 +116,7 @@ class BackupJobHandler:
 
             if report.final_state == AgentOperationState.success:
                 try:
+                    report.set_data("backup_phase", "backup")
                     self.run_backup(report)
                     backup_completed = self._has_completed_snapshot()
                 except ResticCancelledError as exc:
@@ -127,6 +131,8 @@ class BackupJobHandler:
                         f"Unexpected error during backup: {exc}",
                         final_state=AgentOperationState.failed,
                     )
+                finally:
+                    report.set_data("backup_phase", "finalizing")
 
             if report.final_state == AgentOperationState.failed:
                 self._execute_actions_safely(report, error_actions, "error", post_backup=False)
@@ -163,6 +169,7 @@ class BackupJobHandler:
             try:
                 retention = retentions.find_one(id=self.retention_id) if self.retention_id else None
                 if retention:
+                    report.set_data("backup_phase", "retention")
                     retention_report = self.agent.cmd_run_retention(
                         retention_id=retention["id"],
                         repository_id=self.repository["id"],
@@ -179,6 +186,7 @@ class BackupJobHandler:
                 )
 
         try:
+            report.set_data("backup_phase", "statistics")
             repository_report = self.agent.cmd_get_repository_stats(
                 repository_id=self.repository["id"]
             )
@@ -195,6 +203,7 @@ class BackupJobHandler:
 
     def _execute_actions_safely(self, report, hook_actions, hook_name, post_backup):
         try:
+            report.set_data("backup_phase", "hooks")
             self.agent.execute_actions(report=report, actions=hook_actions)
         except Exception as exc:
             report.log_message(
@@ -242,7 +251,11 @@ class BackupJobHandler:
             for artifact in agent_operation_artifacts.find(operation_id=self.operation["id"])
         )
 
-    def start_artifact(self, artifact_key, data=None):
+    def start_artifact(self, artifact_key, data=None, report=None):
+        if report is not None:
+            self.report = report
+        if self.report is not None:
+            self.report.begin_backup_artifact(artifact_key)
         artifact = {
             "uuid": str(uuid4()),
             "operation_id": self.operation["id"],
@@ -254,6 +267,8 @@ class BackupJobHandler:
         }
         artifact_id = agent_operation_artifacts.insert(artifact)
         artifact["id"] = artifact_id
+        if self.report is not None:
+            self._sync_operation(self.report)
         return artifact
 
     def finish_artifact(self, artifact, state=AgentOperationState.success, snapshot_id=None, data=None):
@@ -262,6 +277,8 @@ class BackupJobHandler:
         if data:
             artifact["data"] = {**(artifact.get("data") or {}), **data}
         agent_operation_artifacts.update(artifact, ["id"])
+        if self.report is not None:
+            self._sync_operation(self.report)
         return artifact
 
     def _ensure_repository_initialized(self, report):
@@ -314,6 +331,7 @@ class BackupJobHandler:
         if not config.get("enabled"):
             return True
 
+        report.set_data("backup_phase", "check")
         read_data = str(config.get("read_data") or "").strip() or None
         read_data_subset = None if read_data == "100%" else read_data
         read_data_full = read_data == "100%"
