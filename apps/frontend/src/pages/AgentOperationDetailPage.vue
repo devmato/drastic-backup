@@ -24,10 +24,6 @@
     </q-banner>
 
     <div v-if="operation" class="column q-gutter-y-md">
-      <q-banner v-if="operation.state === 'running' && operation.data?.truenas_progress" role="status">
-        TrueNAS · {{ operation.data.truenas_progress.phase }}
-        <span v-if="operation.data.truenas_progress.dataset"> · {{ operation.data.truenas_progress.dataset }} ({{ operation.data.truenas_progress.dataset_index }}/{{ operation.data.truenas_progress.datasets_total }})</span>
-      </q-banner>
       <q-card v-if="operation.artifacts?.some(artifact => artifact.data?.dataset)" flat bordered>
         <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">Dataset backups</h2></q-card-section>
         <q-list separator>
