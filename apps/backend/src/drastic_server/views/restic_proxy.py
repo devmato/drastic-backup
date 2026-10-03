@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+from threading import local
 from urllib.parse import unquote
 
 import bcrypt
@@ -11,6 +13,7 @@ from drastic_server.models.agent import Agent
 from drastic_server.models.repository import Repository
 
 blp = Blueprint("restic_proxy", __name__)
+_state = local()
 
 _HOP_BY_HOP_HEADERS = {
     "connection",
@@ -22,6 +25,14 @@ _HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+
+
+def _upstream_session() -> requests.Session:
+    if not hasattr(_state, "session"):
+        _state.session = requests.Session()
+    # Reuse connections, but never carry upstream cookies between agents.
+    _state.session.cookies.clear()
+    return _state.session
 
 
 class _SizedRequestStream:
@@ -81,7 +92,7 @@ def proxy_restic(proxy_path: str):
             current_app.config.get("REST_PROXY_TIMEOUT_SECONDS"),
             DefaultConfig.REST_PROXY_TIMEOUT_SECONDS,
         )
-        upstream = requests.request(
+        upstream = _upstream_session().request(
             method=request.method,
             url=upstream_url,
             params=list(request.args.items(multi=True)),
@@ -108,8 +119,15 @@ def proxy_restic(proxy_path: str):
         upstream.close()
         return Response(status=upstream.status_code, headers=response_headers)
 
+    @stream_with_context
+    def stream_response():
+        try:
+            yield from upstream.iter_content(chunk_size=64 * 1024)
+        finally:
+            upstream.close()
+
     response = Response(
-        stream_with_context(upstream.iter_content(chunk_size=64 * 1024)),
+        stream_response(),
         status=upstream.status_code,
         headers=response_headers,
     )
@@ -135,8 +153,13 @@ def _authenticate_agent() -> Agent | None:
     if agent is None:
         return None
 
-    if not bcrypt.checkpw(password.encode("utf-8"), agent.secret.encode("utf-8")):
-        return None
+    password_bytes = password.encode("utf-8")
+    auth_key = (agent_id, agent.secret, sha256(password_bytes).digest())
+    # ponytail: one successful auth per thread; mixed-agent traffic may repeat bcrypt.
+    if getattr(_state, "auth_key", None) != auth_key:
+        if not bcrypt.checkpw(password_bytes, agent.secret.encode("utf-8")):
+            return None
+        _state.auth_key = auth_key
 
     return agent
 
