@@ -1,39 +1,35 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 q-mb-md">Repositories</div>
+    <PageHeader title="Repositories" description="Manage storage destinations for your backups.">
+      <template #actions>
+        <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Repository" @click="showCreateRepository" />
+      </template>
+    </PageHeader>
+    <q-card v-if="repositoryStore.repositories.length === 0 && !repositoryStore.loading" flat bordered>
+      <EmptyState icon="inventory_2" title="No repositories configured yet" description="Add a repository to choose where your backups will be stored." />
+    </q-card>
     <q-table
+      v-else
+      hide-no-data
       :rows="repositoryStore.repositories"
       :columns="columns"
       :loading="repositoryStore.loading"
+      :hide-header="repositoryStore.repositories.length === 0"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat bordered
       :rows-per-page-options="[0]"
-      no-data-label="No repositories configured"
     >
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="lock_open" @click="showUnlock(props.row)">
-            <q-tooltip>Unlock repository</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="fact_check" color="primary" @click="showCheck(props.row)">
-            <q-tooltip>Check repository</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="visibility" color="grey-8" @click="showReveal(props.row)">
-            <q-tooltip>Reveal repository password</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="edit" color="grey-8" @click="showEditRepository(props.row)">
-            <q-tooltip>Edit repository</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="delete" color="red" :loading="deletingRepoId === props.row.id" :disable="deletingRepoId !== null" @click="confirmDelete(props.row)">
-            <q-tooltip>Delete repository</q-tooltip>
-          </q-btn>
+          <TableActionButton icon="lock_open" label="Unlock repository" @click="showUnlock(props.row)" />
+          <TableActionButton icon="fact_check" label="Check repository" @click="showCheck(props.row)" />
+          <TableActionButton icon="visibility" label="Reveal repository password" @click="showReveal(props.row)" />
+          <TableActionButton icon="edit" label="Edit repository" @click="showEditRepository(props.row)" />
+          <TableActionButton icon="delete" label="Delete repository" color="negative" :loading="deletingRepoId === props.row.id" :disable="deletingRepoId !== null" @click="confirmDelete(props.row)" />
         </q-td>
       </template>
     </q-table>
-
-    <q-page-sticky position="bottom-right" :offset="[35, 35]">
-      <q-btn fab icon="add" color="primary" @click="showCreateRepository" />
-    </q-page-sticky>
 
     <RepositoryManageDialog
       v-model="showManageDialog"
@@ -50,9 +46,9 @@
           <q-card-section>
             <q-select outlined v-model="unlockAgentId" :options="unlockAgents" option-label="hostname" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="unlocking" />
           </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" :disable="unlocking" v-close-popup />
-            <q-btn label="Unlock" type="submit" color="primary" :loading="unlocking" :disable="unlocking" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" :disable="unlocking" v-close-popup />
+            <q-btn unelevated no-caps label="Unlock" type="submit" color="primary" :loading="unlocking" :disable="unlocking" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -63,16 +59,16 @@
       <q-card class="db-dialog-card-sm">
         <q-card-section>
           <div class="text-h6">Check Repository</div>
-          <div class="text-caption text-grey-7">Run restic check on an online agent with access to this repository.</div>
+          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Run restic check on an online agent with access to this repository.</div>
         </q-card-section>
         <q-form @submit="onCheckSubmit">
           <q-card-section class="q-gutter-sm">
             <q-select outlined v-model="checkAgentId" :options="checkAgents" option-label="hostname" option-value="id" emit-value map-options label="Select Agent" :rules="[val => !!val || 'Required']" :disable="checking" />
             <q-input outlined v-model="checkReadDataSubset" label="Read data subset" hint="Optional, e.g. 1/10 or 5%" :disable="checking" />
           </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" :disable="checking" v-close-popup />
-            <q-btn label="Start Check" type="submit" color="primary" :loading="checking" :disable="checking" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" :disable="checking" v-close-popup />
+            <q-btn unelevated no-caps label="Start Check" type="submit" color="primary" :loading="checking" :disable="checking" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -83,7 +79,7 @@
       <q-card class="db-dialog-card-sm">
         <q-card-section>
           <div class="text-h6">Reveal Repository Password</div>
-          <div v-if="!revealedPassword" class="text-caption text-grey-7">Enter your account password to reveal the restic repository password.</div>
+          <div v-if="!revealedPassword" class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Enter your account password to reveal the restic repository password.</div>
         </q-card-section>
         <q-form @submit="onRevealSubmit">
           <q-card-section class="q-gutter-sm">
@@ -115,9 +111,9 @@
               Store this password securely if you need to import the repository into another dRastic instance.
             </q-banner>
           </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Close" :disable="revealing" v-close-popup />
-            <q-btn v-if="!revealedPassword" label="Reveal" type="submit" color="primary" :loading="revealing" :disable="revealing" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Close" :disable="revealing" v-close-popup />
+            <q-btn v-if="!revealedPassword" unelevated no-caps label="Reveal" type="submit" color="primary" :loading="revealing" :disable="revealing" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -126,6 +122,9 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { ref, onMounted } from 'vue'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useRepositoryStore } from 'stores/repository'

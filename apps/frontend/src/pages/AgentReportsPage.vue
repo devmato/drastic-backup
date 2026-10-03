@@ -1,49 +1,57 @@
 <template>
   <q-page class="q-pa-md">
-    <q-breadcrumbs class="q-pb-md">
-      <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-      <q-breadcrumbs-el :label="`Agent #${route.params.agentId}`" />
-      <q-breadcrumbs-el label="Operations" />
-    </q-breadcrumbs>
+    <PageHeader :title="`Operations for Agent #${route.params.agentId}`" description="Review operation history, status and logs.">
+      <template #breadcrumbs>
+        <q-breadcrumbs>
+          <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
+          <q-breadcrumbs-el :label="`Agent #${route.params.agentId}`" :to="`/agents/${route.params.agentId}`" />
+          <q-breadcrumbs-el label="Operations" />
+        </q-breadcrumbs>
+      </template>
+    </PageHeader>
 
-    <div class="q-mb-md">
-      <div class="text-h5">Operations for Agent #{{ route.params.agentId }}</div>
-    </div>
+    <q-card flat bordered class="q-mb-md">
+      <q-form @submit="loadOperations">
+        <q-card-section>
+          <div class="row q-col-gutter-md items-center">
+            <div class="col-12 col-sm-6 col-md-3">
+              <q-select v-model="filterType" :options="typeOptions" label="Operation type" emit-value map-options clearable outlined dense />
+            </div>
+            <div class="col-12 col-sm-6 col-md-3">
+              <q-select v-model="filterState" :options="stateOptions" label="State" emit-value map-options clearable outlined dense />
+            </div>
+            <div class="col-12 col-md-auto">
+              <q-btn unelevated no-caps no-wrap icon="filter_list" label="Filter" color="primary" type="submit" :loading="loading" />
+            </div>
+          </div>
+        </q-card-section>
+      </q-form>
+    </q-card>
 
-    <div class="row q-col-gutter-sm q-mb-md items-end">
-      <div class="col-12 col-sm-6 col-md-3">
-        <q-select v-model="filterType" :options="typeOptions" label="Operation type" emit-value map-options clearable outlined dense />
-      </div>
-      <div class="col-12 col-sm-6 col-md-3">
-        <q-select v-model="filterState" :options="stateOptions" label="State" emit-value map-options clearable outlined dense />
-      </div>
-      <div class="col-12 col-md-auto">
-        <q-btn label="Filter" color="primary" @click="loadOperations" />
-      </div>
-    </div>
-
+    <q-card v-if="operations.length === 0 && !loading" flat bordered>
+      <EmptyState icon="receipt_long" title="No operations found" description="Operations will appear here after a backup or maintenance task runs. Check your filters if you expected results." />
+    </q-card>
     <q-table
+      v-else
+      hide-no-data
       :rows="operations"
       :columns="columns"
       :loading="loading"
+      :hide-header="operations.length === 0"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat bordered
       :rows-per-page-options="[25, 50, 0]"
-      no-data-label="No operations found"
     >
       <template v-slot:body-cell-state="props">
         <q-td :props="props">
-          <q-badge :color="stateColor(props.value)" :label="props.value" />
+          <q-badge :color="stateColor(props.value)" text-color="grey-10" :label="props.value" />
         </q-td>
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="visibility" color="blue" @click="showOperation(props.row)">
-            <q-tooltip>View operation</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="delete" color="red" @click="confirmDeleteOperation(props.row)">
-            <q-tooltip>Delete operation</q-tooltip>
-          </q-btn>
+          <TableActionButton icon="visibility" label="View operation" @click="showOperation(props.row)" />
+          <TableActionButton icon="delete" label="Delete operation" color="negative" @click="confirmDeleteOperation(props.row)" />
         </q-td>
       </template>
     </q-table>
@@ -52,12 +60,16 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { ref, watch, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const route = useRoute()
 const router = useRouter()
@@ -98,11 +110,6 @@ const columns = [
   { name: 'ended', label: 'Ended', field: row => formatDate(row.ended), align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
-
-function stateColor(state) {
-  const colors = { running: 'blue', success: 'green', warning: 'orange', failed: 'red', cancelled: 'grey' }
-  return colors[state] || 'grey'
-}
 
 function formatDate(isoStr) {
   if (!isoStr) return '-'

@@ -1,33 +1,57 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 q-mb-md">Backup Jobs</div>
+    <PageHeader title="Backup Jobs" description="Configure, run and monitor backups for each agent." />
 
-    <div v-if="jobStore.agentJobs.length === 0 && !jobStore.loading" class="q-pa-md">
-      <q-banner class="bg-grey-2">
-        <template v-slot:avatar><q-icon name="info" color="primary" /></template>
-        No jobs configured. Start by adding an <router-link to="/agents">agent</router-link> to configure a new job.
-      </q-banner>
+    <div class="row items-center q-col-gutter-sm q-mb-md">
+      <div class="col-12 col-sm-6 col-md-3">
+        <q-select v-model="lastState" :options="stateOptions" label="Latest backup status" outlined :dense="!$q.platform.has.touch" clearable emit-value map-options />
+      </div>
+      <div v-if="lastState" class="col-12 col-sm">
+        <div class="row items-center q-gutter-sm">
+          <span class="text-body2">{{ visibleAgentJobs.reduce((total, agent) => total + agent.jobs.length, 0) }} matching jobs</span>
+          <q-btn flat no-caps color="primary" label="Clear filter" @click="lastState = null" />
+        </div>
+      </div>
     </div>
+
+    <q-card v-if="!lastState && jobStore.agentJobs.length === 0 && !jobStore.loading" flat bordered>
+      <EmptyState icon="backup" title="No agents available for backups" description="Connect an agent first, then add a backup job for that system.">
+        <q-btn outline no-caps no-wrap color="primary" label="View Agents" to="/agents" />
+      </EmptyState>
+    </q-card>
+
+    <q-card v-if="lastState && visibleAgentJobs.length === 0 && !jobStore.loading" flat bordered>
+      <EmptyState icon="filter_list" title="No matching backup jobs" description="No jobs currently have this latest backup status.">
+        <q-btn outline no-caps color="primary" label="Show All Jobs" @click="lastState = null" />
+      </EmptyState>
+    </q-card>
 
     <q-inner-loading :showing="jobStore.loading" />
 
-    <div v-for="agentData in jobStore.agentJobs" :key="agentData.id" class="q-mb-lg">
+    <div v-for="agentData in visibleAgentJobs" :key="agentData.id" class="q-mb-md">
       <q-card flat bordered>
-        <q-card-section>
-          <div class="row items-center">
-            <q-icon :name="agentData.online ? 'desktop_windows' : 'desktop_access_disabled'" :color="agentData.online ? 'green' : 'red'" size="sm" class="q-mr-sm" />
-            <span class="text-h6">{{ agentData.hostname }}</span>
+        <q-card-section class="q-py-sm">
+          <div class="row items-center q-col-gutter-md">
+            <div class="col-12 col-sm">
+              <div class="row items-center no-wrap">
+                <q-icon :name="agentData.online ? 'desktop_windows' : 'desktop_access_disabled'" :color="agentData.online ? 'positive' : 'negative'" size="sm" class="q-mr-sm" />
+                <h2 class="db-page-title text-subtitle1 text-weight-medium q-my-none">{{ agentData.hostname }}</h2>
+              </div>
+            </div>
+            <div class="col-12 col-sm-auto">
+              <q-btn unelevated no-caps no-wrap :disable="!agentData.online" color="primary" icon="add" label="Add Job" @click="showAddJob(agentData)" />
+            </div>
           </div>
         </q-card-section>
+        <q-separator />
 
-        <q-card-section v-if="agentData.jobs.length === 0">
-          No backup jobs configured
-        </q-card-section>
+        <q-card-section v-if="agentData.jobs.length === 0" class="q-py-sm" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">No backup jobs configured yet.</q-card-section>
 
         <q-table
           v-if="agentData.jobs.length > 0"
           :rows="agentData.jobs"
           :columns="jobColumns"
+          :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
           row-key="id"
           flat
           :rows-per-page-options="[0]"
@@ -46,45 +70,27 @@
           </template>
           <template v-slot:body-cell-last_run="props">
             <q-td :props="props">
-              <span v-if="props.row.last_operation" class="row items-center no-wrap q-gutter-x-sm cursor-pointer text-primary" @click="openLatestOperation(props.row)">
-                <q-spinner v-if="props.row.last_operation.state === 'running'" color="blue" size="sm" />
-                <q-icon v-else-if="props.row.last_operation.state === 'success'" name="check_circle" color="green" />
-                <q-icon v-else-if="props.row.last_operation.state === 'warning'" name="warning" color="orange" />
-                <q-icon v-else-if="props.row.last_operation.state === 'failed'" name="error" color="red" />
+              <router-link v-if="props.row.last_operation" :to="`/agents/${props.row.agent_id}/operations/${props.row.last_operation.id}`" class="row items-center no-wrap q-gutter-x-sm text-primary" aria-label="Show latest backup operation">
+                <q-spinner v-if="props.row.last_operation.state === 'running'" :color="stateColor(props.row.last_operation.state)" size="sm" />
+                <q-icon v-else :name="backupStates.find(state => state.value === props.row.last_operation.state)?.icon || 'help_outline'" :color="stateColor(props.row.last_operation.state)" />
                 <span>{{ formatDate(props.row.last_operation.started) }}</span>
                 <q-tooltip>Show latest operation</q-tooltip>
-              </span>
+              </router-link>
               <span v-else class="text-grey">Never</span>
             </q-td>
           </template>
           <template v-slot:body-cell-actions="props">
             <q-td :props="props">
-              <q-btn flat dense icon="receipt_long" color="primary" @click="openJobReports(props.row)">
-                <q-tooltip>Protocol history</q-tooltip>
-              </q-btn>
-              <q-btn v-if="props.row.last_operation && props.row.last_operation.state === 'running'" flat dense icon="cancel" color="red" @click="confirmCancel(props.row)">
-                <q-tooltip>Cancel job</q-tooltip>
-              </q-btn>
-              <q-btn v-else-if="props.row.agent_online" flat dense icon="play_arrow" color="blue" @click="showRunDialog(props.row)">
-                <q-tooltip>Run job</q-tooltip>
-              </q-btn>
-              <q-btn flat dense icon="restore" color="purple" aria-label="Restore backup" @click="showRestore(props.row)">
-                <q-tooltip>Restore</q-tooltip>
-              </q-btn>
-              <q-btn v-if="props.row.agent_online" flat dense icon="edit" @click="showEditJob(props.row)">
-                <q-tooltip>Edit job</q-tooltip>
-              </q-btn>
-              <q-btn flat dense icon="delete" color="red" @click="confirmDeleteJob(props.row)">
-                <q-tooltip>Delete job</q-tooltip>
-              </q-btn>
+              <TableActionButton icon="receipt_long" label="Protocol history" @click="openJobReports(props.row)" />
+              <TableActionButton v-if="props.row.last_operation && props.row.last_operation.state === 'running'" icon="cancel" label="Cancel job" color="negative" @click="confirmCancel(props.row)" />
+              <TableActionButton v-else-if="props.row.agent_online" icon="play_arrow" label="Run job" @click="showRunDialog(props.row)" />
+              <TableActionButton icon="restore" label="Restore backup" @click="showRestore(props.row)" />
+              <TableActionButton v-if="props.row.agent_online" icon="edit" label="Edit job" @click="showEditJob(props.row)" />
+              <TableActionButton icon="delete" label="Delete job" color="negative" @click="confirmDeleteJob(props.row)" />
             </q-td>
           </template>
         </q-table>
 
-        <q-card-actions>
-          <q-space />
-          <q-btn :disable="!agentData.online" color="primary" icon="add" label="Add job" @click="showAddJob(agentData)" />
-        </q-card-actions>
       </q-card>
     </div>
 
@@ -114,11 +120,11 @@
         <q-form @submit="onRunSubmit">
           <q-card-section class="q-gutter-sm">
             <q-checkbox v-model="runShowAllRepositories" dense label="Show all repositories" />
-            <q-select outlined v-model="runJobRepoId" :options="runRepoOptions" label="Target Repository" emit-value map-options :rules="[val => !!val || 'Required']" />
+            <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="runJobRepoId" :options="runRepoOptions" label="Target Repository" emit-value map-options :rules="[val => !!val || 'Required']" />
           </q-card-section>
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" v-close-popup />
-            <q-btn label="Start Backup" type="submit" color="primary" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" v-close-popup />
+            <q-btn unelevated no-caps label="Start Backup" type="submit" color="primary" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -128,8 +134,11 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useJobStore } from 'stores/job'
 import { useAgentStore } from 'stores/agent'
@@ -140,14 +149,23 @@ import { subscribeToSocketEvents } from 'src/utils/socket'
 import JobManageDialog from 'components/jobs/JobManageDialog.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { backupStates, filterAgentJobs, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const router = useRouter()
+const route = useRoute()
 const $q = useQuasar()
 const jobStore = useJobStore()
 const agentStore = useAgentStore()
 const repositoryStore = useRepositoryStore()
 const userStore = useUserStore()
 const operationStore = useOperationStore()
+
+const stateOptions = [...backupStates, { value: 'attention', label: 'Warnings / failures' }]
+const lastState = computed({
+  get: () => stateOptions.some(state => state.value === route.query.last_state) ? route.query.last_state : null,
+  set: value => router.push({ query: { ...route.query, last_state: value || undefined } }),
+})
+const visibleAgentJobs = computed(() => filterAgentJobs(jobStore.agentJobs, lastState.value))
 
 const showJobDialog = ref(false)
 const editingJob = ref(null)
@@ -345,11 +363,6 @@ function openJobReports(job) {
   router.push(`/agents/${job.agent_id}/operations?type=backup&job_id=${job.id}`)
 }
 
-function openLatestOperation(job) {
-  if (!job.last_operation) return
-  router.push(`/agents/${job.agent_id}/operations/${job.last_operation.id}`)
-}
-
 async function onRunSubmit() {
   try {
     await userStore.withRecoveryKey(recoveryKey => operationStore.startBackupJob({
@@ -393,6 +406,12 @@ onMounted(async () => {
   await agentStore.loadAgents()
   await repositoryStore.loadRepositories()
   await jobStore.loadJobs()
+
+  if (typeof route.query.add_for_agent === 'string') {
+    const agent = jobStore.agentJobs.find(agent => String(agent.id) === route.query.add_for_agent && agent.online)
+    if (agent) showAddJob(agent)
+    await router.replace({ query: { ...route.query, add_for_agent: undefined } })
+  }
 
   stopJobsSocketListener = await subscribeToSocketEvents(async (payload) => {
     const eventName = payload?.name || ''

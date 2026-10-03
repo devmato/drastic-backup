@@ -1,24 +1,18 @@
 <template>
   <q-page class="q-pa-md">
-    <q-breadcrumbs class="q-pb-md">
-      <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-      <q-breadcrumbs-el label="Add Agent" />
-    </q-breadcrumbs>
-
-    <div class="q-mb-md">
-      <div class="row items-center q-col-gutter-md q-row-gutter-sm">
-      <div class="text-h5">Add Agent</div>
-      </div>
-      <div class="text-body2 text-grey-7 q-mt-sm">
-        Install the Linux agent directly from Git or run the Docker agent.
-        Copy the install snippet for the selected target.
-      </div>
-    </div>
+    <PageHeader title="Add Agent" description="Install the Linux agent directly from Git or run the Docker agent. Copy the install snippet for the selected target.">
+      <template #breadcrumbs>
+        <q-breadcrumbs>
+          <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
+          <q-breadcrumbs-el label="Add Agent" />
+        </q-breadcrumbs>
+      </template>
+    </PageHeader>
 
     <q-banner v-if="loadError" rounded class="bg-red-1 text-red-10 q-mb-md">
       {{ loadError }}
       <template #action>
-        <q-btn flat color="red" label="Retry" @click="loadInstallOptions" />
+        <q-btn flat no-caps color="negative" label="Retry" @click="loadInstallOptions" />
       </template>
     </q-banner>
 
@@ -27,7 +21,7 @@
     </div>
 
     <div v-else class="row q-col-gutter-md q-row-gutter-md">
-      <div v-for="card in platformCards" :key="card.id" class="col-12 col-md-6 col-xl-3">
+      <div v-for="card in platformCards" :key="card.id" class="col-12 col-md-6">
         <q-card bordered flat class="full-height column no-wrap">
           <q-card-section class="col-auto">
             <div class="row items-center no-wrap q-col-gutter-sm">
@@ -35,7 +29,7 @@
                 <q-icon :name="card.icon" size="32px" color="primary" />
               </div>
               <div class="col">
-                <div class="text-h6">{{ card.title }}</div>
+                <h2 class="text-subtitle1 text-weight-medium q-my-none">{{ card.title }}</h2>
                 <div class="row q-gutter-xs q-mt-xs">
                   <q-chip v-for="chip in card.chips" :key="chip" dense square color="grey-2" text-color="dark">
                     {{ chip }}
@@ -67,16 +61,16 @@
             <q-tab-panels :model-value="selectedActionId(card)" class="bg-transparent q-pa-none">
               <q-tab-panel v-for="action in card.actions" :key="action.id" :name="action.id" class="q-pa-none">
                 <div class="text-subtitle2">{{ action.description }}</div>
-                <div class="text-body2 text-grey-7 q-mt-xs">{{ action.note }}</div>
+                <div class="text-body2 q-mt-xs" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">{{ action.note }}</div>
                 <q-card flat bordered class="q-mt-sm">
                   <q-card-section class="row items-center q-pa-sm">
-                    <div class="text-caption text-grey-7">Install snippet</div>
+                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Install snippet</div>
                     <q-space />
                     <q-btn dense flat color="primary" icon="content_copy" label="Copy" no-caps @click="copyAction(action)" />
                   </q-card-section>
                   <q-separator />
                   <q-card-section class="q-pa-none">
-                    <pre class="db-code-block db-code-block--wrap text-dark q-ma-none">{{ buildActionSnippet(action) }}</pre>
+                    <pre class="db-code-block db-code-block--wrap q-ma-none">{{ buildActionSnippet(action) }}</pre>
                   </q-card-section>
                 </q-card>
               </q-tab-panel>
@@ -89,6 +83,7 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
 import { computed, onMounted, ref } from 'vue'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'

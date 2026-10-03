@@ -1,10 +1,8 @@
 <template>
-  <q-item clickable :to="to" v-ripple>
-    <q-item-section avatar>
-      <q-icon :name="icon"></q-icon>
-    </q-item-section>
+  <q-item dark clickable :dense="!$q.platform.has.touch" :to="to" :exact="to === '/'" v-ripple active-class="db-nav-active text-blue-3" class="rounded-borders q-mx-sm q-my-xs">
+    <q-icon :name="icon" size="sm" class="self-center q-mr-md" />
     <q-item-section>
-      <q-item-label class="text-weight-bold">{{ label }}</q-item-label>
+      <q-item-label class="text-weight-medium">{{ label }}</q-item-label>
     </q-item-section>
   </q-item>
 </template>

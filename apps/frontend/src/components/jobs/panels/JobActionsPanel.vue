@@ -3,9 +3,9 @@
     <q-table
       :rows="modelActions"
       :columns="actionColumns"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat
-      dense
       :rows-per-page-options="[0]"
       hide-bottom
       no-data-label="No actions configured"
@@ -19,15 +19,14 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="edit" @click="showActionDialog(props.row)" />
-          <q-btn flat dense icon="delete" color="red" @click="confirmDeleteAction(props.row)" />
+          <TableActionButton icon="edit" label="Edit action" @click="showActionDialog(props.row)" />
+          <TableActionButton icon="delete" label="Delete action" color="negative" @click="confirmDeleteAction(props.row)" />
         </q-td>
       </template>
     </q-table>
 
-    <div v-if="modelActions.length === 0" class="text-grey q-pa-sm">No actions configured</div>
-    <div class="q-mt-sm">
-      <q-btn :disable="disabled" color="green" icon="add" label="Add action" size="sm" @click="showActionDialog(null)" />
+    <div class="row justify-end q-mt-md">
+      <q-btn unelevated no-caps no-wrap :disable="disabled" color="primary" icon="add" label="Add Action" @click="showActionDialog(null)" />
     </div>
 
     <JobActionManageDialog
@@ -39,6 +38,7 @@
 </template>
 
 <script setup>
+import TableActionButton from 'components/TableActionButton.vue'
 import { computed, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import JobActionManageDialog from 'components/jobs/JobActionManageDialog.vue'

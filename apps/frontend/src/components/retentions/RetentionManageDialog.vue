@@ -7,22 +7,22 @@
 
       <q-form @submit="submitForm">
         <q-card-section class="q-gutter-sm">
-          <q-input outlined v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
+          <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
           <q-btn-toggle v-model="form.rtype" :options="typeOptions" class="q-mb-sm" />
 
-          <q-input v-if="form.rtype === 'count'" outlined v-model.number="form.keep_last" label="Keep last snapshots" type="number" :rules="[val => val >= 1 || 'Must be at least 1']" />
+          <q-input v-if="form.rtype === 'count'" outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_last" label="Keep last snapshots" type="number" :rules="[val => val >= 1 || 'Must be at least 1']" />
 
           <template v-if="form.rtype === 'date'">
-            <q-input outlined v-model.number="form.keep_hourly" label="Keep hourly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined v-model.number="form.keep_weekly" label="Keep weekly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined v-model.number="form.keep_monthly" label="Keep monthly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined v-model.number="form.keep_yearly" label="Keep yearly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
+            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_hourly" label="Keep hourly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
+            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_weekly" label="Keep weekly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
+            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_monthly" label="Keep monthly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
+            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_yearly" label="Keep yearly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
           </template>
         </q-card-section>
 
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" color="red" :disable="submitting" v-close-popup />
-          <q-btn label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps label="Cancel" :disable="submitting" v-close-popup />
+          <q-btn unelevated no-caps label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
         </q-card-actions>
       </q-form>
     </q-card>

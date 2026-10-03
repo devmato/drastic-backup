@@ -3,7 +3,7 @@
     <q-card class="db-dialog-card-lg">
       <q-card-section>
         <div class="text-h6">Select Restore Location</div>
-        <div class="text-caption text-grey-7">Choose a local directory on the selected restore agent.</div>
+        <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Choose a local directory on the selected restore agent.</div>
       </q-card-section>
 
       <q-card-section>
@@ -17,12 +17,12 @@
           error-message="Could not load target directories"
           @path-change="currentPath = $event"
         />
-        <q-banner v-else class="bg-grey-2 text-grey-8">Select a restore agent first.</q-banner>
+        <q-banner v-else :class="$q.dark.isActive ? 'bg-grey-9 text-grey-4' : 'bg-grey-2 text-grey-8'">Select a restore agent first.</q-banner>
       </q-card-section>
 
-      <q-card-actions align="right">
-        <q-btn flat label="Cancel" v-close-popup />
-        <q-btn color="primary" label="Use this path" :disable="!currentPath" @click="pickPath(currentPath)" />
+      <q-card-actions align="right" class="q-pa-md">
+        <q-btn flat no-caps label="Cancel" v-close-popup />
+        <q-btn unelevated no-caps color="primary" label="Use this path" :disable="!currentPath" @click="pickPath(currentPath)" />
       </q-card-actions>
     </q-card>
   </q-dialog>

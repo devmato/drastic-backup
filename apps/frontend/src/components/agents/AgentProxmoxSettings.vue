@@ -1,6 +1,6 @@
 <template>
   <div>
-    <div class="text-subtitle1">Proxmox</div>
+    <h2 class="text-subtitle1 text-weight-medium q-my-none">Proxmox</h2>
     <div class="text-caption q-mb-md" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
       Used by all Proxmox jobs on this agent. The agent must run directly on the Proxmox node.
     </div>
@@ -15,15 +15,16 @@
     <q-banner v-if="error" class="bg-negative text-white q-mb-md">
       {{ error }}
       <template v-if="!loaded && agentOnline" #action>
-        <q-btn flat label="Retry" @click="loadSettings" />
+        <q-btn flat no-caps label="Retry" @click="loadSettings" />
       </template>
     </q-banner>
 
-    <q-form v-if="loaded && agentOnline" ref="formRef" class="q-gutter-md" @submit="saveSettings">
+    <q-form v-if="loaded && agentOnline" ref="formRef" class="q-gutter-sm" @submit="saveSettings">
       <div v-if="loaded.configured" class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
         {{ loaded.source === 'agent' ? 'Settings saved on this agent.' : 'Using environment settings. Saving here replaces them for this agent.' }}
       </div>
       <q-input
+        :dense="!$q.platform.has.touch"
         v-model="form.token_id"
         outlined
         label="Token ID"
@@ -32,6 +33,7 @@
         :rules="[value => !!value.trim() || 'Required']"
       />
       <q-input
+        :dense="!$q.platform.has.touch"
         v-model="form.token_secret"
         outlined
         type="password"
@@ -45,8 +47,8 @@
 
       <q-expansion-item label="Advanced" dense>
         <div class="q-gutter-md q-pt-md">
-          <q-input v-model="form.api_url" outlined label="API URL" :disable="busy" :rules="[value => value.trim().startsWith('https://') || 'Use an HTTPS API URL']" />
-          <q-input v-model="form.node" outlined label="Node (optional)" hint="Leave empty to detect the local node automatically." :disable="busy" />
+          <q-input v-model="form.api_url" outlined :dense="!$q.platform.has.touch" hide-bottom-space label="API URL" :disable="busy" :rules="[value => value.trim().startsWith('https://') || 'Use an HTTPS API URL']" />
+          <q-input v-model="form.node" outlined :dense="!$q.platform.has.touch" label="Node (optional)" hint="Leave empty to detect the local node automatically." :disable="busy" />
           <q-toggle v-model="form.verify_tls" label="Verify TLS certificate" :disable="busy" />
           <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Disable verification for a self-signed Proxmox certificate.</div>
         </div>
@@ -58,8 +60,9 @@
       </q-banner>
 
       <div class="row justify-end q-gutter-sm">
-        <q-btn flat label="Test connection" :loading="testing" :disable="busy" @click="testConnection" />
-        <q-btn color="primary" label="Save" type="submit" :loading="saving" :disable="busy" />
+        <slot name="actions" />
+        <q-btn flat no-caps no-wrap label="Test connection" :loading="testing" :disable="busy" @click="testConnection" />
+        <q-btn unelevated no-caps color="primary" label="Save" type="submit" :loading="saving" :disable="busy" />
       </div>
     </q-form>
   </div>
@@ -89,6 +92,7 @@ const testResult = ref(null)
 let loadVersion = 0
 
 const busy = computed(() => loading.value || saving.value || testing.value)
+defineExpose({ busy })
 const canKeepSecret = computed(() => loaded.value?.token_secret_configured
   && form.api_url.trim().replace(/\/+$/, '') === loaded.value.api_url
   && form.token_id.trim() === loaded.value.token_id)

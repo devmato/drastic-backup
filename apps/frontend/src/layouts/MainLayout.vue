@@ -1,16 +1,17 @@
 <template>
   <q-layout view="hHh Lpr lff">
-    <q-header elevated>
-      <q-toolbar class="bg-primary">
-        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" />
+    <q-header class="bg-primary text-white">
+      <q-toolbar class="q-px-md">
+        <q-btn flat dense round icon="menu" aria-label="Menu" @click="toggleLeftDrawer" class="q-mr-sm" />
         <q-toolbar-title class="row items-center no-wrap q-gutter-sm">
-          <span class="app-toolbar-title__text">dRastic Backup</span>
+          <q-icon name="img:/app/icons/drastic-backup-icon.svg" size="sm" class="col-auto" />
+          <span class="ellipsis">dRastic Backup</span>
           <q-badge
             v-if="environmentBadgeLabel"
             :color="environmentBadgeColor"
             :label="environmentBadgeLabel"
             text-color="white"
-            class="app-toolbar-title__env text-weight-bold"
+            class="col-auto gt-xs text-weight-bold"
           />
         </q-toolbar-title>
 
@@ -18,7 +19,7 @@
           <q-tooltip>Documentation</q-tooltip>
         </q-btn>
 
-        <q-btn-dropdown flat no-caps v-if="userStore.loggedIn">
+        <q-btn-dropdown flat no-caps v-if="userStore.loggedIn" aria-label="User menu">
           <template v-slot:label>
             <div class="row items-center no-wrap">
               <q-icon left name="account_circle" />
@@ -26,6 +27,13 @@
             </div>
           </template>
           <q-list>
+            <q-item clickable v-close-popup @click="toggleTheme">
+              <q-item-section avatar><q-icon :name="$q.dark.isActive ? 'light_mode' : 'dark_mode'" /></q-item-section>
+              <q-item-section>
+                <q-item-label>{{ $q.dark.isActive ? 'Light mode' : 'Dark mode' }}</q-item-label>
+              </q-item-section>
+            </q-item>
+            <q-separator />
             <q-item clickable v-close-popup @click="openChangePasswordDialog">
               <q-item-section avatar><q-icon name="key" /></q-item-section>
               <q-item-section><q-item-label>Change Password</q-item-label></q-item-section>
@@ -44,9 +52,10 @@
       </q-toolbar>
     </q-header>
 
-    <q-drawer v-model="leftDrawerOpen" show-if-above :width="250" dark>
+    <q-drawer v-model="leftDrawerOpen" show-if-above :width="250" bordered dark>
       <q-scroll-area class="fit">
-        <q-list padding dark dense>
+        <q-list padding dark>
+          <DrawerLink to="/" icon="dashboard" label="Dashboard" />
           <q-item-label header class="text-grey-5 text-subtitle2 q-px-md q-pt-md q-pb-xs">
             Infrastructure
           </q-item-label>
@@ -75,7 +84,7 @@
       <q-card class="db-dialog-card-sm">
         <q-card-section>
           <div class="text-h6">Change Password</div>
-          <div class="text-caption text-grey-7">
+          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
             Enter your current password and choose a new one. You will be signed out afterwards.
           </div>
         </q-card-section>
@@ -140,9 +149,9 @@
             </q-banner>
           </q-card-section>
 
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" :disable="changePasswordSubmitting" @click="closeChangePasswordDialog" />
-            <q-btn label="Change Password" type="submit" color="primary" :loading="changePasswordSubmitting" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" :disable="changePasswordSubmitting" @click="closeChangePasswordDialog" />
+            <q-btn unelevated no-caps label="Change Password" type="submit" color="primary" :loading="changePasswordSubmitting" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -152,7 +161,7 @@
       <q-card class="db-dialog-card-sm">
         <q-card-section>
           <div class="text-h6">Download Recovery Export</div>
-          <div class="text-caption text-grey-7">
+          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
             Create an offline recovery package for this installation.
           </div>
         </q-card-section>
@@ -199,9 +208,9 @@
             </q-banner>
           </q-card-section>
 
-          <q-card-actions align="right">
-            <q-btn flat label="Cancel" :disable="recoveryExportSubmitting" @click="closeRecoveryExportDialog" />
-            <q-btn label="Download ZIP" type="submit" color="primary" :loading="recoveryExportSubmitting" />
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" :disable="recoveryExportSubmitting" @click="closeRecoveryExportDialog" />
+            <q-btn unelevated no-caps label="Download ZIP" type="submit" color="primary" :loading="recoveryExportSubmitting" />
           </q-card-actions>
         </q-form>
       </q-card>
@@ -228,6 +237,15 @@ const userStore = useUserStore()
 const agentStore = useAgentStore()
 const jobStore = useJobStore()
 const $q = useQuasar()
+function toggleTheme() {
+  $q.dark.toggle()
+  try {
+    localStorage.setItem('drastic-theme', $q.dark.isActive ? 'dark' : 'light')
+  } catch {
+    // Without browser storage, the selection still applies for this session.
+  }
+}
+
 let stopRealtimeSocketListener = null
 let realtimeSyncStarted = false
 
@@ -420,22 +438,3 @@ function toggleLeftDrawer() {
   leftDrawerOpen.value = !leftDrawerOpen.value
 }
 </script>
-
-<style scoped>
-.app-toolbar-title__text {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.app-toolbar-title__env {
-  flex-shrink: 0;
-}
-
-@media (max-width: 599px) {
-  .app-toolbar-title__env {
-    display: none;
-  }
-}
-</style>

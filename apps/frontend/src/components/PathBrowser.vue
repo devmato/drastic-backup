@@ -30,7 +30,7 @@
               </q-item-label>
             </q-item-section>
             <q-item-section side>
-              <span class="text-caption text-grey-7">{{ formatSize(entry) }}</span>
+              <span class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">{{ formatSize(entry) }}</span>
             </q-item-section>
             <q-item-section v-if="mode !== 'pick-directory'" side>
               <div class="row no-wrap q-gutter-xs">

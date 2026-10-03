@@ -1,8 +1,8 @@
 
 <template>
-  <q-page class="db-auth-page flex flex-center q-pa-md">
-    <q-card class="db-auth-card q-pa-lg">
-      <q-card-section class="text-center">
+  <q-page class="flex flex-center q-pa-md">
+    <q-card flat bordered class="db-auth-card">
+      <q-card-section class="text-center q-pa-lg">
         <img
           src="/app/icons/drastic-backup-icon.svg"
           width="96"
@@ -10,8 +10,8 @@
           alt="dRastic Backup"
           class="block q-mx-auto q-mb-md"
         />
-        <div class="text-h5">dRastic Backup</div>
-        <div class="text-subtitle2 text-grey-8">
+        <h1 class="text-h5 text-weight-medium q-my-none">dRastic Backup</h1>
+        <div class="text-body2 q-mt-xs" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
           {{ needsInit ? 'Please create an admin account' : 'Please sign in' }}
         </div>
       </q-card-section>
@@ -25,9 +25,10 @@
         No account exists yet. Please create the initial admin account to continue.
       </q-banner>
 
-      <q-form @submit="onSubmit" class="q-gutter-md">
-        <q-card-section>
+      <q-form @submit="onSubmit">
+        <q-card-section class="q-px-lg q-py-none">
           <q-input
+            outlined
             autofocus
             v-model="username"
             label="Username"
@@ -39,6 +40,7 @@
           </q-input>
 
           <q-input
+            outlined
             v-model="password"
             :type="showPassword ? 'password' : 'text'"
             label="Password"
@@ -53,6 +55,7 @@
           </q-input>
 
           <q-input
+            outlined
             v-if="needsInit"
             v-model="confirmPassword"
             :type="showPassword ? 'password' : 'text'"
@@ -68,11 +71,12 @@
           </q-input>
         </q-card-section>
 
-        <q-card-actions class="q-px-lg">
+        <q-card-actions class="q-pa-lg">
           <q-btn
             :label="needsInit ? 'Create admin account' : 'Login'"
             type="submit"
             unelevated
+            no-caps
             class="full-width"
             color="primary"
             :loading="submitting"

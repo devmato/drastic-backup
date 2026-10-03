@@ -1,14 +1,24 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 q-mb-md">Notification Settings</div>
+    <PageHeader title="Notifications" description="Choose where and when backup notifications are sent.">
+      <template #actions>
+        <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Notification" @click="showManageDialog(null)" />
+      </template>
+    </PageHeader>
+    <q-card v-if="notificationStore.configs.length === 0 && !notificationStore.loading" flat bordered>
+      <EmptyState icon="notifications_none" title="No notifications configured yet" description="Add a notification to receive updates about your backup operations." />
+    </q-card>
     <q-table
+      v-else
+      hide-no-data
       :rows="notificationStore.configs"
       :columns="columns"
       :loading="notificationStore.loading"
+      :hide-header="notificationStore.configs.length === 0"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat bordered
       :rows-per-page-options="[0]"
-      no-data-label="No notifications configured"
     >
       <template v-slot:body-cell-operation_types="props">
         <q-td :props="props">
@@ -17,20 +27,16 @@
       </template>
       <template v-slot:body-cell-operation_states="props">
         <q-td :props="props">
-          <q-badge v-for="label in props.row.operation_state_labels" :key="label" class="q-mr-xs" outline :label="label" :color="stateColor(label.toLowerCase())" />
+          <q-badge v-for="label in props.row.operation_state_labels" :key="label" class="q-mr-xs" outline :label="label" :color="stateColor(label.toLowerCase())" :text-color="$q.dark.isActive ? 'grey-3' : 'grey-9'" />
         </q-td>
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="edit" @click="showManageDialog(props.row)" />
-          <q-btn flat dense icon="delete" color="red" @click="confirmDelete(props.row)" />
+          <TableActionButton icon="edit" label="Edit notification config" @click="showManageDialog(props.row)" />
+          <TableActionButton icon="delete" label="Delete notification config" color="negative" @click="confirmDelete(props.row)" />
         </q-td>
       </template>
     </q-table>
-
-    <q-page-sticky position="bottom-right" :offset="[35, 35]">
-      <q-btn fab icon="add" color="primary" @click="showManageDialog(null)" />
-    </q-page-sticky>
 
     <NotificationManageDialog
       v-model="manageDialogVisible"
@@ -45,11 +51,15 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { ref, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import { useNotificationStore } from 'stores/notification'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import NotificationManageDialog from 'components/notifications/NotificationManageDialog.vue'
+import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const $q = useQuasar()
 const notificationStore = useNotificationStore()
@@ -66,11 +76,6 @@ const columns = [
   { name: 'operation_states', label: 'Operation States', field: 'operation_state_labels', align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
-
-function stateColor(state) {
-  const colors = { running: 'blue', success: 'green', warning: 'orange', failed: 'red', cancelled: 'grey' }
-  return colors[state] || 'grey'
-}
 
 function showManageDialog(config) {
   managedConfig.value = config

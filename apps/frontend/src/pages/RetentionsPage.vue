@@ -1,14 +1,24 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="text-h5 q-mb-md">Retention Policies</div>
+    <PageHeader title="Retention Policies" description="Define how long backup snapshots are kept.">
+      <template #actions>
+        <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Retention Policy" @click="showManageDialog(null)" />
+      </template>
+    </PageHeader>
+    <q-card v-if="retentionStore.retentions.length === 0 && !retentionStore.loading" flat bordered>
+      <EmptyState icon="recycling" title="No retention policies configured yet" description="Add a policy to manage snapshot retention for your backup schedules." />
+    </q-card>
     <q-table
+      v-else
+      hide-no-data
       :rows="retentionStore.retentions"
       :columns="columns"
       :loading="retentionStore.loading"
+      :hide-header="retentionStore.retentions.length === 0"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat bordered
       :rows-per-page-options="[0]"
-      no-data-label="No retention policies configured"
     >
       <template v-slot:body-cell-policy="props">
         <q-td :props="props">
@@ -25,15 +35,11 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="edit" @click="showManageDialog(props.row)" />
-          <q-btn flat dense icon="delete" color="red" @click="confirmDelete(props.row)" />
+          <TableActionButton icon="edit" label="Edit retention policy" @click="showManageDialog(props.row)" />
+          <TableActionButton icon="delete" label="Delete retention policy" color="negative" @click="confirmDelete(props.row)" />
         </q-td>
       </template>
     </q-table>
-
-    <q-page-sticky position="bottom-right" :offset="[35, 35]">
-      <q-btn fab icon="add" color="primary" @click="showManageDialog(null)" />
-    </q-page-sticky>
 
     <RetentionManageDialog
       v-model="manageDialogVisible"
@@ -45,6 +51,9 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { ref, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import { useRetentionStore } from 'stores/retention'

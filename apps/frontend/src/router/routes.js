@@ -6,7 +6,7 @@ const routes = [
     children: [
       { path: '', component: () => import('pages/IndexPage.vue') },
     ],
-    meta: { auth: true }
+    meta: { auth: true, title: 'Dashboard' }
   },
 
   {

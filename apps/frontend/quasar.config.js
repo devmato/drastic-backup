@@ -10,7 +10,7 @@ const apiProxyTarget = process.env.QUASAR_API_PROXY_TARGET || `http://127.0.0.1:
 
 module.exports = configure(function () {
   return {
-    boot: ['axios'],
+    boot: ['theme', 'axios'],
     css: ['app.scss'],
     extras: [
       'fontawesome-v6',
@@ -65,6 +65,7 @@ module.exports = configure(function () {
 
     framework: {
       config: {
+        dark: 'auto',
         notify: {}
       },
 

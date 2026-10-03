@@ -17,9 +17,9 @@
           </template>
         </q-card-section>
 
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" v-close-popup />
-          <q-btn label="Save" type="submit" color="primary" />
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps label="Cancel" v-close-popup />
+          <q-btn unelevated no-caps label="Save" type="submit" color="primary" />
         </q-card-actions>
       </q-form>
     </q-card>

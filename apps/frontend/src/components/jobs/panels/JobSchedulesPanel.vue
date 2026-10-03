@@ -3,9 +3,9 @@
     <q-table
       :rows="modelSchedules"
       :columns="scheduleColumns"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat
-      dense
       :rows-per-page-options="[0]"
       hide-bottom
       no-data-label="No schedules configured"
@@ -17,15 +17,14 @@
       </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="edit" @click="showScheduleDialog(props.row)" />
-          <q-btn flat dense icon="delete" color="red" @click="confirmDeleteSchedule(props.row)" />
+          <TableActionButton icon="edit" label="Edit schedule" @click="showScheduleDialog(props.row)" />
+          <TableActionButton icon="delete" label="Delete schedule" color="negative" @click="confirmDeleteSchedule(props.row)" />
         </q-td>
       </template>
     </q-table>
 
-    <div v-if="modelSchedules.length === 0" class="text-grey q-pa-sm">No schedules configured</div>
-    <div class="q-mt-sm">
-      <q-btn :disable="disabled || !hasAnyRepositories" color="green" icon="add" label="Add schedule" size="sm" @click="showScheduleDialog(null)" />
+    <div class="row justify-end q-mt-md">
+      <q-btn unelevated no-caps no-wrap :disable="disabled || !hasAnyRepositories" color="primary" icon="add" label="Add Schedule" @click="showScheduleDialog(null)" />
     </div>
 
     <JobScheduleManageDialog
@@ -40,6 +39,7 @@
 </template>
 
 <script setup>
+import TableActionButton from 'components/TableActionButton.vue'
 import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useRetentionStore } from 'stores/retention'

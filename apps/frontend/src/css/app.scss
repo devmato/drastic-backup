@@ -1,11 +1,16 @@
 // app global css in SCSS form
 
-body.body--dark {
-  background: #000;
-}
-
 body.body--light {
   background: $grey-1;
+}
+
+.db-nav-active {
+  background: rgba($primary, .16);
+}
+
+.db-page-title,
+.db-break-word {
+  overflow-wrap: anywhere;
 }
 
 .db-dialog-card-sm {
@@ -24,24 +29,13 @@ body.body--light {
 }
 
 .q-dialog__inner--minimized > .app-dialog-wide {
-  width: 60vw;
+  width: 800px;
   max-width: calc(100vw - 48px);
 }
 
 .q-dialog__inner--minimized > .db-job-form-dialog {
-  height: min(680px, calc(100vh - 48px));
-}
-
-@media (max-width: 599px) {
-  .q-dialog__inner--minimized > .app-dialog-wide {
-    width: calc(100vw - 48px);
-  }
-}
-
-.db-auth-page {
-  background:
-    radial-gradient(circle at top, rgba(83, 109, 254, 0.18), transparent 32%),
-    linear-gradient(160deg, #1f2933 0%, #111827 100%);
+  width: 960px;
+  min-height: min(400px, calc(100vh - 48px));
 }
 
 .db-auth-card {
@@ -58,6 +52,10 @@ body.body--light {
   font-family: monospace;
 }
 
+body.body--dark .db-code-block {
+  background: $grey-9;
+}
+
 .db-code-block--wrap {
   white-space: pre-wrap;
   word-break: break-word;
@@ -66,13 +64,4 @@ body.body--light {
 .db-log-message {
   white-space: pre-wrap;
   word-break: break-word;
-}
-
-.db-error-code {
-  font-size: 30vh;
-  line-height: 1;
-}
-
-.db-error-subtitle {
-  opacity: 0.4;
 }

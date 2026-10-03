@@ -1,43 +1,43 @@
 <template>
   <q-page class="q-pa-md">
-    <div class="row items-center q-col-gutter-md q-row-gutter-sm q-mb-md">
-      <div class="col">
-        <div class="text-h5">Agents</div>
-      </div>
-      <div class="col-auto">
-        <q-btn color="primary" icon="add" label="Add Agent" @click="router.push('/agents/install')" />
-      </div>
-    </div>
+    <PageHeader title="Agents" description="Manage connected systems and their backup configuration.">
+      <template #actions>
+        <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Agent" to="/agents/install" />
+      </template>
+    </PageHeader>
 
+    <q-card v-if="agentStore.agents.length === 0 && !agentStore.loading" flat bordered>
+      <EmptyState icon="desktop_windows" title="No agents connected yet" description="Add an agent to connect a system and start configuring backups." />
+    </q-card>
     <q-table
+      v-else
+      hide-no-data
       :rows="agentStore.agents"
       :columns="columns"
       :loading="agentStore.loading"
+      :hide-header="agentStore.agents.length === 0"
+      :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
       row-key="id"
       flat
       bordered
       :rows-per-page-options="[0]"
-      no-data-label="No agents registered"
     >
+      <template #body-cell-hostname="props">
+        <q-td :props="props">
+          <router-link :to="`/agents/${props.row.id}`" class="text-weight-medium text-primary">{{ props.row.hostname || `Agent #${props.row.id}` }}</router-link>
+        </q-td>
+      </template>
       <template #body-cell-status="props">
         <q-td :props="props">
-          <q-badge :color="props.row.online ? 'green' : 'red'" :label="props.row.online ? 'Online' : 'Offline'" />
+          <q-badge :color="props.row.online ? 'positive' : 'negative'" :label="props.row.online ? 'Online' : 'Offline'" />
         </q-td>
       </template>
       <template #body-cell-actions="props">
         <q-td :props="props">
-          <q-btn flat dense icon="settings" color="primary" :to="`/agents/${props.row.id}`" aria-label="Agent properties">
-            <q-tooltip>Agent properties</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="sync" color="secondary" :disable="!props.row.online" @click="syncAgent(props.row)">
-            <q-tooltip>Synchronize agent</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="description" color="blue" @click="router.push(`/agents/${props.row.id}/operations`)" >
-            <q-tooltip>Show reports</q-tooltip>
-          </q-btn>
-          <q-btn flat dense icon="delete" color="red" @click="confirmDelete(props.row)">
-            <q-tooltip>Delete agent</q-tooltip>
-          </q-btn>
+          <TableActionButton icon="settings" label="Agent properties" :to="`/agents/${props.row.id}`" />
+          <TableActionButton icon="sync" label="Synchronize agent" :disable="!props.row.online" @click="syncAgent(props.row)" />
+          <TableActionButton icon="description" label="Show reports" :to="`/agents/${props.row.id}/operations`" />
+          <TableActionButton icon="delete" label="Delete agent" color="negative" @click="confirmDelete(props.row)" />
         </q-td>
       </template>
     </q-table>
@@ -48,13 +48,14 @@
 
 <script setup>
 import { onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import PageHeader from 'components/PageHeader.vue'
+import EmptyState from 'components/EmptyState.vue'
+import TableActionButton from 'components/TableActionButton.vue'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useUserStore } from 'stores/user'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
-const router = useRouter()
 const $q = useQuasar()
 const agentStore = useAgentStore()
 const userStore = useUserStore()

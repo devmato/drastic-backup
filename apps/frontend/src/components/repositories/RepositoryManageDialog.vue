@@ -7,8 +7,9 @@
 
       <q-form @submit="submitForm">
         <q-card-section class="q-gutter-sm">
-          <q-input outlined v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
+          <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
           <q-select
+            :dense="!$q.platform.has.touch" hide-bottom-space
             outlined
             v-model="form.kind"
             :options="kindOptions"
@@ -20,6 +21,7 @@
           />
           <q-input
             v-if="form.kind === 'custom'"
+            :dense="!$q.platform.has.touch" hide-bottom-space
             outlined
             v-model="form.location"
             label="Location"
@@ -43,6 +45,7 @@
           <template v-if="!isEdit && form.setCustomPassword">
             <q-input
               outlined
+              :dense="!$q.platform.has.touch" hide-bottom-space
               v-model="form.password"
               type="password"
               label="Repository password"
@@ -50,6 +53,7 @@
             />
             <q-input
               outlined
+              :dense="!$q.platform.has.touch" hide-bottom-space
               v-model="form.password_confirm"
               type="password"
               label="Confirm Password"
@@ -58,9 +62,9 @@
           </template>
         </q-card-section>
 
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" color="red" :disable="submitting" v-close-popup />
-          <q-btn :label="isEdit ? 'Save' : 'Create'" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps label="Cancel" :disable="submitting" v-close-popup />
+          <q-btn unelevated no-caps :label="isEdit ? 'Save' : 'Create'" type="submit" color="primary" :loading="submitting" :disable="submitting" />
         </q-card-actions>
       </q-form>
     </q-card>

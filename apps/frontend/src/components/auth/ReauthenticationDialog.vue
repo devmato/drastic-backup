@@ -3,7 +3,7 @@
     <q-card class="db-dialog-card-sm">
       <q-card-section>
         <div class="text-h6">Confirm Password</div>
-        <div class="text-caption text-grey-7">
+        <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
           For security-sensitive repository operations, please enter your account password again.
         </div>
       </q-card-section>
@@ -32,9 +32,9 @@
           </q-banner>
         </q-card-section>
 
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" :disable="userStore.reauthSubmitting" @click="userStore.cancelReauth()" />
-          <q-btn label="Continue" type="submit" color="primary" :loading="userStore.reauthSubmitting" />
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps label="Cancel" :disable="userStore.reauthSubmitting" @click="userStore.cancelReauth()" />
+          <q-btn unelevated no-caps label="Continue" type="submit" color="primary" :loading="userStore.reauthSubmitting" />
         </q-card-actions>
       </q-form>
     </q-card>

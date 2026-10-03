@@ -7,16 +7,16 @@
 
       <q-form @submit="submitForm">
         <q-card-section class="q-gutter-sm">
-          <q-input outlined v-model="form.url" label="Apprise URL" :rules="[val => !!val || 'Required']" />
-          <q-select outlined v-model="form.operation_types" :options="options.operation_types" label="Operation Types" multiple emit-value map-options option-label="label" option-value="value" :rules="[val => val.length > 0 || 'Select at least one']" />
-          <q-select outlined v-model="form.operation_states" :options="options.operation_states" label="Operation States" multiple emit-value map-options option-label="label" option-value="value" :rules="[val => val.length > 0 || 'Select at least one']" />
+          <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.url" label="Apprise URL" :rules="[val => !!val || 'Required']" />
+          <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.operation_types" :options="options.operation_types" label="Operation Types" multiple emit-value map-options option-label="label" option-value="value" :rules="[val => val.length > 0 || 'Select at least one']" />
+          <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.operation_states" :options="options.operation_states" label="Operation States" multiple emit-value map-options option-label="label" option-value="value" :rules="[val => val.length > 0 || 'Select at least one']" />
 
-          <q-btn flat icon="send" label="Test notification" color="blue" @click="emit('test', form.url)" :loading="testing" :disable="testing || !form.url" />
+          <q-btn flat no-caps icon="send" label="Test notification" color="primary" @click="emit('test', form.url)" :loading="testing" :disable="testing || !form.url" />
         </q-card-section>
 
-        <q-card-actions align="right">
-          <q-btn flat label="Cancel" color="red" :disable="submitting" v-close-popup />
-          <q-btn label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps label="Cancel" :disable="submitting" v-close-popup />
+          <q-btn unelevated no-caps label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
         </q-card-actions>
       </q-form>
     </q-card>

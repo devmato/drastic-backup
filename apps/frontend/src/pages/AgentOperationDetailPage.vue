@@ -1,44 +1,42 @@
 <template>
   <q-page class="q-pa-md">
-    <q-breadcrumbs class="q-pb-md">
-      <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-      <q-breadcrumbs-el :label="operation?.agent_hostname || `Agent #${route.params.agentId}`" />
-      <q-breadcrumbs-el label="Operations" :to="operationListRoute" />
-      <q-breadcrumbs-el :label="`Operation #${route.params.operationId}`" />
-    </q-breadcrumbs>
-
-    <div class="row items-center q-col-gutter-md q-row-gutter-sm q-mb-lg">
-      <div class="col">
-        <div class="text-h5">{{ pageTitle }}</div>
-      </div>
-      <div class="col-auto">
-        <q-btn color="primary" icon="refresh" label="Refresh" :loading="loading" @click="loadOperation()" />
-      </div>
-      <div v-if="isRestoreOperation && operation?.state === 'running'" class="col-auto">
-        <q-btn outline color="negative" label="Cancel restore" :loading="cancelling" @click="cancelRestore" />
-      </div>
-    </div>
+    <PageHeader :title="pageTitle">
+      <template #breadcrumbs>
+        <q-breadcrumbs>
+          <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
+          <q-breadcrumbs-el :label="operation?.agent_hostname || `Agent #${route.params.agentId}`" :to="`/agents/${route.params.agentId}`" />
+          <q-breadcrumbs-el label="Operations" :to="operationListRoute" />
+          <q-breadcrumbs-el :label="`Operation #${route.params.operationId}`" />
+        </q-breadcrumbs>
+      </template>
+      <template #actions>
+        <q-btn flat round color="primary" icon="refresh" aria-label="Refresh operation" :loading="loading" @click="loadOperation()">
+          <q-tooltip>Refresh operation</q-tooltip>
+        </q-btn>
+        <q-btn v-if="isRestoreOperation && operation?.state === 'running'" outline no-caps no-wrap color="negative" label="Cancel restore" :loading="cancelling" @click="cancelRestore" />
+      </template>
+    </PageHeader>
 
     <q-inner-loading :showing="loading && !operation" />
 
-    <q-banner v-if="!loading && !operation" class="bg-grey-2 text-grey-8">
+    <q-banner v-if="!loading && !operation" :class="$q.dark.isActive ? 'bg-grey-9 text-grey-4' : 'bg-grey-2 text-grey-8'">
       Operation not found or no longer available.
     </q-banner>
 
-    <div v-if="operation" class="q-gutter-md">
+    <div v-if="operation" class="column q-gutter-y-md">
       <q-banner v-if="operation.state === 'running' && operation.data?.truenas_progress" role="status">
         TrueNAS · {{ operation.data.truenas_progress.phase }}
         <span v-if="operation.data.truenas_progress.dataset"> · {{ operation.data.truenas_progress.dataset }} ({{ operation.data.truenas_progress.dataset_index }}/{{ operation.data.truenas_progress.datasets_total }})</span>
       </q-banner>
       <q-card v-if="operation.artifacts?.some(artifact => artifact.data?.dataset)" flat bordered>
-        <q-card-section class="text-subtitle2">Dataset backups</q-card-section>
+        <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">Dataset backups</h2></q-card-section>
         <q-list separator>
           <q-item v-for="artifact in operation.artifacts.filter(item => item.data?.dataset)" :key="artifact.uuid">
             <q-item-section>
               <q-item-label>{{ artifact.data.dataset }}</q-item-label>
-              <q-item-label caption class="text-break">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
+              <q-item-label caption class="db-break-word">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
             </q-item-section>
-            <q-item-section side><q-badge :color="stateColor(artifact.state)" :label="artifact.state" /></q-item-section>
+            <q-item-section side><q-badge :color="stateColor(artifact.state)" text-color="grey-10" :label="artifact.state" /></q-item-section>
           </q-item>
         </q-list>
       </q-card>
@@ -68,7 +66,7 @@
                   <div v-for="field in column" :key="field.label" class="row no-wrap items-baseline q-py-xs">
                     <span class="col-auto q-mr-sm">{{ field.label }}:</span>
                     <div class="col ellipsis">
-                      <q-badge v-if="field.color" :color="field.color" :label="field.value" class="text-capitalize" />
+                      <q-badge v-if="field.color" :color="field.color" text-color="grey-10" :label="field.value" class="text-capitalize" />
                       <router-link v-else-if="field.to" :to="field.to" class="text-primary">{{ field.value }}</router-link>
                       <span v-else class="text-weight-medium">{{ field.value }}</span>
                       <q-tooltip>{{ field.fullValue || field.value }}</q-tooltip>
@@ -118,20 +116,19 @@
           v-if="sortedLogs.length > 0"
           :rows="sortedLogs"
           :columns="logColumns"
+          :table-header-class="$q.dark.isActive ? 'bg-dark text-grey-4' : 'bg-grey-1 text-grey-7'"
           v-model:pagination="logPagination"
           :filter="logFilter"
           :filter-method="filterLogs"
           :rows-per-page-options="[0]"
           row-key="sequence"
           flat
-          dense
           hide-bottom
-          separator="none"
         >
           <template #top-left>
             <div class="row items-center no-wrap">
               <div>
-                <div class="text-h6">Log</div>
+                <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
               </div>
               <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
             </div>
@@ -171,7 +168,7 @@
         <q-card-section v-else-if="operation.log">
           <div class="row items-center no-wrap q-mb-md">
             <div>
-              <div class="text-h6">Log</div>
+              <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
             </div>
             <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
           </div>
@@ -181,11 +178,11 @@
         <q-card-section v-else>
           <div class="row items-center no-wrap q-mb-md">
             <div>
-              <div class="text-h6">Log</div>
+              <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
             </div>
             <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
           </div>
-          <q-banner class="bg-grey-2 text-grey-8">No log entries available.</q-banner>
+          <q-banner :class="$q.dark.isActive ? 'bg-grey-9 text-grey-4' : 'bg-grey-2 text-grey-8'">No log entries available.</q-banner>
         </q-card-section>
       </q-card>
     </div>
@@ -193,6 +190,7 @@
 </template>
 
 <script setup>
+import PageHeader from 'components/PageHeader.vue'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
@@ -200,6 +198,7 @@ import { useAgentStore } from 'stores/agent'
 import { useOperationStore } from 'stores/operation'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const route = useRoute()
 const $q = useQuasar()
@@ -485,11 +484,6 @@ const currentFiles = computed(() => {
   const files = Array.isArray(operationData.value.current_files) ? operationData.value.current_files : []
   return files.map(formatCurrentFile).filter(Boolean).slice(0, 8)
 })
-
-function stateColor(state) {
-  const colors = { running: 'blue', success: 'green', warning: 'orange', failed: 'red', cancelled: 'grey' }
-  return colors[state] || 'grey'
-}
 
 function logLevelColor(level) {
   const colors = { debug: 'grey', info: 'blue', warning: 'orange', error: 'red', critical: 'purple' }

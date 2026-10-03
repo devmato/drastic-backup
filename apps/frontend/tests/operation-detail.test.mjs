@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, ref } from 'vue'
+import { getBackupStateColor } from '../src/utils/backup-results.js'
 
 test('background operation updates stay quiet and preserve data on failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
@@ -11,7 +12,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   let resolveRequest
   const store = { getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
-    computed, ref,
+    computed, ref, stateColor: getBackupStateColor,
     useRoute: () => route,
     useAgentStore: () => store,
     useOperationStore: () => ({}),

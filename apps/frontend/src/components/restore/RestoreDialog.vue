@@ -1,28 +1,29 @@
 <template>
-  <q-dialog v-model="dialogVisible" persistent :maximized="$q.screen.lt.md">
-    <q-card class="app-dialog-wide">
-      <q-card-section class="row items-start q-col-gutter-sm q-pa-lg">
+  <q-dialog v-model="dialogVisible" persistent :maximized="$q.screen.lt.sm">
+    <q-card class="app-dialog-wide column no-wrap overflow-hidden">
+      <q-card-section class="col-auto row items-start q-col-gutter-sm q-pa-md">
         <div class="col">
           <div class="text-h6">Restore {{ job?.name }}</div>
-          <div class="text-caption text-grey-7">{{ job?.type === 'proxmox' ? 'Restore a VM or export files from its backup.' : 'Restore selected files or directories to a local path on the target agent.' }}</div>
+          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">{{ job?.type === 'proxmox' ? 'Restore a VM or export files from its backup.' : 'Restore selected files or directories to a local path on the target agent.' }}</div>
         </div>
       </q-card-section>
 
-      <q-form @submit="submitRestore">
-        <q-card-section class="q-px-lg q-pt-none q-pb-md">
+      <q-form class="column no-wrap col-shrink" @submit="submitRestore">
+        <q-card-section class="col-shrink scroll q-px-md q-pt-none q-pb-md">
           <div class="row q-col-gutter-sm items-start">
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
+              <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
             </div>
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
+              <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting" />
             </div>
             <div class="col-12 col-md-4">
-              <q-select outlined v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" :disable="modeOptions.length === 1 || submitting" />
+              <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" :disable="modeOptions.length === 1 || submitting" />
             </div>
           </div>
 
           <q-select
+            :dense="!$q.platform.has.touch" hide-bottom-space
             class="q-mt-md"
             outlined
             v-model="selectedSnapshotId"
@@ -65,10 +66,10 @@
               empty-label="No entries found."
               error-message="Could not load snapshot entries"
             />
-            <q-banner v-else class="bg-grey-2 text-grey-8">Select a snapshot to browse files.</q-banner>
+            <q-banner v-else :class="$q.dark.isActive ? 'bg-grey-9 text-grey-4' : 'bg-grey-2 text-grey-8'">Select a snapshot to browse files.</q-banner>
           </div>
 
-          <q-input v-if="isFileMode" class="q-mt-md" outlined v-model="restoreLocation" label="Restore location on target agent" :rules="[val => !!val || 'Required']">
+          <q-input v-if="isFileMode" class="q-mt-md" outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="restoreLocation" label="Restore location on target agent" :rules="[val => !!val || 'Required']">
             <template v-slot:after>
               <q-btn flat dense icon="folder_open" :disable="!selectedAgentId" @click="showTargetBrowserDialog = true">
                 <q-tooltip>Browse target agent directories</q-tooltip>
@@ -94,9 +95,9 @@
           </q-banner>
         </q-card-section>
 
-        <q-card-actions class="q-px-lg q-pb-lg q-pt-none" align="right">
-          <q-btn flat label="Cancel" :disable="submitting" v-close-popup />
-          <q-btn label="Start Restore" type="submit" color="primary" :loading="submitting" :disable="!canSubmit" />
+        <q-card-actions class="col-auto q-px-md q-py-sm" align="right">
+          <q-btn flat no-caps label="Cancel" :disable="submitting" v-close-popup />
+          <q-btn unelevated no-caps label="Start Restore" type="submit" color="primary" :loading="submitting" :disable="!canSubmit" />
         </q-card-actions>
       </q-form>
     </q-card>

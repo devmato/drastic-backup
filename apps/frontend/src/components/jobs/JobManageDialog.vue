@@ -1,11 +1,11 @@
 <template>
-  <q-dialog v-model="dialogVisible" persistent :maximized="$q.screen.lt.md">
-    <q-card class="app-dialog-wide db-job-form-dialog column no-wrap">
+  <q-dialog v-model="dialogVisible" persistent :maximized="$q.screen.lt.sm">
+    <q-card class="app-dialog-wide db-job-form-dialog column no-wrap overflow-hidden">
       <q-card-section class="col-auto"><div class="text-h6">{{ editingJob ? 'Edit Job' : 'Add Job' }}</div></q-card-section>
       <q-form class="column no-wrap col" @submit="submitForm">
-        <q-card-section class="col scroll">
-          <div class="row no-wrap">
-            <div class="col-auto q-pa-sm q-mr-md" style="width: 200px">
+        <q-card-section class="col-shrink scroll q-pt-none">
+          <div class="row q-col-gutter-md">
+            <div class="col-12 col-sm-auto">
               <q-list dense separator>
                 <q-item
                   v-for="section in sections"
@@ -13,7 +13,7 @@
                   clickable
                   dense
                   :active="activeSection === section.name"
-                  active-class="bg-grey-2 text-primary text-weight-medium"
+                  :active-class="$q.dark.isActive ? 'bg-grey-9 text-blue-3 text-weight-medium' : 'bg-grey-2 text-primary text-weight-medium'"
                   :disable="section.requiresEntries && !entriesConfigured"
                   @click="activeSection = section.name"
                 >
@@ -23,16 +23,14 @@
               </q-list>
             </div>
 
-            <q-separator vertical />
-
-            <div class="col q-pl-md">
+            <div class="col-12 col-sm">
               <q-tab-panels v-model="activeSection" class="bg-transparent">
                 <q-tab-panel name="general" class="q-pa-none">
-                  <div class="q-gutter-md">
-                    <q-input outlined dense v-model="jobForm.name" label="Job Name" :rules="[val => !!val || 'Required']" />
-                    <q-select outlined dense v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
+                  <div class="q-gutter-sm">
+                    <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val || 'Required']" />
+                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
                     <q-banner v-if="!supportsJob(selectedAgent, jobForm.type)" class="bg-warning text-black">This job requires a configured connection and its local prerequisites. Existing job settings are retained.</q-banner>
-                    <q-btn flat dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
+                    <q-btn flat no-caps dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
                       <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
                     </q-btn>
                   </div>
@@ -67,11 +65,11 @@
             </div>
           </div>
         </q-card-section>
-        <q-card-actions align="right" class="col-auto">
-          <q-btn flat label="Cancel" color="red" :disable="submitting" @click="dialogVisible = false" />
-          <q-btn v-if="previousSection" flat dense no-caps icon="chevron_left" label="Prev" type="button" color="grey-7" :disable="submitting" @click="goPrevious" />
-          <q-btn v-if="nextSection" flat dense no-caps label="Next" icon-right="chevron_right" type="button" color="grey-8" :disable="!canGoNext || submitting" @click="goNext" />
-          <q-btn label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+        <q-card-actions align="right" class="col-auto q-mt-auto q-px-md q-py-sm">
+          <q-btn flat no-caps label="Cancel" :disable="submitting" @click="dialogVisible = false" />
+          <q-btn v-if="previousSection" flat no-caps icon="chevron_left" label="Prev" type="button" color="primary" :disable="submitting" @click="goPrevious" />
+          <q-btn v-if="nextSection" flat no-caps label="Next" icon-right="chevron_right" type="button" color="primary" :disable="!canGoNext || submitting" @click="goNext" />
+          <q-btn unelevated no-caps label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
         </q-card-actions>
       </q-form>
     </q-card>
