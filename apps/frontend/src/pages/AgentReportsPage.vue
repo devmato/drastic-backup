@@ -11,7 +11,7 @@
     </PageHeader>
 
     <q-card flat bordered class="q-mb-md">
-      <q-form @submit="loadOperations">
+      <q-form @submit="loadOperations()">
         <q-card-section>
           <div class="row q-col-gutter-md items-center">
             <div class="col-12 col-sm-6 col-md-3">
@@ -68,6 +68,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { subscribeToSocketEvents } from 'src/utils/socket'
+import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
@@ -83,6 +84,9 @@ const filterState = ref(null)
 const filterJobId = ref(null)
 
 let stopJobSocketListener = null
+let disposed = false
+let operationsRequest = 0
+let queueOperationsReload = createQueuedReload(() => loadOperations(true))
 
 const typeOptions = [
   { label: 'Backup', value: 'backup' },
@@ -129,28 +133,23 @@ function syncFiltersFromRoute() {
   filterJobId.value = route.query.job_id ? Number(route.query.job_id) : null
 }
 
-function cleanupJobSocketListener() {
-  if (stopJobSocketListener) {
-    stopJobSocketListener()
-    stopJobSocketListener = null
-  }
-}
-
 async function syncJobSocketListener() {
-  cleanupJobSocketListener()
-  stopJobSocketListener = await subscribeToSocketEvents(async (payload) => {
+  const stopListener = await subscribeToSocketEvents((payload) => {
+    if (disposed) return
     const eventName = payload?.name || ''
     const eventAgentId = Number(payload?.data?.agent_id)
 
     if (eventName.startsWith('operationupdate') && eventAgentId === Number(route.params.agentId)) {
-      await loadOperations()
+      void queueOperationsReload(Boolean(payload.data?.state && payload.data.state !== 'running'))
       return
     }
 
     if (filterJobId.value && eventName === `jobstate${filterJobId.value}`) {
-      await loadOperations()
+      void queueOperationsReload(true)
     }
   })
+  if (disposed) stopListener()
+  else stopJobSocketListener = stopListener
 }
 
 function confirmDeleteOperation(operation) {
@@ -165,35 +164,45 @@ function confirmDeleteOperation(operation) {
   })
 }
 
-async function loadOperations() {
-  loading.value = true
+async function loadOperations(background = false) {
+  const request = ++operationsRequest
+  const agentId = String(route.params.agentId)
+  if (!background) loading.value = true
   const params = {}
   if (filterType.value) params.type = filterType.value
   if (filterState.value) params.state = filterState.value
   if (filterJobId.value) params.job_id = filterJobId.value
   try {
-    operations.value = await agentStore.getAgentOperations(route.params.agentId, params)
+    const updatedOperations = await agentStore.getAgentOperations(agentId, params)
+    if (disposed || request !== operationsRequest || String(route.params.agentId) !== agentId) return
+    operations.value = updatedOperations
   } catch (e) {
+    if (disposed || request !== operationsRequest || String(route.params.agentId) !== agentId || background) return
     operations.value = []
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load operations'), color: 'red', position: 'top' })
   } finally {
-    loading.value = false
+    if (!disposed && request === operationsRequest) loading.value = false
   }
 }
+
+void syncJobSocketListener()
 
 watch(
   () => [route.params.agentId, route.query.type, route.query.state, route.query.job_id],
   async () => {
+    queueOperationsReload.cancel()
+    queueOperationsReload = createQueuedReload(() => loadOperations(true))
     syncFiltersFromRoute()
     await loadOperations()
-    await syncJobSocketListener()
   },
   { immediate: true }
 )
 
 onBeforeUnmount(() => {
-  cleanupJobSocketListener()
+  disposed = true
+  queueOperationsReload.cancel()
+  stopJobSocketListener?.()
 })
 
 defineOptions({ name: 'AgentOperationsPage' })

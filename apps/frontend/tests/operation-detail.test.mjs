@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, ref } from 'vue'
 import { backupStates, getBackupStateColor } from '../src/utils/backup-results.js'
+import { createQueuedReload } from '../src/utils/queued-reload.js'
 
 test('background operation updates stay quiet and preserve data on failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
@@ -12,7 +13,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   let resolveRequest
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
-    computed, ref, backupStates, stateColor: getBackupStateColor,
+    computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload,
     useRoute: () => route,
     useAgentStore: () => store,
     useOperationStore: () => ({}),
@@ -42,7 +43,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
 
   store.getOperation = async () => { throw new Error('temporary failure') }
   const previousOperation = page.operation.value
-  await page.queueOperationRefresh()
+  await page.queueOperationRefresh(true)
   assert.equal(page.operation.value, previousOperation)
 
   page.operation.value = { id: 1, type: 'backup', state: 'success', data: { bytes_processed: 1024, bytes_total: 2048 } }

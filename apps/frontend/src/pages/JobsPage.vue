@@ -137,7 +137,7 @@
 import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
-import { ref, onMounted, onBeforeUnmount, computed, watch } from 'vue'
+import { ref, onMounted, computed, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useJobStore } from 'stores/job'
@@ -145,7 +145,6 @@ import { useAgentStore } from 'stores/agent'
 import { useRepositoryStore } from 'stores/repository'
 import { useUserStore } from 'stores/user'
 import { useOperationStore } from 'stores/operation'
-import { subscribeToSocketEvents } from 'src/utils/socket'
 import JobManageDialog from 'components/jobs/JobManageDialog.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -182,8 +181,6 @@ const runShowAllRepositories = ref(false)
 const runDefaultRepositories = ref([])
 const restoringJob = ref(null)
 const restoringRepositories = ref([])
-
-let stopJobsSocketListener = null
 
 const runRepoOptions = computed(() => (runShowAllRepositories.value ? repositoryStore.repositories : runDefaultRepositories.value).map(repository => ({
   label: `${repository.name} (${repository.location})`,
@@ -412,26 +409,12 @@ onMounted(async () => {
     if (agent) showAddJob(agent)
     await router.replace({ query: { ...route.query, add_for_agent: undefined } })
   }
-
-  stopJobsSocketListener = await subscribeToSocketEvents(async (payload) => {
-    const eventName = payload?.name || ''
-
-    if (eventName.startsWith('jobstate')) {
-      await jobStore.loadJobs()
-    }
-  })
 })
 
 watch(runRepoOptions, (options) => {
   if (!showRunJobDialog.value) return
   if (options.some(option => option.value === runJobRepoId.value)) return
   runJobRepoId.value = options[0]?.value || null
-})
-
-onBeforeUnmount(() => {
-  if (stopJobsSocketListener) {
-    stopJobsSocketListener()
-  }
 })
 
 defineOptions({ name: 'JobsPage' })

@@ -182,6 +182,7 @@ import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useOperationStore } from 'stores/operation'
 import { subscribeToSocketEvents } from 'src/utils/socket'
+import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { backupStates, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
@@ -212,8 +213,9 @@ const logFilter = ref('')
 const logPagination = ref({ rowsPerPage: 0, sortBy: 'time', descending: false })
 
 let stopOperationSocketListener = null
-let operationRefreshInFlight = false
-let operationRefreshQueued = false
+let operationListenerVersion = 0
+let operationRequest = 0
+let queueOperationRefresh = createQueuedReload(() => loadOperation(true))
 let disposed = false
 
 const pageTitle = computed(() => {
@@ -621,6 +623,7 @@ function formatCurrentFile(file) {
 }
 
 function cleanupOperationSocketListener() {
+  operationListenerVersion++
   if (stopOperationSocketListener) {
     stopOperationSocketListener()
     stopOperationSocketListener = null
@@ -635,12 +638,14 @@ async function syncOperationSocketListener() {
   if (stopOperationSocketListener || disposed) return
 
   const operationId = String(operation.value.id)
-  const stopListener = await subscribeToSocketEvents(async (payload) => {
+  const listenerVersion = operationListenerVersion
+  const stopListener = await subscribeToSocketEvents((payload) => {
+    if (disposed || listenerVersion !== operationListenerVersion) return
     if (payload?.name === `operationupdate${operationId}`) {
-      await queueOperationRefresh()
+      void queueOperationRefresh(Boolean(payload.data?.state && payload.data.state !== 'running'))
     }
   })
-  if (disposed || stopOperationSocketListener || String(route.params.operationId) !== operationId || operation.value?.state !== 'running') {
+  if (disposed || listenerVersion !== operationListenerVersion || stopOperationSocketListener || String(route.params.operationId) !== operationId || operation.value?.state !== 'running') {
     stopListener()
   } else {
     stopOperationSocketListener = stopListener
@@ -648,36 +653,20 @@ async function syncOperationSocketListener() {
 }
 
 async function loadOperation(background = false) {
+  const request = ++operationRequest
   const operationId = String(route.params.operationId)
   if (!background) loading.value = true
   try {
     const updatedOperation = await agentStore.getOperation(operationId)
-    if (disposed || String(route.params.operationId) !== operationId) return
+    if (disposed || request !== operationRequest || String(route.params.operationId) !== operationId) return
     operation.value = updatedOperation
     await syncOperationSocketListener()
   } catch (e) {
-    if (disposed || String(route.params.operationId) !== operationId || background) return
+    if (disposed || request !== operationRequest || String(route.params.operationId) !== operationId || background) return
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load operation'), color: 'red', position: 'top' })
   } finally {
-    if (!background && String(route.params.operationId) === operationId) loading.value = false
-  }
-}
-
-async function queueOperationRefresh() {
-  if (operationRefreshInFlight) {
-    operationRefreshQueued = true
-    return
-  }
-
-  operationRefreshInFlight = true
-  try {
-    do {
-      operationRefreshQueued = false
-      await loadOperation(true)
-    } while (operationRefreshQueued && !disposed)
-  } finally {
-    operationRefreshInFlight = false
+    if (!disposed && request === operationRequest) loading.value = false
   }
 }
 
@@ -685,8 +674,9 @@ watch(
   () => route.params.operationId,
   async () => {
     cleanupOperationSocketListener()
+    queueOperationRefresh.cancel()
+    queueOperationRefresh = createQueuedReload(() => loadOperation(true))
     operation.value = null
-    operationRefreshQueued = false
     await loadOperation()
   },
   { immediate: true }
@@ -694,6 +684,7 @@ watch(
 
 onBeforeUnmount(() => {
   disposed = true
+  queueOperationRefresh.cancel()
   cleanupOperationSocketListener()
 })
 

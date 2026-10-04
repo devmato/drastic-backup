@@ -229,6 +229,7 @@ import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { useQuasar } from 'quasar'
 import { subscribeToSocketEvents } from 'src/utils/socket'
+import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage } from 'src/utils/api-error'
 
 const router = useRouter()
@@ -247,6 +248,7 @@ function toggleTheme() {
 
 let stopRealtimeSocketListener = null
 let realtimeSyncStarted = false
+let disposed = false
 
 const changePasswordDialogOpen = ref(false)
 const changePasswordSubmitting = ref(false)
@@ -263,51 +265,30 @@ const recoveryExportForm = ref(null)
 const recoveryExportPassword = ref('')
 const showRecoveryExportPassword = ref(false)
 
-function queuedLoad(loader) {
-  let inFlight = false
-  let queued = false
-
-  return async () => {
-    if (inFlight) {
-      queued = true
-      return
-    }
-
-    inFlight = true
-
-    try {
-      do {
-        queued = false
-        await loader()
-      } while (queued)
-    } finally {
-      inFlight = false
-    }
-  }
-}
-
-const queueAgentReload = queuedLoad(() => agentStore.loadAgents())
-const queueJobReload = queuedLoad(() => jobStore.loadJobs())
+const queueAgentReload = createQueuedReload(() => agentStore.loadAgents(), 0)
+const queueJobReload = createQueuedReload(() => jobStore.loadJobs(), 0)
 
 async function startRealtimeSync() {
-  if (realtimeSyncStarted || !userStore.loggedIn) {
+  if (disposed || realtimeSyncStarted || !userStore.loggedIn) {
     return
   }
 
   realtimeSyncStarted = true
-  stopRealtimeSocketListener = await subscribeToSocketEvents(async (payload) => {
+  const stopListener = await subscribeToSocketEvents((payload) => {
     const eventName = payload?.name || ''
 
     if (eventName.startsWith('agentstate') || eventName === 'agentsupdate') {
-      await queueAgentReload()
-      await queueJobReload()
+      void queueAgentReload()
+      void queueJobReload()
       return
     }
 
     if (eventName.startsWith('jobstate') || eventName === 'jobsupdate') {
-      await queueJobReload()
+      void queueJobReload()
     }
   })
+  if (disposed) stopListener()
+  else stopRealtimeSocketListener = stopListener
 }
 
 async function logout() {
@@ -405,6 +386,9 @@ onMounted(() => {
 })
 
 onBeforeUnmount(() => {
+  disposed = true
+  queueAgentReload.cancel()
+  queueJobReload.cancel()
   if (stopRealtimeSocketListener) {
     stopRealtimeSocketListener()
   }
