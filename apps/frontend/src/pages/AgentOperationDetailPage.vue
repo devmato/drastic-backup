@@ -119,12 +119,7 @@
           hide-bottom
         >
           <template #top-left>
-            <div class="row items-center no-wrap">
-              <div>
-                <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
-              </div>
-              <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
-            </div>
+            <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
           </template>
           <template #top-right>
             <q-input
@@ -159,22 +154,12 @@
         </q-table>
 
         <q-card-section v-else-if="operation.log">
-          <div class="row items-center no-wrap q-mb-md">
-            <div>
-              <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
-            </div>
-            <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
-          </div>
+          <h2 class="text-subtitle1 text-weight-medium q-mt-none q-mb-md">Log</h2>
           <pre class="db-code-block db-code-block--wrap q-ma-none">{{ operation.log }}</pre>
         </q-card-section>
 
         <q-card-section v-else>
-          <div class="row items-center no-wrap q-mb-md">
-            <div>
-              <h2 class="text-subtitle1 text-weight-medium q-my-none">Log</h2>
-            </div>
-            <q-spinner v-if="operation.state === 'running'" class="q-ml-sm" color="blue" size="sm" />
-          </div>
+          <h2 class="text-subtitle1 text-weight-medium q-mt-none q-mb-md">Log</h2>
           <q-banner :class="$q.dark.isActive ? 'bg-grey-9 text-grey-4' : 'bg-grey-2 text-grey-8'">No log entries available.</q-banner>
         </q-card-section>
       </q-card>
