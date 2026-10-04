@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
@@ -6,19 +6,21 @@ from drastic_agent.agent.report import AgentReport
 
 def _parse_datetime(value):
     if isinstance(value, datetime):
-        return value
+        return value.astimezone(timezone.utc)
     if not value:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
     try:
-        return datetime.fromisoformat(str(value))
+        # Legacy naive timestamps were written in the agent's local timezone.
+        return datetime.fromisoformat(str(value)).astimezone(timezone.utc)
     except ValueError:
-        return datetime.min
+        return datetime.min.replace(tzinfo=timezone.utc)
 
 
 def _retention_bucket(run, bucket):
     ended = _parse_datetime(run.get("ended") or run.get("started"))
-    if ended == datetime.min:
+    if ended == datetime.min.replace(tzinfo=timezone.utc):
         return None
+    ended = ended.astimezone()
     if bucket == "hourly":
         return ended.strftime("%Y-%m-%d-%H")
     if bucket == "weekly":
@@ -164,7 +166,7 @@ class RetentionService:
             if snapshot_ids:
                 report.data["forget"] = resticapi.forget_snapshots(snapshot_ids, prune=False)
 
-            forgotten_at = datetime.now().isoformat()
+            forgotten_at = datetime.now(timezone.utc).isoformat()
             for artifact in [*reconciled_artifacts, *missing_artifacts]:
                 artifact["forgotten_at"] = forgotten_at
                 operation_artifacts_table.update(artifact, ["id"])

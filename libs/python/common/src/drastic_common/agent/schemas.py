@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
@@ -17,6 +17,26 @@ _JOB_TYPE_NAMES = tuple(AgentJobType.__members__)
 _ACTION_MODULE_NAMES = tuple(AgentJobActionModule.__members__)
 _PATH_GROUP_NAMES = ("file", "folder", "pattern")
 _PROXMOX_SELECTION_MODES = ("all", "include")
+
+
+class UTCDateTime(fields.NaiveDateTime):
+    """Store UTC without an offset in SQL; always include it on the wire.
+
+    Legacy values without an offset are treated as UTC, the container default.
+    Their original timezone cannot be recovered from the stored value alone.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(timezone=timezone.utc, **kwargs)
+
+    def _serialize(self, value, attr, obj, **kwargs):
+        if value is not None:
+            if isinstance(value, str):
+                value = datetime.fromisoformat(value)
+            if value.tzinfo is None:
+                value = value.replace(tzinfo=timezone.utc)
+            value = value.astimezone(timezone.utc)
+        return super()._serialize(value, attr, obj, **kwargs)
 
 
 class AgentPathEntrySchema(Schema):
@@ -89,7 +109,7 @@ class AgentOperationLogSchema(Schema):
 
     sequence = fields.Integer(required=True)
     level = fields.Enum(AgentOperationLogLevel, by_value=False, load_default=AgentOperationLogLevel.info)
-    created = fields.DateTime(allow_none=True, load_default=datetime.now)
+    created = UTCDateTime(allow_none=True, load_default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     message = fields.String(required=True)
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True, load_default=None)
 
@@ -103,7 +123,7 @@ class AgentOperationArtifactSchema(Schema):
     snapshot_id = fields.String(allow_none=True, load_default=None)
     state = fields.String(load_default="running")
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True, load_default=dict)
-    forgotten_at = fields.DateTime(allow_none=True, load_default=None)
+    forgotten_at = UTCDateTime(allow_none=True, load_default=None)
 
 
 class AgentOperationSchema(Schema):
@@ -114,8 +134,8 @@ class AgentOperationSchema(Schema):
     type = fields.Enum(AgentOperationType, by_value=False, required=True)
     state = fields.Enum(AgentOperationState, by_value=False, required=True)
     source = fields.Enum(AgentOperationSource, by_value=False, load_default=AgentOperationSource.manual)
-    started = fields.DateTime(allow_none=True, load_default=datetime.now)
-    ended = fields.DateTime(allow_none=True, load_default=None)
+    started = UTCDateTime(allow_none=True, load_default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    ended = UTCDateTime(allow_none=True, load_default=None)
     job_id = fields.Integer(allow_none=True, load_default=None)
     repository_id = fields.Integer(allow_none=True, load_default=None)
     schedule_id = fields.Integer(allow_none=True, load_default=None)

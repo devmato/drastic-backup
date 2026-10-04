@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from flask import Flask
@@ -20,6 +20,8 @@ from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
 from drastic_server.models.secret import AgentSecretEnvelope, UserSecret
 from drastic_server.models.user import User
+from drastic_server.schemas.agent import AgentOperationResponseSchema
+from drastic_server.schemas.job import JobLastOperationSchema, JobStatusResponseSchema
 from drastic_server.services.agent import AgentRequestService, operation_start
 from drastic_server.services.agent import operations as agent_operations
 
@@ -33,6 +35,62 @@ def _build_app():
     )
     db.init_app(app)
     return app
+
+
+@pytest.mark.parametrize("timestamp, utc_hour", [
+    ("2026-10-04T09:54:41+02:00", 7),
+    ("2026-10-04T07:54:41Z", 7),
+    ("2026-01-04T09:54:41+01:00", 8),
+    ("2026-10-04T07:54:41", 7),
+])
+def test_operation_timestamps_survive_database_roundtrip_with_utc_offset(monkeypatch, timestamp, utc_hour):
+    app = _build_app()
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+    monkeypatch.setattr(operation_start, "emit_operation_update", lambda operation: None)
+    start = datetime.fromisoformat(timestamp)
+    expected = start.replace(hour=utc_hour, tzinfo=None)
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("password")
+            agent = Agent(user=user, secret="agent-secret")
+            db.session.add_all([user, agent])
+            db.session.commit()
+            before = datetime.now(timezone.utc).replace(tzinfo=None)
+            operation = operation_start.start_agent_operation(
+                agent=agent, operation_type=AgentOperationType.backup, msg="Backup queued",
+            )
+            after = datetime.now(timezone.utc).replace(tzinfo=None)
+            assert before <= operation.started <= after
+            assert before <= operation.logs[0].created <= after
+
+            AgentRequestService(agent).operation({
+                "uuid": operation.uuid, "type": "backup", "state": "success", "source": "manual",
+                "started": timestamp, "ended": (start + timedelta(seconds=6)).isoformat(),
+                "logs": [{"sequence": 1, "level": "info", "message": "Finished", "created": timestamp},
+                         {"sequence": 2, "level": "info", "message": "No timestamp", "created": None}],
+                "artifacts": [{"uuid": "utc-artifact", "artifact_key": "default", "state": "success",
+                               "forgotten_at": (start + timedelta(seconds=6)).isoformat()}],
+            })
+            db.session.expire_all()
+            assert operation.started == expected
+            assert (operation.ended - operation.started).total_seconds() == 6
+            log = next(log for log in operation.logs if log.sequence == 1)
+            assert log.created == expected
+            log = next(log for log in operation.logs if log.sequence == 2)
+            assert before <= log.created <= datetime.now(timezone.utc).replace(tzinfo=None)
+            assert operation.artifacts[0].forgotten_at == expected + timedelta(seconds=6)
+            for schema in (AgentOperationResponseSchema(), JobLastOperationSchema(), JobStatusResponseSchema()):
+                response = schema.dump(operation)
+                assert response["started"] == expected.replace(tzinfo=timezone.utc).isoformat()
+                assert response["ended"] == (expected + timedelta(seconds=6)).replace(tzinfo=timezone.utc).isoformat()
+            response = AgentOperationResponseSchema().dump(operation)
+            assert all(log["created"].endswith("+00:00") for log in response["logs"])
+            assert response["artifacts"][0]["forgotten_at"].endswith("+00:00")
+        finally:
+            db.session.remove()
+            db.drop_all()
 
 
 def test_agent_operation_upserts_logs_and_artifacts(monkeypatch):

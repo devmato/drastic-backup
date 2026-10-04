@@ -1,10 +1,15 @@
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import RLock
 
 from drastic_agent.agent.database import agent_operation_queue
-from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
+from drastic_agent.agent.enums import (
+    AgentOperationLogLevel,
+    AgentOperationSource,
+    AgentOperationState,
+    AgentOperationType,
+)
 
 
 def _enum_value(value):
@@ -82,17 +87,20 @@ class OperationStore:
                         data=payload.get("data") or {},
                         persist=False,
                     )
-                    operation.started = datetime.fromisoformat(payload["started"])
+                    # Legacy naive reports used this agent's local timezone.
+                    operation.started = datetime.fromisoformat(payload["started"]).astimezone(timezone.utc)
                     operation.ended = (
-                        datetime.fromisoformat(payload["ended"])
+                        datetime.fromisoformat(payload["ended"]).astimezone(timezone.utc)
                         if payload.get("ended")
                         else None
                     )
                     operation.set_artifacts(payload.get("artifacts") or [])
                     operation._logs = payload.get("logs") or []
                     for log in operation._logs:
+                        if isinstance(log.get("level"), str):
+                            log["level"] = AgentOperationLogLevel[log["level"]]
                         if isinstance(log.get("created"), str):
-                            log["created"] = datetime.fromisoformat(log["created"])
+                            log["created"] = datetime.fromisoformat(log["created"]).astimezone(timezone.utc)
                     operation._log_cursor = payload.get("log_cursor", 0)
                     operation._final_state = AgentOperationState[payload["final_state"]]
                     operation._full_log = bool(payload.get("full_log"))

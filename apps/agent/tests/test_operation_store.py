@@ -1,4 +1,8 @@
+import json
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
+
+import pytest
 
 from drastic_agent.agent.database import (
     agent_operation_artifacts,
@@ -8,6 +12,7 @@ from drastic_agent.agent.database import (
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.operation_store import operation_store
 from drastic_agent.agent.report import AgentReport
+from drastic_common.agent.schemas import AgentOperationSchema
 
 
 def setup_function():
@@ -19,9 +24,11 @@ def setup_function():
     AgentReport.running_operations = {}
 
 
-def test_finished_report_survives_memory_queue_reset():
+def test_finished_report_survives_memory_queue_reset(berlin_timezone):
     report = AgentReport.job_report(job_id=4, repository_id=8, operation_uuid="durable-1")
     report.log_message("durable log")
+    report.set_artifacts([{"uuid": "durable-artifact", "artifact_key": "default", "state": "success",
+                           "forgotten_at": report.started.isoformat()}])
     report.finish()
 
     AgentReport.pending_reports = []
@@ -31,6 +38,32 @@ def test_finished_report_survives_memory_queue_reset():
     restored = AgentReport.finished_reports.popleft()
     assert restored.uuid == "durable-1"
     assert restored.log == "durable log"
+    assert restored.started == report.started
+    assert restored.ended == report.ended
+    assert restored.started.utcoffset().total_seconds() == 0
+    payload = AgentOperationSchema().dump(restored)
+    for value in (payload["started"], payload["ended"], payload["logs"][0]["created"]):
+        assert value.endswith("+00:00")
+    assert payload["artifacts"][0]["forgotten_at"] == payload["started"]
+
+
+@pytest.mark.parametrize("month, utc_hour", [(7, 7), (1, 8)])
+def test_legacy_outbox_uses_agents_local_timezone(berlin_timezone, month, utc_hour):
+    report = AgentReport.job_report(job_id=4, repository_id=8, operation_uuid="legacy-time")
+    report.log_message("legacy log")
+    report.finish()
+    row = agent_operation_queue.find_one(uuid=report.uuid)
+    payload = json.loads(row["payload"])
+    payload["started"] = f"2026-{month:02d}-04T09:54:41"
+    payload["ended"] = f"2026-{month:02d}-04T09:54:47"
+    payload["logs"][0]["created"] = payload["started"]
+    row["payload"] = json.dumps(payload)
+    agent_operation_queue.update(row, ["id"])
+
+    restored = operation_store.load(AgentReport)[0]
+    assert restored.started == datetime(2026, month, 4, utc_hour, 54, 41, tzinfo=timezone.utc)
+    assert (restored.ended - restored.started).total_seconds() == 6
+    assert restored.logs[0]["created"] == restored.started
 
 
 def test_running_report_is_failed_during_recovery():

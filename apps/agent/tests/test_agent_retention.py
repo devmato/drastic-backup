@@ -1,8 +1,11 @@
+import pytest
+
 import drastic_agent.agent.agent as agent_module
 from drastic_agent.agent.agent import Agent
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.exceptions import ResticError
 
 
@@ -122,6 +125,31 @@ def test_cmd_run_retention_prunes_old_operation_artifacts(monkeypatch):
     assert artifact_table.rows[1]["forgotten_at"] is not None
     assert report.final_state == AgentReportState.success
     assert any("Removed 1 snapshots: snap-old" in line for line in report.log_list)
+
+
+@pytest.mark.parametrize("month, utc_hour", [(7, 2), (1, 3)])
+def test_retention_sorts_mixed_legacy_and_utc_runs(monkeypatch, berlin_timezone, month, utc_hour):
+    agent = Agent.__new__(Agent)
+    resticapi = FakeResticApi()
+    runs = FakeRunsTable()
+    runs.rows[0]["ended"] = f"2026-{month:02d}-10T{utc_hour:02d}:00:00+00:00"
+    runs.rows[1]["ended"] = f"2026-{month:02d}-10T03:00:00"
+    monkeypatch.setattr(agent_module, "retentions", FakeTable({"id": 2, "name": "Daily", "keep_last": 1}))
+    monkeypatch.setattr(agent_module, "agent_operations", runs)
+    monkeypatch.setattr(agent_module, "agent_operation_artifacts", FakeArtifactsTable())
+    agent._Agent__resticapi = resticapi
+    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
+
+    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+
+    assert report.final_state == AgentReportState.success
+    assert report.data["kept_operation_ids"] == [1]
+    assert report.data["pruned_operation_ids"] == [2]
+    assert report.data["forgotten_artifacts"][0]["forgotten_at"].endswith("+00:00")
+    same_hour = {"id": 3, "ended": f"2026-{month:02d}-10T04:30:00"}
+    assert RetentionService.keep_operation_ids(
+        [runs.rows[0], same_hour, runs.rows[1]], {"keep_hourly": 2},
+    ) == {1, 2}
 
 
 def test_retention_never_forgets_snapshot_with_mismatched_tags(monkeypatch):

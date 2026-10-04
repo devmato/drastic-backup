@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 
 from apprise import Apprise
 from flask import current_app, render_template
@@ -209,7 +209,7 @@ class AgentOperationService:
                 log = AgentOperationLog(operation_id=operation.id, sequence=sequence)
                 db.session.add(log)
             log.level = log_data.get("level")
-            log.created = log_data.get("created") or log.created
+            log.created = log_data.get("created") or log.created or datetime.now(timezone.utc).replace(tzinfo=None)
             log.message = log_data.get("message") or ""
             log.data = log_data.get("data")
 
@@ -473,11 +473,12 @@ class AgentOperationService:
 
 
 def _parse_datetime(value):
-    if isinstance(value, datetime):
-        return value
     if not value:
         return None
     try:
-        return datetime.fromisoformat(str(value))
+        timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.astimezone(timezone.utc).replace(tzinfo=None)
+        return timestamp
     except ValueError:
         return None

@@ -6,6 +6,7 @@ from drastic_common.agent.schemas import (
     AgentProxmoxBackupJobConfigSchema,
     AgentRepositoryCheckConfigSchema,
     AgentScheduleConfigSchema,
+    UTCDateTime,
 )
 from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.models.job import JobActionModuleEnum, JobType
@@ -78,8 +79,8 @@ class JobActionResponseSchema(Schema):
 class JobLastOperationSchema(Schema):
     id = fields.Integer(required=True)
     state = fields.Method("get_state")
-    started = fields.DateTime(allow_none=True)
-    ended = fields.DateTime(allow_none=True)
+    started = UTCDateTime(allow_none=True)
+    ended = UTCDateTime(allow_none=True)
 
     def get_state(self, obj):
         return obj.state.name if obj.state else None
@@ -332,8 +333,8 @@ class ProxmoxGuestsResponseSchema(Schema):
 class JobStatusResponseSchema(Schema):
     id = fields.Integer(required=True)
     state = fields.Method("get_state")
-    started = fields.DateTime(allow_none=True)
-    ended = fields.DateTime(allow_none=True)
+    started = UTCDateTime(allow_none=True)
+    ended = UTCDateTime(allow_none=True)
     log = fields.String(allow_none=True)
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
 

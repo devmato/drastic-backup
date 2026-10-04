@@ -1,7 +1,7 @@
 import json
 import logging
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timezone
 from threading import Event, RLock
 from uuid import uuid4
 
@@ -73,7 +73,7 @@ class AgentOperation:
         self._backup_artifact_key = None
         self._logs = []
         self._log_cursor = 0
-        self.started = datetime.now()
+        self.started = datetime.now(timezone.utc)
         self.ended = None
         self._final_state = AgentOperationState.success
         self._full_log = False
@@ -81,7 +81,7 @@ class AgentOperation:
         if persist and self.type != AgentOperationType.command:
             self._history_operation = self._start_history_operation()
             if self._history_operation.get("started"):
-                self.started = datetime.fromisoformat(str(self._history_operation["started"]))
+                self.started = datetime.fromisoformat(str(self._history_operation["started"])).astimezone(timezone.utc)
         else:
             self._history_operation = None
 
@@ -128,7 +128,7 @@ class AgentOperation:
             "retention_id": retention_id,
             "parent_operation_uuid": parent_operation_uuid,
             "state": AgentOperationState.running.name,
-            "started": (started or datetime.now()).isoformat(),
+            "started": (started or datetime.now(timezone.utc)).astimezone(timezone.utc).isoformat(),
             "ended": None,
             "data": data or {},
         }
@@ -406,7 +406,7 @@ class AgentOperation:
             if self.ended:
                 return self
             self._full_log = True
-            self.ended = datetime.now()
+            self.ended = datetime.now(timezone.utc)
             try:
                 if self.type != AgentOperationType.command:
                     with db:
@@ -443,7 +443,7 @@ class AgentOperation:
                 {
                     "sequence": len(self._logs) + 1,
                     "level": level,
-                    "created": datetime.now(),
+                    "created": datetime.now(timezone.utc),
                     "message": str(message),
                     "data": None,
                 }
@@ -541,7 +541,7 @@ class AgentOperation:
             )
             operation._history_operation = row
             if row.get("started"):
-                operation.started = datetime.fromisoformat(str(row["started"]))
+                operation.started = datetime.fromisoformat(str(row["started"])).astimezone(timezone.utc)
 
             artifacts = []
             for artifact in agent_operation_artifacts.find(operation_id=row["id"]):

@@ -2,6 +2,8 @@
 
 ## Release Notes
 
+- Operation start/end times, logs and last-run timestamps now include an explicit UTC offset, fixing incorrect local times and running durations for UTC containers viewed from another timezone. Update both server and agent. Existing naive database timestamps are interpreted as UTC; historical values from other timezones are not automatically shifted.
+
 - Managed Docker agents now support WebUI updates using the same Git lifecycle installer as native agents, including required Debian packages and startup rollback. Updates survive container restarts; recreating the container restores the selected image's software and packages while preserving agent data. Older deployments need one image update to enable protocol 4 support.
 
 - Agents can now have an optional display name, editable on their Info tab even while offline. Aliases replace hostnames in the UI and recovery reports and persist across reconnects; clearing an alias restores the hostname display.

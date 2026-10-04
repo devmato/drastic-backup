@@ -23,6 +23,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
     defineOptions: () => {},
     shouldIgnoreApiError: () => false,
     getApiErrorMessage: () => 'error',
+    Date: class extends Date { static now() { return Date.parse('2026-10-04T07:54:47Z') } },
   })
   const initialLoad = page.loadOperation()
   assert.equal(page.loading.value, true)
@@ -99,6 +100,19 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.metricCards.value, 'Added to repo'), undefined)
   page.operation.value.started = 'invalid'
   assert.equal(page.duration.value, null)
+
+  const originalTimezone = process.env.TZ
+  process.env.TZ = 'Europe/Berlin'
+  try {
+    for (const started of ['2026-10-04T07:54:41+00:00', '2026-10-04T09:54:41+02:00']) {
+      page.operation.value = { id: 1, state: 'running', started, ended: null, data: {} }
+      assert.equal(page.duration.value, '6s')
+      assert.equal(field(page.summaryColumns.value[0], 'Started'), new Date('2026-10-04T09:54:41+02:00').toLocaleString())
+    }
+  } finally {
+    if (originalTimezone === undefined) delete process.env.TZ
+    else process.env.TZ = originalTimezone
+  }
 
   page.operation.value = {
     id: 1, type: 'restore', state: 'success',

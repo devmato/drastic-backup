@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
 from drastic_server.extensions import db
@@ -35,7 +35,7 @@ def start_agent_operation(
         type=operation_type,
         state=AgentOperationState.running,
         source=source,
-        started=datetime.now(),
+        started=datetime.now(timezone.utc).replace(tzinfo=None),
         data=data or {},
     )
     db.session.add(operation)
@@ -45,6 +45,7 @@ def start_agent_operation(
             operation=operation,
             sequence=0,
             level=AgentOperationLogLevel.info,
+            created=datetime.now(timezone.utc).replace(tzinfo=None),
             message=log_message or msg,
         )
     )
@@ -110,13 +111,14 @@ def reconcile_unknown_agent_operation_dispatches(*, now=None):
 
 def fail_started_agent_operation(operation, message):
     operation.state = AgentOperationState.failed
-    operation.ended = datetime.now()
+    operation.ended = datetime.now(timezone.utc).replace(tzinfo=None)
     next_sequence = max((log.sequence or 0 for log in operation.logs), default=0) + 1
     db.session.add(
         AgentOperationLog(
             operation=operation,
             sequence=next_sequence,
             level=AgentOperationLogLevel.error,
+            created=datetime.now(timezone.utc).replace(tzinfo=None),
             message=message,
         )
     )

@@ -6,7 +6,7 @@ from drastic_common.agent.enums import (
     AgentOperationState,
     AgentOperationType,
 )
-from drastic_common.agent.schemas import AgentOperationSchema
+from drastic_common.agent.schemas import AgentOperationSchema, UTCDateTime
 from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
 from drastic_common.truenas import AgentConnectionsSchema, TrueNASSettingsSchema, validate_api_key
 from drastic_server.schemas.repository import RepositoryResponseSchema
@@ -105,7 +105,7 @@ class AgentOperationLogResponseSchema(Schema):
     level = fields.Method("get_level")
     message = fields.String(required=True)
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
-    created = fields.DateTime(allow_none=True)
+    created = UTCDateTime(allow_none=True)
 
     def get_level(self, obj):
         return obj.level.name if obj.level else None
@@ -118,7 +118,7 @@ class AgentOperationArtifactResponseSchema(Schema):
     snapshot_id = fields.String(allow_none=True)
     state = fields.String(required=True)
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
-    forgotten_at = fields.DateTime(allow_none=True)
+    forgotten_at = UTCDateTime(allow_none=True)
 
 
 class AgentOperationResponseSchema(Schema):
@@ -134,8 +134,8 @@ class AgentOperationResponseSchema(Schema):
     type = fields.Method("get_type")
     type_text = fields.Method("get_type_text")
     source = fields.Method("get_source")
-    started = fields.DateTime(allow_none=True)
-    ended = fields.DateTime(allow_none=True)
+    started = UTCDateTime(allow_none=True)
+    ended = UTCDateTime(allow_none=True)
     data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True)
     log = fields.String(attribute="log", allow_none=True)
     logs = fields.List(fields.Nested(AgentOperationLogResponseSchema), required=True)
