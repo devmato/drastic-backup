@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, ref } from 'vue'
-import { getBackupStateColor } from '../src/utils/backup-results.js'
+import { backupStates, getBackupStateColor } from '../src/utils/backup-results.js'
 
 test('background operation updates stay quiet and preserve data on failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
@@ -11,8 +11,8 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const route = { params: { operationId: '1', agentId: '1' }, query: {} }
   let resolveRequest
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
-  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles })`, {
-    computed, ref, stateColor: getBackupStateColor,
+  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+    computed, ref, backupStates, stateColor: getBackupStateColor,
     useRoute: () => route,
     useAgentStore: () => store,
     useOperationStore: () => ({}),
@@ -223,4 +223,18 @@ test('background operation updates stay quiet and preserve data on failure', asy
     page.operation.value.state = state
     assert.equal(page.progressIndeterminate.value, false, state)
   }
+
+  assert.equal(page.datasetArtifacts.value.length, 0)
+  page.operation.value.artifacts = [
+    { uuid: 'a', state: 'success', data: { dataset: 'tank/photos' }, snapshot_id: 'snapshot-a' },
+    { uuid: 'b', state: 'running', data: { dataset: 'tank/documents' } },
+    { uuid: 'c', state: 'failed', data: { dataset: 'tank/media' } },
+    { uuid: 'manifest', state: 'success', data: {} },
+  ]
+  assert.equal(page.datasetArtifacts.value.length, 3)
+  assert.equal(page.jobDetailsCaption.value, '3 datasets · 1 successful · 1 failed · 1 running')
+  page.operation.value.artifacts[1].state = 'warning'
+  assert.equal(page.jobDetailsCaption.value, '3 datasets · 1 successful · 1 failed · 1 warning')
+  page.operation.value.artifacts = [page.operation.value.artifacts[0]]
+  assert.equal(page.jobDetailsCaption.value, '1 dataset · 1 successful')
 })

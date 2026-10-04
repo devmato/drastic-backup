@@ -24,18 +24,6 @@
     </q-banner>
 
     <div v-if="operation" class="column q-gutter-y-md">
-      <q-card v-if="operation.artifacts?.some(artifact => artifact.data?.dataset)" flat bordered>
-        <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">Dataset backups</h2></q-card-section>
-        <q-list separator>
-          <q-item v-for="artifact in operation.artifacts.filter(item => item.data?.dataset)" :key="artifact.uuid">
-            <q-item-section>
-              <q-item-label>{{ artifact.data.dataset }}</q-item-label>
-              <q-item-label caption class="db-break-word">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
-            </q-item-section>
-            <q-item-section side><q-badge :color="stateColor(artifact.state)" text-color="grey-10" :label="artifact.state" /></q-item-section>
-          </q-item>
-        </q-list>
-      </q-card>
       <q-card flat bordered>
         <q-card-section>
           <div class="q-gutter-md">
@@ -102,6 +90,25 @@
             </q-expansion-item>
           </div>
         </q-card-section>
+      </q-card>
+
+      <q-card v-if="datasetArtifacts.length > 0" flat bordered>
+        <q-expansion-item
+          label="Job details" :caption="jobDetailsCaption" switch-toggle-side
+          header-class="q-pa-md text-subtitle1 text-weight-medium"
+        >
+          <q-separator />
+          <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">Dataset backups</h2></q-card-section>
+          <q-list separator>
+            <q-item v-for="artifact in datasetArtifacts" :key="artifact.uuid">
+              <q-item-section>
+                <q-item-label class="db-break-word">{{ artifact.data.dataset }}</q-item-label>
+                <q-item-label caption class="db-break-word">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
+              </q-item-section>
+              <q-item-section side><q-badge :color="stateColor(artifact.state)" text-color="grey-10" :label="artifact.state" /></q-item-section>
+            </q-item>
+          </q-list>
+        </q-expansion-item>
       </q-card>
 
       <q-card flat bordered>
@@ -176,7 +183,7 @@ import { useAgentStore } from 'stores/agent'
 import { useOperationStore } from 'stores/operation'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
-import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
+import { backupStates, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const route = useRoute()
 const $q = useQuasar()
@@ -238,6 +245,15 @@ const logColumns = [
 ]
 
 const operationData = computed(() => operation.value?.data || {})
+const datasetArtifacts = computed(() => (operation.value?.artifacts || []).filter(artifact => artifact.data?.dataset))
+const jobDetailsCaption = computed(() => {
+  const counts = backupStates.map(state => ({
+    label: state.label.toLowerCase(),
+    count: datasetArtifacts.value.filter(artifact => artifact.state === state.value).length,
+  })).filter(state => state.count > 0)
+  return [`${datasetArtifacts.value.length} ${datasetArtifacts.value.length === 1 ? 'dataset' : 'datasets'}`,
+    ...counts.map(state => `${state.count} ${state.label}`)].join(' · ')
+})
 const proxmoxProgress = computed(() => operationData.value.proxmox_progress)
 const truenasProgress = computed(() => operationData.value.truenas_progress)
 const backupProgress = computed(() => operationData.value.backup_progress)
