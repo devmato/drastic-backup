@@ -1,3 +1,4 @@
+import dataset
 import pytest
 
 import drastic_agent.agent.agent as agent_module
@@ -7,6 +8,17 @@ from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.exceptions import ResticError
+
+
+@pytest.fixture(autouse=True)
+def retention_settings(monkeypatch, tmp_path):
+    db = dataset.connect(f"sqlite:///{tmp_path}/retention.db")
+    table = db["agent"]
+    table.create_column("name", db.types.text)
+    table.create_column("settings", db.types.text)
+    monkeypatch.setattr(agent_module, "agent_settings", table)
+    yield table
+    db.engine.dispose()
 
 
 class FakeTable:
@@ -126,6 +138,11 @@ def test_cmd_run_retention_prunes_old_operation_artifacts(monkeypatch):
     assert report.final_state == AgentReportState.success
     assert any("Removed 1 snapshots: snap-old" in line for line in report.log_list)
 
+    resticapi.calls.clear()
+    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+    assert report.final_state == AgentReportState.success
+    assert resticapi.calls == []
+
 
 @pytest.mark.parametrize("month, utc_hour", [(7, 2), (1, 3)])
 def test_retention_sorts_mixed_legacy_and_utc_runs(monkeypatch, berlin_timezone, month, utc_hour):
@@ -170,13 +187,13 @@ def test_retention_never_forgets_snapshot_with_mismatched_tags(monkeypatch):
     report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
 
     assert not any("snapshot_ids" in call for call in resticapi.calls)
-    assert resticapi.calls == [{"prune": True}]
+    assert resticapi.calls == []
     assert artifact_table.rows[1]["forgotten_at"] is None
     assert report.data["skipped_snapshot_ids"] == ["snap-old"]
     assert report.final_state == AgentReportState.warning
 
 
-def test_retention_retries_prune_without_forgetting_twice(monkeypatch):
+def test_retention_retries_prune_without_forgetting_twice(monkeypatch, retention_settings):
     agent = Agent.__new__(Agent)
     resticapi = FakeResticApi()
     resticapi.prune_error = ResticError("prune interrupted")
@@ -192,16 +209,29 @@ def test_retention_retries_prune_without_forgetting_twice(monkeypatch):
     agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
 
     first_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+    assert retention_settings.find_one(name="retention_prune:1")
+    # Reopen persisted state and retry from another job on the same repository.
+    restarted_db = dataset.connect(str(retention_settings.db.engine.url))
+    monkeypatch.setattr(agent_module, "agent_settings", restarted_db["agent"])
     resticapi.calls.clear()
-    second_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+    try:
+        second_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=8)
+    finally:
+        monkeypatch.setattr(agent_module, "agent_settings", retention_settings)
+        restarted_db.engine.dispose()
 
     assert first_report.final_state == AgentReportState.failed
     assert artifact_table.rows[1]["forgotten_at"] is not None
     assert resticapi.calls == [{"prune": True}]
     assert second_report.final_state == AgentReportState.success
+    assert retention_settings.find_one(name="retention_prune:1") is None
+
+    resticapi.calls.clear()
+    Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+    assert resticapi.calls == []
 
 
-def test_retention_retry_reconciles_forget_committed_before_local_update(monkeypatch):
+def test_retention_retry_reconciles_forget_committed_before_local_update(monkeypatch, retention_settings):
     agent = Agent.__new__(Agent)
 
     class ForgetCommittedThenFailedResticApi(FakeResticApi):
@@ -213,6 +243,7 @@ def test_retention_retry_reconciles_forget_committed_before_local_update(monkeyp
             return self.repository_snapshots
 
         def forget_snapshots(self, snapshot_ids, prune=True):
+            assert retention_settings.find_one(name="retention_prune:1")
             self.calls.append({"snapshot_ids": snapshot_ids, "prune": prune})
             self.repository_snapshots = [
                 snapshot
@@ -246,6 +277,23 @@ def test_retention_retry_reconciles_forget_committed_before_local_update(monkeyp
     assert artifact_table.rows[1]["forgotten_at"] is not None
     assert second_report.data["missing_snapshot_ids"] == ["snap-old"]
     assert second_report.final_state == AgentReportState.success
+
+
+def test_pending_prune_is_scoped_to_repository(monkeypatch, retention_settings):
+    agent = Agent.__new__(Agent)
+    resticapi = FakeResticApi()
+    monkeypatch.setattr(agent_module, "retentions", FakeTable({"name": "Keep all", "keep_last": 2}))
+    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
+    monkeypatch.setattr(agent_module, "agent_operation_artifacts", FakeArtifactsTable())
+    agent._Agent__resticapi = resticapi
+    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
+    retention_settings.insert({"name": "retention_prune:2", "settings": "pending"})
+
+    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+
+    assert report.final_state == AgentReportState.success
+    assert resticapi.calls == []
+    assert retention_settings.find_one(name="retention_prune:2")
 
 
 def test_retention_forgets_tagged_successful_artifact_from_partial_failed_backup(monkeypatch):

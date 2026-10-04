@@ -822,6 +822,8 @@ class Agent:
 
     def __repository_location_env(self, repository):
         env = dict(repository.get("environment") or {})
+        if self.identifier:
+            env.setdefault("RESTIC_HOST", os.environ.get("RESTIC_HOST") or f"drastic-{self.identifier}")
         location = repository["location"]
         if repository.get("kind") == AgentRepositoryKind.native.value:
             if str(location).startswith("rest:"):
@@ -2132,6 +2134,7 @@ class Agent:
             retentions_table=retentions,
             operations_table=agent_operations,
             operation_artifacts_table=agent_operation_artifacts,
+            settings_table=agent_settings,
         )
 
     """ Unlock repository """

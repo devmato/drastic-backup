@@ -47,6 +47,7 @@ class RetentionService:
         retentions_table,
         operations_table,
         operation_artifacts_table,
+        settings_table,
     ):
         report = AgentReport(
             type=AgentOperationType.retention,
@@ -75,7 +76,7 @@ class RetentionService:
         try:
             repository = set_repository(repository_id)
             report.log_message(
-                f"Running retention policy: {retention['name']} on repository {repository['location']} with prune"
+                f"Running retention policy: {retention['name']} on repository {repository['location']}"
             )
             backup_operations = list(
                 operations_table.find(
@@ -163,6 +164,12 @@ class RetentionService:
                 ],
             }
 
+            # Repository admission serializes retention on this agent. Keep the intent
+            # outside synced repository data, and commit it before forget can succeed.
+            prune_key = f"retention_prune:{repository_id}"
+            if snapshot_ids or missing_artifacts:
+                settings_table.upsert({"name": prune_key, "settings": "pending"}, ["name"])
+
             if snapshot_ids:
                 report.data["forget"] = resticapi.forget_snapshots(snapshot_ids, prune=False)
 
@@ -179,8 +186,10 @@ class RetentionService:
                     }
                 )
 
-            if candidate_operation_ids:
+            if settings_table.find_one(name=prune_key):
+                report.log_message("Pruning repository after snapshot removal")
                 report.data["prune"] = resticapi.prune()
+                settings_table.delete(name=prune_key)
 
             if unknown_artifacts:
                 report.log_message(

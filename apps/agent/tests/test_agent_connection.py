@@ -737,6 +737,7 @@ def test_set_repository_keeps_managed_location_without_rewrite_flag(monkeypatch)
         configured_repository["location"] == "rest:http://127.0.0.1:5050/restic/bootstrap/default"
     )
     assert configured_repository["env"] == {
+        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
     }
@@ -772,6 +773,7 @@ def test_set_repository_rewrites_managed_location_when_flag_enabled(monkeypatch)
 
     assert configured_repository["location"] == "rest:http://backend:5050/restic/bootstrap/default"
     assert configured_repository["env"] == {
+        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_PASSWORD_COMMAND": "ignored",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
@@ -808,9 +810,30 @@ def test_set_repository_builds_native_location_from_agent_server(monkeypatch):
 
     assert configured_repository["location"] == "rest:http://backend:5050/restic/native/default"
     assert configured_repository["env"] == {
+        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
     }
+
+
+@pytest.mark.parametrize(("process_host", "repository_host", "expected"), [
+    (None, None, "drastic-agent-17"),
+    ("custom-host", None, "custom-host"),
+    (None, "repository-host", "repository-host"),
+    ("custom-host", "repository-host", "repository-host"),
+])
+def test_restic_host_is_stable_and_preserves_overrides(monkeypatch, process_host, repository_host, expected):
+    monkeypatch.delenv("RESTIC_HOST", raising=False)
+    if process_host is not None:
+        monkeypatch.setenv("RESTIC_HOST", process_host)
+    environment = {"RESTIC_HOST": repository_host} if repository_host is not None else {}
+    repository = {"location": "/repo", "environment": dict(environment)}
+    for hostname in ("old-container", "new-container"):
+        monkeypatch.setattr(agent_module.platform, "node", lambda hostname=hostname: hostname)
+        agent = build_agent(identifier="agent-17")
+        _, env = agent._Agent__repository_location_env(repository)
+        assert env["RESTIC_HOST"] == expected
+    assert repository["environment"] == environment
 
 
 def test_startup_warns_once_when_managed_repo_rewrite_enabled_outside_dev(monkeypatch):

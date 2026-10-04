@@ -2,6 +2,8 @@
 
 ## Release Notes
 
+- Restic backups now use a stable agent-based hostname across container recreations unless `RESTIC_HOST` is explicitly configured. The first file backup after this change may reread unchanged files; repository deduplication is preserved. Retention skips redundant prune runs and persists pending cleanup for retry after failure or restart.
+
 - Operation start/end times, logs and last-run timestamps now include an explicit UTC offset, fixing incorrect local times and running durations for UTC containers viewed from another timezone. Update both server and agent. Existing naive database timestamps are interpreted as UTC; historical values from other timezones are not automatically shifted.
 
 - Managed Docker agents now support WebUI updates using the same Git lifecycle installer as native agents, including required Debian packages and startup rollback. Updates survive container restarts; recreating the container restores the selected image's software and packages while preserving agent data. Older deployments need one image update to enable protocol 4 support.
