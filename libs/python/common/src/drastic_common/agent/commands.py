@@ -1,8 +1,9 @@
 import enum
 
-from marshmallow import EXCLUDE, Schema, fields
+from marshmallow import EXCLUDE, Schema, fields, validate
 
-AGENT_PROTOCOL_VERSION = 5
+AGENT_PROTOCOL_VERSION = 6
+DEBUG_SECTIONS = ("runtime", "logs", "threads")
 
 
 class AgentCommandName(str, enum.Enum):
@@ -32,10 +33,12 @@ class AgentCommandName(str, enum.Enum):
     reset_known_hosts = "reset_known_hosts"
     rotate_ssh_key = "rotate_ssh_key"
     update = "update"
+    debug_state = "debug_state"
 
 
 # Protocol 0 is the legacy command set, before web-based Proxmox settings.
 AGENT_COMMAND_MIN_PROTOCOL = {
+    AgentCommandName.debug_state: 6,
     AgentCommandName.truenas_settings: 3,
     AgentCommandName.delete_connection: 3,
     AgentCommandName.proxmox_restore: 2,
@@ -61,7 +64,13 @@ class AgentCommandRequestSchema(Schema):
         unknown = EXCLUDE
 
     command = fields.Enum(AgentCommandName, by_value=True, required=True)
-    args = fields.Dict(keys=fields.String(), values=fields.Raw(), load_default=dict)
+    args = fields.Dict(keys=fields.String(), values=fields.Raw(allow_none=True), load_default=dict)
+
+
+class AgentDebugRequestSchema(Schema):
+    enabled = fields.Boolean(required=True)
+    section = fields.String(load_default=None, allow_none=True, validate=validate.OneOf(DEBUG_SECTIONS))
+    limit = fields.Integer(load_default=100, strict=True, validate=validate.Range(min=1, max=200))
 
 
 def agent_command_value(command: AgentCommandName | str) -> str:

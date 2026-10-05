@@ -111,7 +111,7 @@ class AgentOperationLogSchema(Schema):
     level = fields.Enum(AgentOperationLogLevel, by_value=False, load_default=AgentOperationLogLevel.info)
     created = UTCDateTime(allow_none=True, load_default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     message = fields.String(required=True)
-    data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True, load_default=None)
+    data = fields.Dict(keys=fields.String(), values=fields.Raw(allow_none=True), allow_none=True, load_default=None)
 
 
 class AgentOperationArtifactSchema(Schema):
@@ -122,7 +122,7 @@ class AgentOperationArtifactSchema(Schema):
     artifact_key = fields.String(required=True)
     snapshot_id = fields.String(allow_none=True, load_default=None)
     state = fields.String(load_default="running")
-    data = fields.Dict(keys=fields.String(), values=fields.Raw(), allow_none=True, load_default=dict)
+    data = fields.Dict(keys=fields.String(), values=fields.Raw(allow_none=True), allow_none=True, load_default=dict)
     forgotten_at = UTCDateTime(allow_none=True, load_default=None)
 
 
@@ -142,7 +142,7 @@ class AgentOperationSchema(Schema):
     schedule_id = fields.Integer(allow_none=True, load_default=None)
     retention_id = fields.Integer(allow_none=True, load_default=None)
     parent_operation_uuid = fields.String(allow_none=True, load_default=None)
-    data = fields.Dict(keys=fields.String(), values=fields.Raw(), load_default=dict)
+    data = fields.Dict(keys=fields.String(), values=fields.Raw(allow_none=True), load_default=dict)
     logs = fields.List(fields.Nested(AgentOperationLogSchema), load_default=list)
     artifacts = fields.List(fields.Nested(AgentOperationArtifactSchema), load_default=list)
 
@@ -213,6 +213,7 @@ class AgentJobScheduleSchema(Schema):
 
 
 class AgentSyncSchema(Schema):
+    diagnostic_enabled = fields.Boolean(load_default=False, dump_default=False)
     repositories = fields.List(fields.Nested(AgentRepositorySchema), required=True)
     secret_envelopes = fields.List(fields.Nested(AgentSecretEnvelopeSchema), load_default=list)
     retentions = fields.List(fields.Nested(AgentRetentionSchema), required=True)

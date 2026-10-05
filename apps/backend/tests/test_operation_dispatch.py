@@ -1,5 +1,7 @@
 from datetime import datetime, timedelta
 
+import pytest
+
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.app import create_app
 from drastic_server.extensions import db
@@ -52,6 +54,41 @@ def _successful_report(operation):
         "data": {"completed": True},
         "logs": [{"sequence": 1, "level": "info", "message": "completed"}],
     }
+
+
+@pytest.mark.parametrize("state", ["success", "failed"])
+def test_agent_update_uses_existing_operation_history_and_logs(monkeypatch, state):
+    app = _build_app(monkeypatch)
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("account-password", recovery_key="user-recovery-key")
+            agent = Agent(user=user, secret="agent-secret", hostname="backup-host")
+            db.session.add_all([user, agent])
+            db.session.commit()
+            service = AgentRequestService(agent)
+            payload = {"uuid": "update-1", "type": "agent_update", "state": "running", "source": "manual",
+                       "logs": [{"sequence": 1, "level": "info", "message": "Preparing release"}]}
+            service.operation(payload)
+            operation = AgentOperation.query.filter_by(uuid="update-1").one()
+            assert operation.state == AgentOperationState.running
+            payload["state"] = state
+            payload["logs"].append({"sequence": 2, "level": "error" if state == "failed" else "info",
+                                    "message": f"Update {state}"})
+            service.operation(payload)
+            service.operation(payload)  # Reconnect/retry must keep one operation and stable log sequences.
+            client = app.test_client()
+            _login(client)
+            detail = client.get(f"/api/agents/operations/{operation.id}")
+            assert detail.status_code == 200
+            assert detail.json["type_text"] == "Agent update"
+            assert detail.json["state"] == state
+            assert [log["message"] for log in detail.json["logs"]] == ["Preparing release", f"Update {state}"]
+            assert AgentOperation.query.count() == 1
+        finally:
+            db.session.remove()
+            db.drop_all()
 
 
 def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypatch):

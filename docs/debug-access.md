@@ -7,8 +7,9 @@ saved in this browser.
 ## Enable diagnostic access
 
 1. Update the backend first, then the agents. The backend startup runs the `debug_access`
-   database migration. Additional agent recording requires protocol **5**; agent versions
-   and the latest samples are available through MCP.
+   database migration. Historical recording requires protocol **5**; direct live reads
+   and local diagnostic logs require protocol **6**. Agent versions and the latest
+   samples are available through MCP.
 2. Turn on **Enable diagnostic recording and MCP access** in Settings. This single
    account-wide switch applies to all your agents.
 3. Copy the token from its one-time dialog into your MCP client's secret storage.
@@ -22,8 +23,8 @@ saved in this browser.
 The token is stored only as a SHA-256 hash. **Renew token** invalidates the previous
 token. Disabling access or changing the account password revokes it immediately.
 Agents stop additional collection within 60 seconds even if the control connection
-is lost. Agents read the account-wide setting in their existing report exchange,
-including when they connect later.
+is lost. Protocol 6 agents also receive the account-wide setting during sync and
+through the existing command connection, independently of successful report uploads.
 Normal operation logs are independent of this setting.
 
 For example, an OpenCode remote MCP configuration can reference an environment secret:
@@ -56,6 +57,30 @@ Start with `debug_context`, then `list_operations` and `inspect_operation`.
 | `get_operation_logs` | Existing operation logs in sequence order, bounded per entry |
 | `get_diagnostics` | Recorded events filtered by agent, operation or component; cursor pagination |
 | `get_diagnostic_event` | One complete event with its bounded payload (up to 16 KiB) |
+| `get_agent_debug` | Direct read from an online agent: `runtime`, `logs` or `threads` |
+
+### When progress or reports stop arriving
+
+Use `get_agent_debug(agent_id, section)`:
+
+- **`runtime`** reads the current scheduler/report-delivery phase, last send error,
+  queued reports, running operations and existing process/I/O counters.
+- **`logs`** reads recent, redacted local application and process-error logs.
+- **`threads`** shows thread stack locations without arguments or variable contents.
+
+The command runs outside the report queue and backup executor. Busy operation locks
+return `lock_busy` rather than blocking the read. Responses identify live data and its
+capture time. A three-second command timeout, an offline agent or an older protocol
+returns an explicitly labelled cached sample, when available. Use the existing
+configuration and operation tools for the remaining context.
+
+Local logs use Python's rotating file handler (`diagnostics.log` and `.1` in the agent
+data directory), approximately 1 MiB per file, mode `0600`. They are written only while
+diagnostics is active, are redacted before storage, and remain readable after a restart.
+Unlike server event history, these files are bounded by rotation rather than age.
+Reads return at most 200 entries and 48 KiB of recent log data; live responses are
+limited to 64 KiB and explicitly mark truncation. No arbitrary paths, shell commands,
+SQL queries or stack locals can be requested.
 
 Additional events include effective backup job/run/retention configuration, phase
 changes, command receipt, process start/exit and elapsed time, Proxmox disk selection
@@ -92,8 +117,8 @@ its frontend version/build timestamp, at most once per event type every 10 secon
   access is disabled. It resumes when the backend serves requests after a restart.
 - Additional events use an internal report with at most **256 log entries in memory**.
   The existing report queue submits up to four bounded entries per message (below
-  256 KiB), acknowledges their sequence numbers and retries failed sends. There is no
-  separate diagnostic RPC or event queue. Internal reports do not appear as backup
+  256 KiB), acknowledges their sequence numbers and retries failed sends. Historical
+  diagnostics reuse this queue. Internal reports do not appear as backup
   operations. Normal operation logs are read from their existing history, not copied
   into the diagnostic history. Overflow is reported in `dropped_events`; a restart
   loses unsent diagnostic entries. `boot_id` helps identify

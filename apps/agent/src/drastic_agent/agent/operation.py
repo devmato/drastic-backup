@@ -402,12 +402,12 @@ class AgentOperation:
             if self._final_state == AgentOperationState.failed:
                 self._final_state = AgentOperationState.warning
 
-    def finish(self):
+    def finish(self, *, ended=None):
         with self._lock:
             if self.ended:
                 return self
             self._full_log = True
-            self.ended = datetime.now(timezone.utc)
+            self.ended = ended or datetime.now(timezone.utc)
             try:
                 if self.type != AgentOperationType.command:
                     with db:
@@ -433,13 +433,13 @@ class AgentOperation:
         with self._lock:
             level = AgentOperationLogLevel.info
             if final_state == AgentOperationState.failed:
-                logging.error(message)
+                logging.error(message, extra={"operation_uuid": self.uuid})
                 level = AgentOperationLogLevel.error
             elif final_state == AgentOperationState.warning:
-                logging.warning(message)
+                logging.warning(message, extra={"operation_uuid": self.uuid})
                 level = AgentOperationLogLevel.warning
-            else:
-                logging.info(message)
+            elif not self.data.get("diagnostic"):
+                logging.info(message, extra={"operation_uuid": self.uuid})
             if final_state:
                 self.final_state = final_state
             self._logs.append(
@@ -528,6 +528,8 @@ class AgentOperation:
     @classmethod
     def save_queue(cls):
         for operation in list(cls.pending_reports):
+            if operation.type == AgentOperationType.agent_update:
+                continue  # The independent installer owns completion, including agent restarts.
             operation.log_message("Failed due to agent shutdown", final_state=AgentOperationState.failed)
             operation.finish()
         logging.debug(f"Saved queue with {len(cls.finished_reports)} operations")
@@ -544,6 +546,8 @@ class AgentOperation:
     @classmethod
     def recover_interrupted(cls):
         for row in list(agent_operations.find(state=AgentOperationState.running.name)):
+            if row["type"] == AgentOperationType.agent_update.name:
+                continue  # Recovered from the installer's durable status instead.
             operation = cls(
                 type=AgentOperationType[row["type"]],
                 operation_uuid=row["uuid"],

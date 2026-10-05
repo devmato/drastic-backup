@@ -36,6 +36,7 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__schedule_run_slots = {}
     agent._Agent__repository_passwords = {}
     agent._Agent__secret_values = {}
+    agent._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
     return agent
 
 

@@ -10,6 +10,7 @@ from time import monotonic
 import websocket
 from marshmallow import ValidationError
 
+from drastic_common import diagnostics
 from drastic_common.truenas import validate_dataset
 
 # ponytail: one TrueNAS job at a time on this agent; use per-connection admission
@@ -41,6 +42,7 @@ class TrueNASClient:
         self.settings = settings
         self.api_key = api_key
         self.timeout = timeout
+        diagnostics.remember_secrets({"api_key": api_key})
 
     @property
     def public_settings(self):

@@ -10,7 +10,7 @@ from flask import Blueprint, current_app, jsonify, request
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from marshmallow import Schema, ValidationError, fields, validate
 
-from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
+from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION, DEBUG_SECTIONS, AgentCommandName
 from drastic_common.agent.schemas import AgentJobScheduleSchema
 from drastic_common.diagnostics import bounded, redact, source_fingerprint, system_snapshot
 from drastic_server.extensions import db
@@ -33,6 +33,7 @@ from drastic_server.schemas.agent import (
 from drastic_server.schemas.job import JobResponseSchema
 from drastic_server.schemas.repository import RepositoryResponseSchema
 from drastic_server.schemas.retention import RetentionResponseSchema
+from drastic_server.services.agent.command import AgentService
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.services.diagnostics import MAX_USER_EVENTS, RETENTION_DAYS, record, utcnow
 from drastic_server.utils.urls import public_server_url
@@ -82,6 +83,13 @@ def debug_settings():
         user.debug_token_hash = None
         user.debug_enabled_at = None
         db.session.commit()
+    if request.method != "GET":
+        for agent in Agent.query.filter_by(user_id=user.id).filter(Agent.protocol_version >= 6):
+            try:
+                AgentService.send_command(agent, AgentCommandName.debug_state, await_response=False,
+                                          enabled=bool(user.debug_token_hash))
+            except Exception as exc:
+                current_app.logger.warning("Could not deliver diagnostic setting to agent %s (%s)", agent.id, type(exc).__name__)
     response = jsonify({**settings(user), **({"token": token} if token else {})})
     response.headers["Cache-Control"] = "no-store"
     return response
@@ -156,10 +164,13 @@ TOOLS = {
         "agent_id": INT, "operation_id": INT, "after_id": {"type": "integer", "minimum": 0},
         "component": {"type": "string", "enum": ["agent", "backend", "frontend"]}, "limit": PAGE}),
     "get_diagnostic_event": ("Read a recorded event, including its bounded payload (at most 16 KiB).", {"event_id": INT}),
+    "get_agent_debug": ("Read live agent state directly, independently of report delivery. Fixed sections only; offline/older agents return the last stored sample.", {
+        "agent_id": INT, "section": {"type": "string", "enum": list(DEBUG_SECTIONS)},
+        "limit": {"type": "integer", "minimum": 1, "maximum": 200}}),
 }
 REQUIRED = {"inspect_agent": ["agent_id"], "inspect_operation": ["operation_id"],
             "get_operation_logs": ["operation_id"], "inspect_configuration": ["kind", "id"],
-            "get_diagnostic_event": ["event_id"]}
+            "get_diagnostic_event": ["event_id"], "get_agent_debug": ["agent_id", "section"]}
 
 
 def configuration(user_id, kind, item_id):
@@ -199,6 +210,21 @@ def call_tool(user, name, args):
                 "coverage": "Recording is opt-in. Events expire after 14 days or the count cap. Agent buffers are bounded and not durable across restarts. Host counters are cumulative, not per-operation. Full backend outages require external logs."}
     if name == "inspect_configuration":
         return configuration(user.id, args["kind"], args["id"])
+    if name == "get_agent_debug":
+        agent = Agent.query.filter_by(user_id=user.id, id=args["agent_id"]).first()
+        if agent is None:
+            return None
+        token_hash = user.debug_token_hash
+        reply = AgentService.send_command(agent, AgentCommandName.debug_state, timeout=3,
+                                          enabled=True, section=args["section"], limit=args.get("limit", 100))
+        db.session.refresh(user)
+        if user.debug_token_hash != token_hash:
+            return {"error": "Debug access revoked"}
+        if reply["state"].name == "success":
+            return reply["data"]
+        latest = events_for(user.id).filter_by(agent_id=agent.id, event_type="agent.sample").order_by(DiagnosticEvent.id.desc()).first()
+        return {"source": "cached", "live_available": False, "reason": reply.get("log") or reply.get("data"),
+                "sample": event_payload(latest) if latest else None}
     if name == "get_diagnostic_event":
         event = events_for(user.id).filter_by(id=args["event_id"]).first()
         return event_payload(event) if event else None

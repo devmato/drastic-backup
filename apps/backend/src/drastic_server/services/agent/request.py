@@ -68,6 +68,7 @@ class AgentRequestService:
 
         return SyncSchema().dump(
             {
+                "diagnostic_enabled": bool(self.agent.user.debug_token_hash),
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),
                 "jobs": agent_jobs,

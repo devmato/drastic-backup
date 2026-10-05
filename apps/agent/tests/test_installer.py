@@ -138,12 +138,22 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     assert list((root / "releases").iterdir()) == [old]
     assert (root / "data/config.ini").read_bytes() == identity
     assert "keep-me" in env.read_text()
+    failed = json.loads(next((root / "data").glob("update-*.json")).read_text())
+    assert failed["state"] == "failed"
+    assert [log["message"] for log in failed["logs"]][-2:] == [
+        "Previous installation restored", "Agent update failed: The new agent service failed to start.",
+    ]
 
     installer.install(arguments("update", server=None))
     assert not old.exists()
     assert installer.read_state()["ref"] == "v1"
     assert (root / "data/config.ini").read_bytes() == identity
     assert "keep-me" in env.read_text()
+    updates = [json.loads(path.read_text()) for path in (root / "data").glob("update-*.json")]
+    succeeded = next(update for update in updates if update["state"] == "success")
+    assert succeeded["uuid"] != failed["uuid"]
+    assert succeeded["ended"] >= succeeded["started"]
+    assert succeeded["logs"][-1]["message"] == "Agent update completed; startup checks passed"
 
     service["refuse_stop"] = True
     with pytest.raises(RuntimeError, match="still running"):
@@ -226,6 +236,10 @@ def test_container_uses_prebuilt_release_and_shared_update_rollback(installer, m
     assert (installer.ROOT / "current").resolve() == current
     assert installer.active()
     assert (data / "config.ini").read_bytes() == identity
+    updates = [json.loads(path.read_text()) for path in data.glob("update-*.json")]
+    assert sorted(update["state"] for update in updates) == ["failed", "failed", "success"]
+    assert any(update["logs"][-1]["message"] == "Agent update failed: bash exited with code 9" for update in updates)
+    assert any("Previous installation restored" in [log["message"] for log in update["logs"]] for update in updates)
 
 
 def test_container_update_request_requires_launcher_and_rejects_duplicates(installer):

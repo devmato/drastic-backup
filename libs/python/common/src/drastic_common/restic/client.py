@@ -157,12 +157,12 @@ class ResticApi:
             return [process.pid for managed in cls._processes.values()
                     for process in getattr(managed, "_processes", [])]
 
-    def __drain_binary_stream(self, stream, output_chunks, callback=None):
+    def __drain_binary_stream(self, stream, output_chunks, callback=None, pid=None, operation_uuid=None):
         try:
             while True:
                 try:
-                    chunk = stream.readline() if callback is not None else stream.read(64 * 1024)
-                except TypeError:
+                    chunk = stream.readline(64 * 1024)
+                except (AttributeError, TypeError):
                     chunk = stream.read()
                     if chunk:
                         output_chunks.append(chunk)
@@ -170,10 +170,12 @@ class ResticApi:
                 if not chunk:
                     break
                 output_chunks.append(chunk)
+                text = chunk.decode("utf-8", errors="replace") if isinstance(chunk, bytes) else chunk
+                diagnostics.local_event("process.stderr", {"pid": pid, "output": text[:8000]}, operation_uuid=operation_uuid)
                 if callback is not None:
                     # Progress parsing must never stop draining the pipe or break the backup.
                     try:
-                        callback(chunk.decode("utf-8", errors="replace"))
+                        callback(text)
                     except Exception:
                         logging.exception("Backup source progress callback failed")
         finally:
@@ -235,6 +237,9 @@ class ResticApi:
             except (ValueError, TypeError):
                 message = None
             message_type = message.get("message_type") if isinstance(message, dict) else None
+            if message_type in {"summary", "error"}:
+                diagnostics.local_event("restic.output", {"pid": process.pid, "status": message},
+                                        operation_uuid=callback_args.get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None))
             if message_type == "verbose_status" and message.get("action") != "scan_finished":
                 continue
             # One-shot scan and summary events must survive status throttling.
@@ -275,7 +280,7 @@ class ResticApi:
         cwd=None,
     ):
         started = time.monotonic()
-        operation_uuid = getattr(getattr(callback, "__self__", None), "uuid", None)
+        operation_uuid = (callback_args or {}).get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None)
         if cwd is not None:
             # Changing the source directory must not relocate the binary or local repository.
             cmd = list(cmd)
@@ -321,7 +326,7 @@ class ResticApi:
             stderr_chunks = []
             stderr_thread = threading.Thread(
                 target=self.__drain_binary_stream,
-                args=(process.stderr, stderr_chunks),
+                args=(process.stderr, stderr_chunks, None, process.pid, operation_uuid),
                 daemon=True,
             )
             stderr_thread.start()
@@ -482,13 +487,13 @@ class ResticApi:
             restic_stderr_chunks = []
             restic_stderr_thread = threading.Thread(
                 target=self.__drain_binary_stream,
-                args=(process.stderr, restic_stderr_chunks),
+                args=(process.stderr, restic_stderr_chunks, None, process.pid, operation_uuid),
                 daemon=True,
             )
             restic_stderr_thread.start()
             producer_stderr_thread = threading.Thread(
                 target=self.__drain_binary_stream,
-                args=(producer_process.stderr, producer_stderr_chunks, producer_stderr_callback),
+                args=(producer_process.stderr, producer_stderr_chunks, producer_stderr_callback, producer_process.pid, operation_uuid),
                 daemon=True,
             )
             producer_stderr_thread.start()

@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import logging
 import os
 import re
 from functools import lru_cache
@@ -17,6 +18,8 @@ _until = 0.0
 _report = None
 _secrets = set()
 _sensitive = re.compile(r"password|secret|token|api.?key|access.?key|credential|authorization|cookie|private.?key|encrypted|environment|recovery.?key", re.I)
+_logger = logging.getLogger("drastic.diagnostics")
+_logger.setLevel(logging.INFO)
 
 
 @lru_cache(maxsize=4)
@@ -87,10 +90,20 @@ def record(event_type, payload, *, operation_uuid=None):
     try:
         payload = bounded(payload)
         if active():
+            local_event(event_type, payload, operation_uuid=operation_uuid)
             report.log_message(event_type, data={"operation_uuid": operation_uuid, "payload": payload})
     except Exception:
         with report._lock:
             report.set_data("dropped_events", report.data.get("dropped_events", 0) + 1)
+
+
+def local_event(event_type, payload, *, operation_uuid=None):
+    """Keep failures observable without acquiring the report queue's locks."""
+    if active():
+        try:
+            _logger.info(event_type, extra={"diagnostic": bounded(payload), "operation_uuid": operation_uuid})
+        except Exception:
+            pass  # Diagnostic logging must not interrupt a data stream.
 
 
 def system_snapshot(pids=()):

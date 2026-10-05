@@ -7,13 +7,14 @@ from flask_jwt_extended import create_access_token
 
 from drastic_server.app import create_app
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent, AgentOperation, AgentOperationLog
+from drastic_server.models.agent import Agent, AgentOperation, AgentOperationLog, AgentSession
 from drastic_server.models.diagnostic import DiagnosticEvent
 from drastic_server.models.job import Job, JobAction, JobSchedule
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
 from drastic_server.models.user import User
 from drastic_server.services import diagnostics
+from drastic_server.services.agent import command as agent_command
 from drastic_server.services.agent.request import AgentRequestService
 
 
@@ -143,7 +144,7 @@ def test_operation_snapshots_use_source_timestamp_and_existing_report(context):
     client.post("/api/user/debug")
     sampled_at = diagnostics.utcnow() - timedelta(seconds=2)
     report = {"uuid": operations[0].uuid, "type": "backup", "state": "running",
-              "data": {"bytes_processed": 100}, "diagnostic_at": sampled_at.isoformat() + "Z"}
+              "data": {"bytes_processed": 100, "bytes_total": None}, "diagnostic_at": sampled_at.isoformat() + "Z"}
     service = AgentRequestService(agents[0])
     service.operation(report)
     service.operation(report)  # Lost acknowledgement: the same sample is not appended twice.
@@ -152,6 +153,7 @@ def test_operation_snapshots_use_source_timestamp_and_existing_report(context):
     assert event.event_type == "operation.received"
     assert event.occurred_at == sampled_at < event.received_at
     assert event.payload["data"]["bytes_processed"] == 100
+    assert event.payload["data"]["bytes_total"] is None
 
 
 def test_configuration_schemas_keep_debug_fields_and_exclude_credentials(context):
@@ -183,6 +185,54 @@ def test_browser_diagnostics_reject_foreign_operations_and_disabled_recording(co
     assert client.post("/api/user/debug/browser", json={**payload, "raw_body": "not permitted"}).status_code == 400
     assert client.post("/api/user/debug/browser", json=payload).status_code == 204
     assert DiagnosticEvent.query.first().component == "frontend"
+
+
+def test_live_debug_is_owned_fixed_read_only_and_handles_unavailable_agents(context, monkeypatch):
+    client, users, agents, _ = context
+    calls, settings = [], []
+    agents[0].protocol_version = 6
+    agents[0].session = AgentSession(request_sid="live-agent")
+    db.session.commit()
+    monkeypatch.setattr(agent_command, "emit", lambda event, payload, **kwargs: settings.append(payload))
+
+    def call(event, payload, **kwargs):
+        calls.append(payload)
+        assert kwargs["timeout"] == 3
+        return {"type": "command", "state": "success", "data": {"source": "live", "data": {"scheduler": "reports"}}}
+
+    monkeypatch.setattr(agent_command, "call", call)
+    token = client.post("/api/user/debug").json["token"]
+    assert settings[-1] == {"command": "debug_state", "args": {"enabled": True}}
+    assert tool(client, token, "get_agent_debug", agent_id=agents[0].id, section="runtime")["source"] == "live"
+    assert calls[-1] == {"command": "debug_state", "args": {"enabled": True, "section": "runtime", "limit": 100}}
+    assert tool(client, token, "get_agent_debug", agent_id=agents[1].id, section="logs") == {"error": "Not found"}
+    for forbidden in ({"section": "shell"}, {"section": "runtime", "enabled": False}, {"section": "logs", "path": "/etc/passwd"}):
+        assert rpc(client, token, params={"name": "get_agent_debug", "arguments": {"agent_id": agents[0].id, **forbidden}}).json["error"]["code"] == -32602
+    assert len(calls) == 1
+    agents[0].protocol_version = 5
+    db.session.commit()
+    assert tool(client, token, "get_agent_debug", agent_id=agents[0].id, section="logs")["source"] == "cached"
+    assert len(calls) == 1
+    agents[0].protocol_version = 6
+    db.session.commit()
+
+    def timed_out(*args, **kwargs):
+        raise agent_command.TimeoutError()
+
+    monkeypatch.setattr(agent_command, "call", timed_out)
+    assert tool(client, token, "get_agent_debug", agent_id=agents[0].id, section="threads")["live_available"] is False
+
+    def revoked(*args, **kwargs):
+        users[0].debug_token_hash = "rotated"
+        db.session.commit()
+        return call(*args, **kwargs)
+
+    monkeypatch.setattr(agent_command, "call", revoked)
+    assert tool(client, token, "get_agent_debug", agent_id=agents[0].id, section="runtime") == {"error": "Debug access revoked"}
+    client.delete("/api/user/debug")
+    assert settings[-1] == {"command": "debug_state", "args": {"enabled": False}}
+    monkeypatch.setattr(agent_command, "emit", timed_out)
+    assert client.post("/api/user/debug").status_code == 200
 
 
 def test_official_mcp_client(context):

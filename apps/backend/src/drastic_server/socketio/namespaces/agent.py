@@ -95,10 +95,18 @@ class AgentNamespace(Namespace):
             emit_agent_state(agent, online=False)
 
     def on_request(self, data):
+        agent_request = None
         try:
             agent_request = AgentRequestService.get_by_sid( request.sid )
             return {'success': True, 'result': getattr(agent_request, data['action'])( **data['args'] ) }
         except Exception as e:
+            if agent_request is not None:
+                from drastic_common.diagnostics import redact
+                from drastic_server.services.diagnostics import record
+                record(agent_request.agent.user_id, "agent.request_failed", {
+                    "action": data.get("action") if isinstance(data, dict) else None,
+                    "error": type(e).__name__, "message": redact(str(e)),
+                }, agent_id=agent_request.agent.id)
             print(e)
             return {'success': False, 'result': {"error": type(e).__name__}}
 

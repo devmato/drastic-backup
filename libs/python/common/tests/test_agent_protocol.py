@@ -17,15 +17,17 @@ def test_agent_operation_schema_loads_wire_payload():
         "source": "manual",
         "job_id": 1,
         "repository_id": 2,
+        "data": {"bytes_total": None},
         "logs": [
             {
                 "sequence": 1,
                 "level": "info",
                 "created": "2026-05-10T10:00:01",
                 "message": "done",
+                "data": {"operation_uuid": None},
             }
         ],
-        "artifacts": [{"uuid": "artifact-1", "artifact_key": "default", "state": "success"}],
+        "artifacts": [{"uuid": "artifact-1", "artifact_key": "default", "state": "success", "data": {"guest_name": None}}],
         "ignored": "value",
     }
 
@@ -37,6 +39,9 @@ def test_agent_operation_schema_loads_wire_payload():
     assert loaded["logs"][0]["message"] == "done"
     assert loaded["artifacts"][0]["artifact_key"] == "default"
     assert "ignored" not in loaded
+    assert loaded["data"]["bytes_total"] is None
+    assert loaded["logs"][0]["data"]["operation_uuid"] is None
+    assert loaded["artifacts"][0]["data"]["guest_name"] is None
 
 
 def test_agent_sync_schema_dumps_backend_like_objects():

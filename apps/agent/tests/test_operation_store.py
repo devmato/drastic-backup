@@ -1,4 +1,6 @@
+import fcntl
 import json
+import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -84,6 +86,85 @@ def test_running_report_is_failed_during_recovery():
 
     AgentReport.recover_interrupted()
     assert len(list(agent_operation_queue.find(uuid="interrupted-1"))) == 1
+
+
+@pytest.mark.parametrize("outcome", ["success", "failed", "interrupted"])
+def test_update_report_survives_restart_and_retries_delivery(tmp_path, monkeypatch, outcome):
+    import drastic_agent.agent.agent as agent_module
+
+    root = tmp_path / "installation"
+    root.mkdir()
+    data = tmp_path / "mounted-data"
+    data.mkdir()
+    monkeypatch.setattr(agent_module, "AGENT_INSTALL_ROOT", root)
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(data))
+    path = data / "update-update-1.json"
+    status = {
+        "uuid": "update-1", "state": "running", "started": "2026-10-05T09:00:00+00:00", "ended": None,
+        "logs": [{"sequence": 1, "level": "info", "created": "2026-10-05T09:00:00+00:00",
+                  "message": "Agent update started; preparing release"}],
+    }
+    path.write_text(json.dumps(status))
+    agent = agent_module.Agent.__new__(agent_module.Agent)
+    payloads = []
+    accepted = True
+
+    def send(action, **kwargs):
+        assert action == "operation"
+        payloads.append(kwargs["operation_json"])
+        return {"success": accepted}
+
+    monkeypatch.setattr(agent, "_Agent__send_request", send)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        agent._Agent__read_update_reports()
+        agent._Agent__flush_report_queue()
+        assert payloads[-1]["state"] == "running"
+        assert payloads[-1]["type"] == "agent_update"
+        assert payloads[-1]["started"] == status["started"]
+        AgentReport.cancel_running()
+        AgentReport.save_queue()
+        assert agent_operations.find_one(uuid="update-1")["state"] == "running"
+        AgentReport.recover_interrupted()
+        AgentReport.load_queue()
+        assert not AgentReport.finished_reports
+        agent._Agent__read_update_reports()
+        agent._Agent__read_update_reports()
+        assert len(AgentReport.pending_reports) == 1
+        assert len(AgentReport.pending_reports[0].logs) == 1
+        if outcome != "interrupted":
+            status.update(state=outcome, ended="2026-10-05T09:01:00+00:00")
+            status["logs"].append({"sequence": 2, "level": "error" if outcome == "failed" else "info",
+                                   "created": status["ended"], "message": f"Update {outcome}"})
+            path.write_text(json.dumps(status))
+    finally:
+        os.close(descriptor)
+
+    accepted = False
+    agent._Agent__read_update_reports()
+    assert not path.exists()
+    AgentReport.load_queue()  # Terminal report is durable before removing the installer status.
+    agent._Agent__flush_report_queue()
+    assert len(AgentReport.finished_reports) == 1
+    accepted = True
+    agent._Agent__flush_report_queue()
+    assert not AgentReport.finished_reports
+    assert agent_operation_queue.find_one(uuid="update-1") is None
+    assert payloads[-1] == payloads[-2]
+    assert payloads[-1]["state"] == ("failed" if outcome == "interrupted" else outcome)
+    assert payloads[-1]["uuid"] == "update-1"
+    assert [log["sequence"] for log in payloads[-1]["logs"]] == [1, 2]
+    if outcome == "interrupted":
+        assert "interrupted" in payloads[-1]["logs"][-1]["message"]
+    else:
+        assert payloads[-1]["ended"] == status["ended"]
+        assert payloads[-1]["logs"][-1]["level"] == status["logs"][-1]["level"]
+    # A crash between committing the outbox and deleting the status must not enqueue it again.
+    path.write_text(json.dumps(status))
+    agent._Agent__read_update_reports()
+    assert not path.exists()
+    assert not AgentReport.finished_reports
 
 
 def test_uuid_registry_tracks_running_report():

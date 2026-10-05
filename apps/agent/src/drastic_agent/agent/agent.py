@@ -70,6 +70,7 @@ from drastic_common.agent.commands import (
     ASYNC_AGENT_COMMANDS,
     AgentCommandName,
     AgentCommandRequestSchema,
+    AgentDebugRequestSchema,
 )
 from drastic_common.agent.enums import AgentJobActionModule, AgentRepositoryKind
 from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
@@ -260,6 +261,9 @@ class Agent:
         self.__secret_values = {}
         self.__shutdown_event = Event()
         self.__execution = ExecutionManager()
+        self._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
+        from drastic_agent.services.diagnostics import install_log
+        install_log(_ensure_agent_data_dir())
 
         # Download binary if not exists
         self.__check_restic_binary()
@@ -451,6 +455,7 @@ class Agent:
 
         while not self.__shutdown_event.wait(sleep_time):
             now = datetime.now()
+            self._debug_scheduler = {"at": datetime.now(timezone.utc).isoformat(), "phase": "maintenance"}
 
             if monotonic() >= getattr(self, "_next_restore_cleanup", 0):
                 self._next_restore_cleanup = monotonic() + 60
@@ -462,26 +467,34 @@ class Agent:
                     logging.exception("Restore workspace cleanup failed")
 
             if not self.__check_update():
+                self._debug_scheduler["phase"] = "schedules"
                 self.__run_due_schedules(now)
 
             # Process tasks that require server connection
             if self.connected:
+                self._debug_scheduler["phase"] = "reports"
                 self.__flush_report_queue()
                 if monotonic() >= getattr(self, "_next_diagnostics", 0):
                     self._next_diagnostics = monotonic() + 10
                     try:
+                        self._debug_scheduler["phase"] = "diagnostics"
                         self.__sample_diagnostics()
-                    except Exception:
+                    except Exception as exc:
+                        diagnostics.local_event("sampling.failed", {"error": type(exc).__name__, "message": str(exc)})
                         logging.warning("Diagnostic sampling failed")
             else:
+                self._debug_scheduler["phase"] = "connection"
                 self.__maintain_server_connection(now)
 
     def __check_update(self, *, startup=False):
         manager = self.__execution_manager()
-        if not manager.maintenance and not startup:
+        if self.install_type not in {"git", "docker"}:
             return False
         if monotonic() >= getattr(self, "_Agent__next_update_check_at", 0):
             self.__next_update_check_at = monotonic() + 5
+            self.__read_update_reports()
+            if not manager.maintenance and not startup:
+                return False
             if self.install_type == "docker":
                 updating = (AGENT_INSTALL_ROOT / "update-request.json").exists()
                 if startup and updating:
@@ -504,6 +517,54 @@ class Agent:
             except (OSError, subprocess.SubprocessError) as exc:
                 logging.warning("Could not check update unit: %s", exc)
         return manager.maintenance
+
+    def __read_update_reports(self):
+        import fcntl
+
+        paths = list(Path(_agent_data_dir()).glob("update-*.json"))
+        if not paths:
+            return
+        # Reuse the installer's lifecycle lock to detect interrupted updates, including host/container restarts.
+        descriptor = os.open(AGENT_INSTALL_ROOT, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            updating = False
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+            except BlockingIOError:
+                updating = True
+            for path in paths:
+                try:
+                    status = json.loads(path.read_text())
+                    operation_uuid = status["uuid"]
+                    row = agent_operations.find_one(uuid=operation_uuid)
+                    if row and row["state"] != "running":
+                        path.unlink(missing_ok=True)
+                        continue
+                    report = AgentReport.get_report(type=AgentReportType.agent_update, uuid=operation_uuid)
+                    if report is None:
+                        AgentReport.reserve_history_operation(
+                            type=AgentReportType.agent_update, operation_uuid=operation_uuid,
+                            started=datetime.fromisoformat(status["started"]),
+                        )
+                        report = AgentReport(type=AgentReportType.agent_update, operation_uuid=operation_uuid)
+                        AgentReport.pending_reports.append(report)
+                    with report._lock:
+                        for log in status["logs"][len(report._logs):]:
+                            report.log_message(log["message"], final_state=AgentReportState.failed if log["level"] == "error" else None)
+                            report._logs[-1]["created"] = datetime.fromisoformat(log["created"])
+                        state = AgentReportState[status["state"]]
+                        if state == AgentReportState.running and not updating:
+                            report.log_message("Agent update interrupted before completion", final_state=AgentReportState.failed)
+                        elif state != AgentReportState.running:
+                            report.final_state = state
+                        else:
+                            continue
+                        report.finish(ended=datetime.fromisoformat(status["ended"]) if status.get("ended") else None)
+                    path.unlink(missing_ok=True)
+                except (OSError, ValueError, KeyError, TypeError, SQLAlchemyError):
+                    logging.exception("Could not read agent update status %s", path)
+        finally:
+            os.close(descriptor)
 
 
     def __run_due_schedules(self, now):
@@ -656,8 +717,7 @@ class Agent:
             break
 
     def __sample_diagnostics(self):
-        if not hasattr(self, "_diagnostic_report"):
-            self._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
+        if self._diagnostic_report not in AgentReport.pending_reports:
             AgentReport.pending_reports.append(self._diagnostic_report)
         self._diagnostic_report.sent = False  # Poll consent through the normal report response, even when idle.
         if diagnostics.active():
@@ -744,6 +804,9 @@ class Agent:
     """ Send report to server """
 
     def __send_report(self, report):
+        self._debug_report = {**getattr(self, "_debug_report", {}), "operation_uuid": report.uuid,
+                              "attempt_at": datetime.now(timezone.utc).isoformat(), "phase": "serializing"}
+        started = monotonic()
         try:
             with report._lock:
                 if hasattr(report, "diagnostic_at"):
@@ -758,7 +821,9 @@ class Agent:
             logging.debug(f"Sending Report {report.uuid}")
             logging.debug(f"JSON-Data: {report_json}")
             request_started = monotonic()
+            self._debug_report["phase"] = "sending"
             request = self.__send_request("operation", operation_json=report_json)
+            self._debug_report["phase"] = "processing_response"
             success = bool(request.get("success"))
             if success:
                 logs = report_json.get("logs") or []
@@ -774,9 +839,18 @@ class Agent:
                         del report.diagnostic_at
             else:
                 report.sent = False
+            self._debug_report.update(phase="complete", success=success, duration_seconds=monotonic() - started,
+                                      error=None if success else diagnostics.bounded(request.get("result")))
+            if success:
+                self._debug_report["last_success_at"] = datetime.now(timezone.utc).isoformat()
+            else:
+                diagnostics.local_event("report.rejected", self._debug_report)
             return success
         except Exception as e:
             report.sent = False
+            self._debug_report.update(success=False, error=diagnostics.bounded({"type": type(e).__name__, "message": str(e)}),
+                                      duration_seconds=monotonic() - started)
+            diagnostics.local_event("report.failed", self._debug_report)
             logging.debug(f"Failed to send report {report.uuid}: {e}")
 
         return False
@@ -1258,6 +1332,22 @@ class Agent:
         command = command_request["command"]
         command_name = command.value
         command_args = dict(command_request.get("args") or {})
+        if command == AgentCommandName.debug_state:
+            # This path must not log via, finish, or lock an existing operation report.
+            response = AgentReport.command_report()
+            try:
+                args = AgentDebugRequestSchema().load(command_args)
+                self.__configure_diagnostics(args["enabled"])
+                if args["enabled"] and args["section"]:
+                    from drastic_agent.services.diagnostics import snapshot
+                    response.data = snapshot(self, _agent_data_dir(), args["section"], args["limit"])
+                else:
+                    response.data = {"enabled": args["enabled"]}
+            except Exception as exc:
+                response.final_state = AgentReportState.failed
+                response.data = {"error": type(exc).__name__}
+            response.ended = datetime.now(timezone.utc)
+            return response
         diagnostics.record("command.received", {
             "command": command_name,
             "arguments": {key: value for key, value in command_args.items() if key in {
@@ -1418,6 +1508,7 @@ class Agent:
         self.__server = configured_server
         self.identifier = self.__config.get("AGENT", "identifier", fallback=None)
         self.__secret = self.__config.get("AGENT", "secret", fallback=None)
+        diagnostics.remember_secrets({"agent_secret": self.__secret})
 
         if "AGENT" in self.__config and not self.__config.get("AGENT", "private_key", fallback=None):
             private_key, public_key = generate_agent_keypair()
@@ -1679,8 +1770,7 @@ class Agent:
                     final_state=AgentReportState.failed,
                 )
             else:
-                details = "container logs" if self.install_type == "docker" else "journalctl -u drastic-agent-update.service"
-                report.log_message(f"Agent update started; details: {details}")
+                report.log_message("Agent update started; progress and result are available in Operations")
         except (OSError, subprocess.SubprocessError) as exc:
             report.log_message(f"Could not start agent update: {exc}", final_state=AgentReportState.failed)
         return report.finish()
@@ -1986,6 +2076,8 @@ class Agent:
 
         try:
             server_data = request["result"]
+            if "diagnostic_enabled" in server_data:
+                self.__configure_diagnostics(server_data["diagnostic_enabled"])
             synced_repositories = [
                 self.__strip_repository_secret_fields(repository)
                 for repository in server_data["repositories"]
@@ -2008,6 +2100,7 @@ class Agent:
         except Exception as exc:
             logging.exception("Agent sync transaction failed")
             report.log_message(f"Agent sync failed: {exc}", final_state=AgentReportState.failed)
+            self._debug_sync = {"at": datetime.now(timezone.utc).isoformat(), "success": False, "error": type(exc).__name__}
             return report.finish()
 
         self.__secret_value_cache().clear()
@@ -2024,7 +2117,11 @@ class Agent:
             except AgentExeption as exc:
                 report.log_message(str(exc), final_state=AgentReportState.warning)
 
+        self._debug_sync = {"at": datetime.now(timezone.utc).isoformat(), "success": True}
         return report.finish()
+
+    def __configure_diagnostics(self, enabled):
+        diagnostics.configure(self._diagnostic_report if enabled else None)
 
     def cmd_reset_known_hosts(self):
         report = AgentReport.command_report()

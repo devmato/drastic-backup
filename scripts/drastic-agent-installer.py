@@ -15,9 +15,11 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from shlex import quote
 from urllib.parse import urlsplit
+from uuid import uuid4
 
 ROOT = Path('/opt/drastic-agent')
 WRAPPER = Path('/usr/local/bin/drastic-agent')
@@ -264,6 +266,32 @@ def install(args):
         fail('Agent data paths must not be symlinks.')
     data.mkdir(mode=0o700, parents=True, exist_ok=True)
     data.chmod(0o700)
+    status = {'uuid': str(uuid4()), 'state': 'running', 'logs': []}
+    status_path = data / f'update-{status["uuid"]}.json'
+
+    def progress(message, result='running'):
+        if args.command != 'update':
+            return
+        now = datetime.now(timezone.utc).isoformat()
+        status.update(state=result, ended=now if result != 'running' else None)
+        status.setdefault('started', now)
+        status['logs'].append({'sequence': len(status['logs']) + 1, 'created': now,
+                               'level': 'error' if result == 'failed' else 'info', 'message': message})
+        # ponytail: only lifecycle milestones cross the restart; verbose output stays in the journal/container log.
+        write(status_path, json.dumps(status) + '\n')
+
+    progress('Agent update started; preparing release')
+    try:
+        _install(args, state, data, progress)
+    except BaseException as exc:
+        detail = (f'{Path(exc.cmd[0]).name} exited with code {exc.returncode}'
+                  if isinstance(exc, subprocess.CalledProcessError) else str(exc) or type(exc).__name__)
+        progress(f'Agent update failed: {detail}', 'failed')
+        raise
+    progress('Agent update completed; startup checks passed', 'success')
+
+
+def _install(args, state, data, progress):
     config = configparser.ConfigParser(interpolation=None)
     config.read(data / 'config.ini')
     configured = config.has_section('AGENT')
@@ -284,6 +312,7 @@ def install(args):
             fail('Registration credentials must not be empty.')
 
     release, new_state = prepare_release(args, state)
+    progress(f'Release prepared: {new_state["ref"]} ({new_state["commit"]})')
     new_state['server'] = server
     was_active = active()
     was_enabled = not CONTAINER and run('systemctl', 'is-enabled', '--quiet', SERVICE.name, check=False).returncode == 0
@@ -294,6 +323,7 @@ def install(args):
     snapshots = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path in files}
     settings = installation_settings(new_state)
     try:
+        progress('Stopping agent and activating release')
         stop()
         if not configured:
             run(release / 'venv/bin/drastic-agent', 'register', env={**os.environ, **settings,
@@ -314,12 +344,14 @@ def install(args):
             write(SERVICE, service_text(), 0o644)
             run('systemctl', 'daemon-reload')
             systemctl('enable')
+        progress('Starting agent and checking startup')
         start()
         for _ in range(3):
             time.sleep(1)
             if not active():
                 fail('The new agent failed to start.' if CONTAINER else 'The new agent service failed to start.')
     except BaseException:
+        progress('Installation failed; rolling back')
         try:
             stop()
         except (OSError, RuntimeError) as exc:
@@ -345,6 +377,7 @@ def install(args):
         if was_active:
             start()
         shutil.rmtree(release)
+        progress('Previous installation restored')
         raise
     if old_release:
         shutil.rmtree(old_release)

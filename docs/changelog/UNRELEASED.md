@@ -2,6 +2,10 @@
 
 ## Release Notes
 
+- Fixed rejected progress and diagnostic reports containing JSON `null` values, such as an unknown backup size. Debug MCP now supports a direct agent read for runtime state, bounded local logs and thread stacks, independently of report delivery. Update the backend first, then agents for protocol 6 live diagnostics; the progress-schema fix also benefits existing agents.
+
+- Managed agent updates now appear in Operations with live lifecycle logs and their actual success/failure result, including rollback and interrupted updates. Reports survive agent restarts and retry delivery through the existing queue. Update the backend and agent/installer to enable this.
+
 - User settings now have a dedicated page for password changes, Recovery Export, and opt-in Debug MCP; light/dark mode remains directly in the user menu. One diagnostic switch applies to all agents in the account. The read-only, owner-bound endpoint exposes operations and bounded diagnostic timelines, including agent/process samples and Proxmox output. Update the backend first (new migration), then agents for protocol 5 recording support. Recording and MCP access are disabled by default.
 
 - Restic backups now use a stable agent-based hostname across container recreations unless `RESTIC_HOST` is explicitly configured. The first file backup after this change may reread unchanged files; repository deduplication is preserved. Retention skips redundant prune runs and persists pending cleanup for retry after failure or restart.
