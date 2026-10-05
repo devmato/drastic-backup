@@ -27,7 +27,7 @@
               <q-tab-panels v-model="activeSection" class="bg-transparent">
                 <q-tab-panel name="general" class="q-pa-none">
                   <div class="q-gutter-sm">
-                    <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val || 'Required']" />
+                    <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val?.trim() || 'Required']" />
                     <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
                     <q-banner v-if="!supportsJob(selectedAgent, jobForm.type)" class="bg-warning text-black">This job requires a configured connection and its local prerequisites. Existing job settings are retained.</q-banner>
                     <q-btn flat no-caps dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
@@ -321,6 +321,12 @@ function goPrevious() {
 }
 
 function submitForm() {
+  if (!canLeaveGeneral.value) {
+    activeSection.value = 'general'
+    $q.notify({ message: 'Enter a job name and select a job type', color: 'red', position: 'top' })
+    return
+  }
+
   if (jobForm.type === 'truenas' && !(jobForm.config?.datasets || []).length) {
     $q.notify({ message: 'Select at least one TrueNAS dataset', color: 'negative' })
     return

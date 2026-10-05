@@ -109,6 +109,57 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   assert.deepEqual(config.exclude_guest_ids, [101])
 })
 
+test('job submission validates general fields even when another section is active', () => {
+  const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const saved = []
+  const notices = []
+  const dialog = runInNewContext(`${source}\n;({ submitForm, jobForm, activeSection })`, {
+    computed, reactive, ref,
+    defineProps: () => ({ editingJob: null }),
+    defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved.push(value) },
+    defineModel: () => ref(true),
+    defineOptions: () => {},
+    watch: () => {},
+    useQuasar: () => ({ notify: notice => notices.push(notice) }),
+    useAgentStore: () => ({ agents: [] }),
+  })
+  for (const [type, config] of [
+    ['file', { paths: [{ path: '/data', group: 'folder' }] }],
+    ['proxmox', { selection_mode: 'all' }],
+    ['truenas', { datasets: ['tank'] }],
+  ]) {
+    Object.assign(dialog.jobForm, { type, config })
+    for (const section of ['entries', 'actions', 'schedules']) {
+      for (const name of ['', ' \t ']) {
+        dialog.jobForm.name = name
+        dialog.activeSection.value = section
+        const saveCount = saved.length
+        const noticeCount = notices.length
+        dialog.submitForm()
+        assert.equal(saved.length, saveCount)
+        assert.equal(notices.length, noticeCount + 1)
+        assert.match(notices.at(-1).message, /job name/i)
+        assert.equal(dialog.activeSection.value, 'general')
+      }
+    }
+    dialog.jobForm.name = 'Backup'
+    dialog.activeSection.value = 'entries'
+    const saveCount = saved.length
+    const noticeCount = notices.length
+    dialog.submitForm()
+    assert.equal(saved.length, saveCount + 1)
+    assert.equal(saved.at(-1).name, 'Backup')
+    assert.equal(notices.length, noticeCount)
+  }
+  dialog.jobForm.type = ''
+  dialog.activeSection.value = 'schedules'
+  dialog.submitForm()
+  assert.equal(saved.length, 3)
+  assert.match(notices.at(-1).message, /job type/i)
+  assert.equal(dialog.activeSection.value, 'general')
+})
+
 test('Proxmox guest lists transfer selections and retain missing IDs across modes and discovery failures', async () => {
   const source = readFileSync(new URL('../src/components/jobs/forms/ProxmoxBackupJobForm.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
