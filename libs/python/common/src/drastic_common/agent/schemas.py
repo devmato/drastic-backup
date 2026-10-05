@@ -65,15 +65,16 @@ class AgentProxmoxBackupJobConfigSchema(Schema):
         load_default="all", validate=validate.OneOf(_PROXMOX_SELECTION_MODES)
     )
     guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
+    exclude_guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
 
     @validates_schema
     def validate_guest_selection(self, data, **kwargs):
-        guest_ids = data.get("guest_ids", [])
+        for field in ("guest_ids", "exclude_guest_ids"):
+            guest_ids = data.get(field, [])
+            if len(set(guest_ids)) != len(guest_ids):
+                raise ValidationError({field: ["Duplicate guest IDs are not allowed."]})
 
-        if len(set(guest_ids)) != len(guest_ids):
-            raise ValidationError({"guest_ids": ["Duplicate guest IDs are not allowed."]})
-
-        if data.get("selection_mode") == "include" and not guest_ids:
+        if data.get("selection_mode") == "include" and not data.get("guest_ids"):
             raise ValidationError(
                 {"guest_ids": ["Select at least one guest when using include mode."]}
             )

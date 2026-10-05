@@ -112,6 +112,39 @@ def test_multiple_vm_snapshots_aggregate_once_and_clean_between_guests(job):
     assert not snapshots and not backup.proxmox_snapshots.count()
 
 
+@pytest.mark.parametrize("config,expected", [
+    ({}, [101, 102, 103]),
+    ({"selection_mode": "all", "guest_ids": [101]}, [101, 102, 103]),
+    ({"selection_mode": "all", "exclude_guest_ids": [101, 999]}, [102, 103]),
+    ({"selection_mode": "include", "guest_ids": [101]}, [101]),
+    ({"selection_mode": "include", "guest_ids": [101], "exclude_guest_ids": [101]}, [101]),
+])
+def test_guest_selection_filters_before_preflight_and_snapshot(job, monkeypatch, config, expected):
+    handler, report, _, exports, _ = job
+    handler.job["config"] = config
+    handler.agent.get_proxmox_client().list_qemu_guests = lambda: [{"vmid": vmid} for vmid in [101, 102, 103]]
+    checked = []
+    original = backup.snapshot_info
+
+    def info(vmid, *args, **kwargs):
+        checked.append(vmid)
+        return original(vmid, *args, **kwargs)
+
+    monkeypatch.setattr(backup, "snapshot_info", info)
+    handler.run_backup(report)
+    assert set(checked) == set(expected)
+    assert report.data["guests"] == report.data["completed_guests"] == expected
+    assert [export["plan"]["vmid"] for export in exports] == expected
+
+
+def test_excluding_every_guest_fails_without_starting_a_snapshot(job):
+    handler, report, commands, exports, _ = job
+    handler.job["config"] = {"selection_mode": "all", "exclude_guest_ids": [101]}
+    with pytest.raises(ProxmoxError, match="No supported Proxmox guests matched"):
+        handler.run_backup(report)
+    assert not commands and not exports and not backup.proxmox_snapshots.count()
+
+
 def test_pool_filling_during_stream_stops_backup_and_cleans_snapshot(job, monkeypatch):
     handler, report, _, _, snapshots = job
     original = backup.run_process

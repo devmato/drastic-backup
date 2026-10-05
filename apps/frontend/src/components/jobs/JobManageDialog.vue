@@ -223,6 +223,7 @@ function cloneProxmoxConfig(config = {}) {
   return {
     selection_mode: config.selection_mode || 'all',
     guest_ids: [...(config.guest_ids || [])],
+    exclude_guest_ids: [...(config.exclude_guest_ids || [])],
   }
 }
 

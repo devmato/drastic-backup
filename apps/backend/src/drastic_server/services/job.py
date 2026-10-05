@@ -1,6 +1,7 @@
 from croniter import croniter
 from marshmallow import ValidationError
 
+from drastic_common.agent.schemas import AgentProxmoxBackupJobConfigSchema
 from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.extensions import db
 from drastic_server.models.job import Job, JobSchedule, JobType
@@ -36,21 +37,13 @@ def _normalize_file_backup_config(config):
 
 
 def _normalize_proxmox_backup_config(config):
-    config = config or {}
-
-    selection_mode = config.get("selection_mode") or "all"
-    guest_ids = sorted({int(guest_id) for guest_id in config.get("guest_ids", [])})
-
-    if selection_mode not in {"all", "include"}:
-        raise ValueError("Invalid Proxmox selection mode")
-
-    if selection_mode == "include" and not guest_ids:
-        raise ValueError("Proxmox include mode requires at least one guest ID")
-
-    return {
-        "selection_mode": selection_mode,
-        "guest_ids": guest_ids,
-    }
+    try:
+        config = AgentProxmoxBackupJobConfigSchema().load(config or {})
+    except ValidationError as exc:
+        raise ValueError(f"Invalid Proxmox configuration: {exc}") from exc
+    config["guest_ids"].sort()
+    config["exclude_guest_ids"].sort()
+    return config
 
 
 def normalize_schedule_config(config):

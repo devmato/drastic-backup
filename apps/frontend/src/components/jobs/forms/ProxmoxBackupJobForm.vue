@@ -2,9 +2,11 @@
   <div class="q-mt-md">
     <div class="row items-center q-mb-sm">
       <div class="text-subtitle1">Guest Selection</div>
+      <q-space />
+      <q-badge color="grey-7" :label="`${selectedIds.length} ${includeMode ? 'selected' : 'excluded'}`" />
     </div>
 
-    <div class="row q-col-gutter-md q-mb-md">
+    <div class="row q-col-gutter-sm items-center q-mb-sm">
       <div class="col-12 col-lg-6">
         <q-select
           outlined
@@ -18,53 +20,82 @@
         />
       </div>
 
-      <div v-if="configModel.selection_mode === 'include'" class="col-12 col-lg-6">
-        <q-select
-          outlined
-          dense
-          :model-value="configModel.guest_ids"
-          :options="guestOptions"
-          label="Guests"
-          multiple
-          emit-value
-          map-options
-          use-chips
-          :loading="loadingGuests"
-          @update:model-value="value => updateConfig({ guest_ids: value })"
-        />
+      <div class="col-12 col-lg-6">
+        <div class="row justify-end q-gutter-xs">
+          <q-btn v-if="(selectedAgent?.protocol_version || 0) >= 1" flat dense no-caps no-wrap icon="settings" label="Configure Proxmox" :to="`/agents/${agentId}?tab=connections`" target="_blank">
+            <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
+          </q-btn>
+          <q-btn flat dense no-caps no-wrap icon="refresh" label="Refresh" :loading="loadingGuests" :disable="!agentOnline" @click="loadGuests" />
+        </div>
       </div>
     </div>
 
-    <q-banner v-if="!agentOnline" class="bg-grey-2 text-grey-8">
-      Agent must be online on the Proxmox host to discover guests.
-    </q-banner>
+    <div class="text-caption q-mb-md">
+      {{ includeMode ? 'Only selected guests are backed up. Select at least one guest.' : 'All supported guests are backed up except exclusions. New guests are included automatically.' }}
+    </div>
 
-    <template v-else>
-      <q-banner v-if="loadError" class="bg-negative text-white q-mb-md">
-        {{ loadError }}
-      </q-banner>
-      <div class="row items-center q-mb-sm">
-        <div class="text-subtitle1">Supported Guests</div>
-        <q-space />
-        <q-btn v-if="(selectedAgent?.protocol_version || 0) >= 1" flat dense icon="settings" label="Configure Proxmox" :to="`/agents/${agentId}?tab=connections`" target="_blank">
-          <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
-        </q-btn>
-        <q-btn flat dense icon="refresh" label="Refresh" :loading="loadingGuests" @click="loadGuests" />
+    <div class="row q-col-gutter-sm items-stretch">
+      <div class="col-12 col-lg-6">
+        <div class="text-subtitle2 q-mb-xs">Available Guests</div>
+        <q-card flat bordered>
+          <q-scroll-area style="height: 320px">
+            <q-banner v-if="!agentOnline">
+              Agent must be online on the Proxmox host to discover guests.
+            </q-banner>
+            <q-banner v-else-if="loadError" class="bg-negative text-white">
+              {{ loadError }}
+            </q-banner>
+            <div v-else-if="loadingGuests" class="text-grey q-pa-md">Loading guests…</div>
+            <q-list v-else-if="availableGuests.length > 0" separator>
+              <q-item v-for="guest in availableGuests" :key="guest.vmid">
+                <q-item-section>
+                  <q-item-label class="db-break-word">{{ guest.name || `VM ${guest.vmid}` }}</q-item-label>
+                  <q-item-label caption>
+                    VMID {{ guest.vmid }} | {{ guest.type }} | {{ guest.status || 'unknown' }}
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-btn flat dense round :icon="includeMode ? 'add' : 'remove'" :color="includeMode ? 'positive' : 'negative'" :aria-label="`${includeMode ? 'Select' : 'Exclude'} VM ${guest.vmid}`" @click="updateSelectedIds([...selectedIds, guest.vmid])">
+                    <q-tooltip>{{ includeMode ? 'Select guest' : 'Exclude guest' }}</q-tooltip>
+                  </q-btn>
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <div v-else class="text-grey q-pa-md">
+              {{ guests.length ? 'No remaining guests available.' : 'No supported Proxmox guests found.' }}
+            </div>
+          </q-scroll-area>
+        </q-card>
       </div>
 
-      <q-list v-if="guests.length > 0" bordered separator>
-        <q-item v-for="guest in guests" :key="guest.vmid">
-          <q-item-section>
-            <q-item-label>{{ guest.name || `VM ${guest.vmid}` }}</q-item-label>
-            <q-item-label caption>
-              VMID {{ guest.vmid }} | {{ guest.type }} | {{ guest.status || 'unknown' }}
-            </q-item-label>
-          </q-item-section>
-        </q-item>
-      </q-list>
-      <div v-else-if="!loadingGuests && !loadError" class="text-grey">No supported Proxmox guests found.</div>
-    </template>
-
+      <div class="col-12 col-lg-6">
+        <div class="text-subtitle2 q-mb-xs">{{ includeMode ? 'Selected Guests' : 'Exclusions' }}</div>
+        <q-card flat bordered>
+          <q-scroll-area style="height: 320px">
+            <q-list v-if="selectedGuests.length > 0" separator>
+              <q-item v-for="guest in selectedGuests" :key="guest.vmid">
+                <q-item-section>
+                  <q-item-label class="db-break-word">{{ guest.name || `VM ${guest.vmid}` }}</q-item-label>
+                  <q-item-label caption>
+                    VMID {{ guest.vmid }}
+                    <template v-if="guest.type"> | {{ guest.type }} | {{ guest.status || 'unknown' }}</template>
+                    <template v-else> | Details unavailable</template>
+                  </q-item-label>
+                </q-item-section>
+                <q-item-section side>
+                  <q-btn flat dense round icon="delete" color="grey-7" :aria-label="`Remove VM ${guest.vmid} from ${includeMode ? 'selection' : 'exclusions'}`" @click="updateSelectedIds(selectedIds.filter(id => id !== guest.vmid))">
+                    <q-tooltip>{{ includeMode ? 'Remove from selection' : 'Remove exclusion' }}</q-tooltip>
+                  </q-btn>
+                </q-item-section>
+              </q-item>
+            </q-list>
+            <div v-else class="text-grey q-pa-md">
+              {{ includeMode ? 'No guests selected yet.' : 'No exclusions. All supported guests will be backed up.' }}
+            </div>
+          </q-scroll-area>
+        </q-card>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -92,16 +123,16 @@ const selectedAgent = computed(() => agentStore.agents.find(agent => String(agen
 let loadVersion = 0
 
 const selectionModeOptions = [
-  { label: 'All supported guests', value: 'all' },
-  { label: 'Select specific guests', value: 'include' },
+  { label: 'All guests', value: 'all' },
+  { label: 'Specific guests', value: 'include' },
 ]
 
 const configModel = computed(() => createConfig(props.modelValue))
-const guestOptions = computed(() =>
-  guests.value.map(guest => ({
-    label: `${guest.name || `VM ${guest.vmid}`} (${guest.vmid})`,
-    value: guest.vmid,
-  }))
+const includeMode = computed(() => configModel.value.selection_mode === 'include')
+const selectedIds = computed(() => includeMode.value ? configModel.value.guest_ids : configModel.value.exclude_guest_ids)
+const availableGuests = computed(() => guests.value.filter(guest => !selectedIds.value.includes(guest.vmid)))
+const selectedGuests = computed(() =>
+  selectedIds.value.map(vmid => guests.value.find(guest => guest.vmid === vmid) || { vmid })
 )
 
 watch(
@@ -114,20 +145,19 @@ function createConfig(config = {}) {
   return {
     selection_mode: config.selection_mode || 'all',
     guest_ids: [...(config.guest_ids || [])],
+    exclude_guest_ids: [...(config.exclude_guest_ids || [])],
   }
 }
 
 function updateConfig(patch) {
-  const nextConfig = {
+  emit('update:modelValue', createConfig({
     ...configModel.value,
     ...patch,
-  }
+  }))
+}
 
-  if (nextConfig.selection_mode !== 'include') {
-    nextConfig.guest_ids = []
-  }
-
-  emit('update:modelValue', createConfig(nextConfig))
+function updateSelectedIds(ids) {
+  updateConfig({ [includeMode.value ? 'guest_ids' : 'exclude_guest_ids']: ids })
 }
 
 async function loadGuests() {

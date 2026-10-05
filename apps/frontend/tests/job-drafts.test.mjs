@@ -85,3 +85,78 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
     assert.equal(config.include_children, configured)
   }
 })
+
+test('Proxmox job drafts preserve exclusions when editing and saving', () => {
+  const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const config = { selection_mode: 'all', guest_ids: [], exclude_guest_ids: [101] }
+  const props = { editingJob: { name: 'VMs', type: 'proxmox', config, actions: [], schedules: [] } }
+  let saved
+  const dialog = runInNewContext(`${source}\n;({ resetForm, submitForm, jobForm })`, {
+    computed, reactive, ref,
+    defineProps: () => props,
+    defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
+    defineModel: () => ref(true),
+    defineOptions: () => {},
+    watch: () => {},
+    useQuasar: () => ({ notify: () => assert.fail('unexpected validation error') }),
+    useAgentStore: () => ({ agents: [] }),
+  })
+  dialog.resetForm()
+  dialog.jobForm.config.exclude_guest_ids.push(102)
+  dialog.submitForm()
+  assert.equal(JSON.stringify(saved.config.exclude_guest_ids), '[101,102]')
+  assert.deepEqual(config.exclude_guest_ids, [101])
+})
+
+test('Proxmox guest lists transfer selections and retain missing IDs across modes and discovery failures', async () => {
+  const source = readFileSync(new URL('../src/components/jobs/forms/ProxmoxBackupJobForm.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const original = { selection_mode: 'include', guest_ids: [101, 999] }
+  const props = reactive({ modelValue: original, agentId: 1, agentOnline: true })
+  let fail = false
+  const panel = runInNewContext(`${source}\n;({ loadGuests, loadError, selectedIds, selectedGuests, availableGuests, updateConfig, updateSelectedIds })`, {
+    computed, ref,
+    defineProps: () => props,
+    defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
+    defineOptions: () => {},
+    watch: () => {},
+    useAgentStore: () => ({ agents: [] }),
+    useJobStore: () => ({ getProxmoxGuests: async () => {
+      if (fail) throw new Error('Discovery failed')
+      return [{ vmid: 101, name: 'first' }, { vmid: 102, name: 'second' }]
+    } }),
+    shouldIgnoreApiError: () => false,
+    getApiErrorMessage: error => error.message,
+  })
+  const ids = list => Array.from(list.value, guest => guest.vmid)
+  await panel.loadGuests()
+  assert.deepEqual(ids(panel.availableGuests), [102])
+  assert.deepEqual(ids(panel.selectedGuests), [101, 999])
+  assert.equal(panel.selectedGuests.value[0].name, 'first')
+  panel.updateSelectedIds([101, 102, 999])
+  assert.deepEqual(ids(panel.availableGuests), [])
+  panel.updateSelectedIds([102, 999])
+  assert.deepEqual(ids(panel.availableGuests), [101])
+
+  panel.updateConfig({ selection_mode: 'all' })
+  assert.deepEqual(ids(panel.selectedGuests), [])
+  assert.deepEqual(ids(panel.availableGuests), [101, 102])
+  panel.updateSelectedIds([101])
+  assert.deepEqual(ids(panel.availableGuests), [102])
+  panel.updateConfig({ selection_mode: 'include' })
+  assert.deepEqual(ids(panel.selectedGuests), [102, 999])
+  panel.updateConfig({ selection_mode: 'all' })
+  assert.deepEqual(ids(panel.selectedGuests), [101])
+
+  fail = true
+  await panel.loadGuests()
+  assert.equal(panel.loadError.value, 'Discovery failed')
+  assert.deepEqual(ids(panel.selectedGuests), [101])
+  props.agentOnline = false
+  await panel.loadGuests()
+  assert.deepEqual(ids(panel.selectedGuests), [101])
+  panel.updateSelectedIds([])
+  assert.deepEqual(ids(panel.selectedGuests), [])
+  assert.deepEqual(original, { selection_mode: 'include', guest_ids: [101, 999] })
+})

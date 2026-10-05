@@ -69,6 +69,9 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             if config.get("selection_mode") == "include":
                 selected = {int(value) for value in config.get("guest_ids", [])}
                 guests = [guest for guest in guests if int(guest["vmid"]) in selected]
+            else:
+                excluded = {int(value) for value in config.get("exclude_guest_ids", [])}
+                guests = [guest for guest in guests if int(guest["vmid"]) not in excluded]
             if not guests:
                 raise ProxmoxError("No supported Proxmox guests matched this job configuration")
             # Preflight every selected guest before any snapshot or data transfer.
