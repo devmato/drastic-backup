@@ -104,8 +104,8 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
     def _backup_qemu_guest(self, report, guest, index):
         vmid = int(guest["vmid"])
-        name = f"drastic-{UUID(self.operation['uuid']).hex}"
-        owner = f"drastic:{self.agent.identifier}:{self.operation['uuid']}"
+        name = f"drastic-backup-{UUID(self.operation['uuid']).hex[:12]}"
+        owner = f"Temporary Drastic backup snapshot; removed after backup. drastic:{self.agent.identifier}:{self.operation['uuid']}"
         filename = f"qemu-{vmid}.tar"
         progress = {"vmid": vmid, "guest_index": index, "guests_total": len(report.data["guests"]),
                     "archive_filename": filename, "phase": "snapshots", "percent_done": None}

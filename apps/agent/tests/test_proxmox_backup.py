@@ -48,6 +48,8 @@ def job(monkeypatch):
     def info(vmid, name="", owner="", check=False):
         if check:
             return {"exists": name in snapshots, "description": snapshots.get(name), "lock": None}
+        if name:
+            assert snapshots[name] == owner
         return {"config": "bios: ovmf\nscsi0: local-lvm:vm-101-disk-0\n",
                 "volumes": [{"disk": "scsi0", "path": "/dev/pve/snapshot", "size": 4096, "pool": "pve/data"}]}
 
@@ -99,6 +101,13 @@ def test_snapshot_stream_and_cleanup_use_one_artifact_per_vm(job):
     assert report.data["proxmox_progress"]["phase"] == "complete"
     assert report.log.count("~65.5 GiB free; minimum reserve 20 GiB; data 96.17%; metadata 3.55%") == 1
     assert [command[1] for command in commands if command[0] == "qm"] == ["snapshot", "delsnapshot"]
+    create, delete = [command for command in commands if command[0] == "qm"]
+    assert create[3] == f"drastic-backup-{report.uuid.replace('-', '')[:12]}"
+    assert len(create[3]) <= 40
+    assert create[create.index("--description") + 1] == (
+        f"Temporary Drastic backup snapshot; removed after backup. drastic:1:{report.uuid}"
+    )
+    assert delete[3] == create[3]
     assert not snapshots and not backup.proxmox_snapshots.count()
 
 
