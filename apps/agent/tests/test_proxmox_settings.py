@@ -73,7 +73,7 @@ def test_saved_settings_survive_restart_override_environment_and_never_return_se
 def test_test_and_discovery_use_effective_settings_without_saving(agent, monkeypatch):
     monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_ID", SETTINGS["token_id"])
     monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_SECRET", "legacy-secret")
-    monkeypatch.setattr(agent_module, "ensure_vzdump_available", lambda: None)
+    monkeypatch.setattr(agent_module, "ensure_proxmox_available", lambda: None)
     clients = []
 
     def guests(api):
@@ -128,12 +128,12 @@ def test_connection_test_checks_host_tools_and_redacts_errors(agent, monkeypatch
     envelope = encrypt_for_public_key("test-secret", agent.public_key)
 
     def unavailable():
-        raise ProxmoxError("vzdump is not available")
+        raise ProxmoxError("qm is not available")
 
-    monkeypatch.setattr(agent_module, "ensure_vzdump_available", unavailable)
+    monkeypatch.setattr(agent_module, "ensure_proxmox_available", unavailable)
     assert agent.cmd_test_proxmox_settings(SETTINGS, envelope).state == AgentReportState.failed
 
-    monkeypatch.setattr(agent_module, "ensure_vzdump_available", lambda: None)
+    monkeypatch.setattr(agent_module, "ensure_proxmox_available", lambda: None)
 
     def fail(api):
         raise ProxmoxError(f"API rejected {api.token_secret}")

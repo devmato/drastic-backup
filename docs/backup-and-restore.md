@@ -88,16 +88,17 @@ node_modules
 
 ### Proxmox Backup
 
-Proxmox backup jobs stream QEMU guests from a Proxmox host into restic using `vzdump`.
+Proxmox backup jobs stream RAW disks from temporary QEMU VM snapshots into restic. No PBS or intermediate disk/archive copy is required during backup.
 
 Use this type when the agent runs directly on a Proxmox node and should back up VMs without writing intermediate archive files.
 
 Required agent prerequisites:
 
 - The agent must run on the Proxmox host.
-- `vzdump` must be available on the agent host.
+- The agent must run as root, with local `qm`, `perl`, `blockdev`, `lvs` and the installed Proxmox Perl modules available.
+- Backup disks must use LVM-thin storage. Other storage types fail preflight; there is no VMA backup fallback.
 - Proxmox API credentials must be configured on the agent.
-- The configured API token must be able to list nodes, list QEMU guests, read QEMU configs, and run the required backup operations.
+- The configured API token must be able to list nodes, list QEMU guests and read QEMU configs. Snapshot operations use the local root agent, not the API token.
 
 Configure credentials under **Agents > your agent > Connections > Proxmox**, or use **Configure Proxmox** in the job form. Test the connection and save while the agent is online. Settings apply immediately to all Proxmox jobs on that agent, and the token secret is stored encrypted on the agent.
 
@@ -136,17 +137,16 @@ Supported guests and disks:
 Runtime behavior:
 
 - The agent discovers supported guests through the Proxmox API.
-- For each selected guest, the agent runs `vzdump` in snapshot mode and streams stdout into restic.
-- The command uses `--compress 0` because restic handles storage and deduplication.
-- VM snapshots are tagged with `job_uuid:<job-uuid>`, `run_uuid:<run-uuid>`, `artifact_uuid:<artifact-uuid>`, `artifact_key:vm:<vmid>`, `source:proxmox`, `guest_type:qemu`, `vmid:<vmid>`, and `backup_method:vzdump`.
-- A JSON manifest is stored for each VM with tags including `kind:manifest`, its own `artifact_uuid`, and `artifact_key:vm:<vmid>:manifest`.
+- Each VM gets one temporary Proxmox snapshot without RAM state. Proxmox coordinates the disks and uses the configured guest-agent freeze/thaw behavior.
+- The agent reads the LVM-thin snapshot devices in a stable order into an uncompressed, deterministic TAR stream. Restic deduplicates, compresses and encrypts on the agent before sending new chunks to the repository.
+- Each VM produces one Restic snapshot containing `qemu-<vmid>.tar`, with RAW disks, the saved VM configuration, optional firewall configuration and a versioned JSON manifest. EFI and TPM state disks are included when backupable.
+- Restic tags include `job_uuid:<job-uuid>`, `operation_uuid:<operation-uuid>`, `artifact_uuid:<artifact-uuid>`, `artifact_key:vm:<vmid>`, `source:proxmox`, `guest_type:qemu`, `vmid:<vmid>` and `backup_method:snapshot`.
+- Backup reads the complete disks again; this implementation has no changed-block tracking. Unchanged disk contents are deduplicated without being uploaded again.
+- LVM-thin snapshots share existing blocks but retain old blocks overwritten during backup. They need free thin-pool data and metadata space. The agent checks both before backup and approximately every five seconds during streaming, rejecting usage at or above 95%.
+- Cleanup intent is persisted before snapshot creation. Own snapshots are removed after success, failure or cancellation, at startup, and before the next Proxmox job. Locked VMs, foreign ownership and unknown creation outcomes remain pending rather than forcing deletion. Pending cleanup blocks further Proxmox backups.
 - After successful guest backups, optional repository checks, retention, and repository statistics are run.
 
-The backup stream command is equivalent to:
-
-```bash
-vzdump <vmid> --mode snapshot --stdout --compress 0 --node <node>
-```
+Only a small metadata plan and bounded streaming buffers are staged on the source node. Restic's repository index also consumes memory. Jobs are serialized on that node. Native repository traffic still uses the existing authenticated backend proxy; custom repositories remain directly reachable from the agent.
 
 ## TrueNAS Backups
 
@@ -265,7 +265,7 @@ VMID, guest name when available, and timestamp. VM modes exclude manifest snapsh
 and archives known to have failed. Successfully backed-up VMs from a partially
 failed multi-VM operation remain usable.
 
-The target agent must be online, updated to agent protocol 2 or later, running
+The target agent must be online, updated to agent protocol 7 for disk-snapshot backups (protocol 2 for legacy VMA), running
 directly on the Proxmox node with root privileges, and assigned the source
 repository. Another node can be selected; the original backup agent need not be
 online. Local `pvesh`, `vma`, and `qmrestore` perform host operations, so restoring
@@ -278,7 +278,7 @@ does not require the original node's API credentials.
    original VMID can be reused only when it is free, including across the cluster.
 3. Keep **Generate new MAC addresses** enabled for a separate recovered VM, or
    disable it when deliberately preserving the original network identity.
-4. Start the restore. The agent downloads and verifies the VMA archive, then runs
+4. Start the restore. For new backups, the agent downloads and validates the TAR and manifest, extracts the RAW disks, and uses native `vma create` to prepare an importable archive. Legacy VMA backups are still accepted. It then verifies the VMA and runs
    `qmrestore` without force/overwrite and without starting the VM.
 5. Check the operation result and the restored VM configuration in Proxmox before
    starting it. Referenced bridges, ISO images and other host resources must be
@@ -339,8 +339,7 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
   directory on a sufficiently large filesystem. Restart the agent after changing
   it. The directory is private to the agent and must not be shared by multiple
   agent instances.
-- Whole-VM restore needs workspace for the VMA archive and destination storage
-  for the disks. File browsing needs space for the archive plus extracted disks,
+- Whole-VM restore of a new snapshot backup needs workspace for the TAR plus extracted disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. Legacy VMA restore needs workspace for the VMA archive. File browsing needs space for the archive plus extracted disks,
   even when exporting one small file. Capacity checks conservatively use the
   disks' logical sizes; allow additional space for the export itself.
 - Prepared images expire after one hour without a browse/export request. They
@@ -362,7 +361,9 @@ export. For a real round trip, run the opt-in agent integration test on a test
 Proxmox node with `restic`, `vma`, `qmrestore` and the guestfs dependencies installed:
 
 ```bash
-export DRASTIC_TEST_VMA=/path/to/uncompressed-test-vm.vma
+# A SMALL test VM on LVM-thin; creates and deletes a temporary disk snapshot:
+export DRASTIC_TEST_PROXMOX_VMID=990000
+# Alternatively test legacy restore with DRASTIC_TEST_VMA=/path/to/test-vm.vma
 export DRASTIC_TEST_GUEST_VOLUME=/dev/vg/root
 export DRASTIC_TEST_GUEST_FILE=/etc/hostname
 export DRASTIC_TEST_GUEST_SHA256=<sha256-of-the-original-file>
@@ -373,7 +374,7 @@ cd apps/agent
 .venv/bin/python -m pytest tests/test_proxmox_restore_integration.py -v
 ```
 
-The tests back up the supplied VMA into a temporary real restic repository,
+The tests stream the test VM's snapshot (or the supplied legacy VMA) into a temporary real restic repository,
 restore/export a selected file and compare its SHA-256, and optionally restore
 a whole stopped VM. Repeat with an unencrypted Windows/NTFS test archive and a
 known file, for example `/Users/Test/Documents/restore-check.txt`, using its

@@ -147,7 +147,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.showProgress.value, true)
   assert.equal(page.progressIndeterminate.value, true)
 
-  for (const phase of ['finalizing', 'manifest', 'complete', 'failed']) {
+  for (const phase of ['snapshots', 'cleanup', 'finalizing', 'complete', 'failed']) {
     page.operation.value.data.proxmox_progress.phase = phase
     page.operation.value.data.proxmox_progress.percent_done = 100
     assert.equal(page.showProgress.value, true, phase)

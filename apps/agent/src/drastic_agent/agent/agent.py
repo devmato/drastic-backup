@@ -58,7 +58,7 @@ from drastic_agent.proxmox import (
     ProxmoxApiClient,
     ProxmoxError,
     QemuVolumeGuestDriver,
-    ensure_vzdump_available,
+    ensure_proxmox_available,
 )
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
@@ -1598,6 +1598,10 @@ class Agent:
 
         recover_snapshots(self)
 
+        from drastic_agent.jobs.proxmox_backup import recover_snapshots as recover_proxmox_snapshots
+
+        recover_proxmox_snapshots()
+
         # The installer still performs startup checks after restarting this service.
         if self.install_type in {"git", "docker"}:
             self.__check_update(startup=True)
@@ -1893,7 +1897,7 @@ class Agent:
         api = None
         try:
             api = self.__proxmox_client_for_update(settings, encrypted_value)
-            ensure_vzdump_available()
+            ensure_proxmox_available()
             guests = QemuVolumeGuestDriver().list_supported_guests(api)
             report.data = {"node": api.get_node(), "guest_count": len(guests)}
         except (ProxmoxError, SecretEnvelopeError, ValidationError) as exc:
@@ -1922,7 +1926,7 @@ class Agent:
                 configured = factory().public_settings["configured"]
             except (ProxmoxError, TrueNASError):
                 configured = False
-            available = bool(shutil.which("vzdump")) if kind == "proxmox" else self.os_clean == "linux"
+            available = all(shutil.which(tool) for tool in ("qm", "perl", "blockdev", "lvs")) if kind == "proxmox" else self.os_clean == "linux"
             result[kind] = {"configured": configured, "available": available}
             if kind == "proxmox" and available:
                 from drastic_agent.services.proxmox_restore import guest_tools_error

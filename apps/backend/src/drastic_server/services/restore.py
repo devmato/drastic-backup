@@ -108,7 +108,9 @@ class RestoreService:
         for snapshot in snapshots:
             artifact = by_snapshot.get(snapshot.get("id"))
             tags = snapshot.get("tags") or []
-            snapshot["proxmox_archive"] = {"source:proxmox", "guest_type:qemu", "backup_method:vzdump"}.issubset(tags) and "kind:manifest" not in tags
+            snapshot["proxmox_archive"] = ({"source:proxmox", "guest_type:qemu"}.issubset(tags)
+                and any(tag in tags for tag in ("backup_method:vzdump", "backup_method:snapshot"))
+                and "kind:manifest" not in tags)
             if artifact:
                 snapshot["guest_name"] = (artifact.data or {}).get("guest_name")
                 if artifact.state not in ("success", "warning") or artifact.forgotten_at:
@@ -202,6 +204,8 @@ class RestoreService:
             raise RestoreServiceException("Update the agent to use Proxmox restore")
         snapshot = cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
         if proxmox:
+            if "backup_method:snapshot" in (snapshot.get("tags") or []) and (agent.protocol_version or 0) < 7:
+                raise RestoreServiceException("Update the agent to restore Proxmox disk snapshots (protocol 7)")
             cls._annotate_proxmox_snapshots(job, repository, [snapshot])
             if not snapshot["proxmox_archive"] or snapshot.get("restore_error"):
                 raise RestoreServiceException(snapshot.get("restore_error") or "Select a Proxmox QEMU archive snapshot")

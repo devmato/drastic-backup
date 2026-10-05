@@ -298,9 +298,10 @@ const progressSource = computed(() => {
   if (isBackupOperation.value && proxmoxProgress.value) {
     const progress = proxmoxProgress.value
     const phases = {
+      snapshots: 'Creating VM snapshot',
+      cleanup: 'Removing VM snapshot',
       backing_up: `Backing up VM ${progress.vmid}`,
       finalizing: 'Finalizing restic snapshot',
-      manifest: 'Saving manifest',
       complete: 'VM backup completed',
       failed: 'VM backup failed',
     }
@@ -333,7 +334,7 @@ const progressSource = computed(() => {
       return { value: 1 }
     }
 
-    if (operationData.value.restore_phase && operationData.value.restore_phase !== 'Restoring VMA archive') {
+    if (operationData.value.restore_phase && !['Restoring VMA archive', 'Restoring VM archive'].includes(operationData.value.restore_phase)) {
       return { value: null, basis: operationData.value.restore_phase }
     }
 
@@ -381,7 +382,7 @@ const metricCards = computed(() => {
       ...(bytesProcessed.value !== null ? [{ label: 'Data processed (job)', value: formatBytes(bytesProcessed.value) }] : []),
       ...(progress.bytes_processed != null ? [{ label: 'VM data processed', value: formatBytes(progress.bytes_processed) }] : []),
       ...(progress.bytes_total > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.bytes_total) }] : []),
-      ...(progress.archive_bytes != null ? [{ label: 'VMA archive size', value: formatBytes(progress.archive_bytes) }] : []),
+      ...(progress.archive_bytes != null ? [{ label: 'VM archive size', value: formatBytes(progress.archive_bytes) }] : []),
     ]
   }
 

@@ -99,6 +99,9 @@ class _FakeResticProcess:
 
 def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):
     popen_calls = []
+    diagnostic_operations = []
+    monkeypatch.setattr("drastic_common.restic.client.diagnostics.record",
+                        lambda event, data, **kw: diagnostic_operations.append(kw.get("operation_uuid")))
 
     def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
         popen_calls.append({"cmd": cmd, "stdin": stdin, "encoding": encoding, "env": env})
@@ -112,6 +115,7 @@ def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):
         command=["vzdump", "101", "--stdout"],
         stdin_filename="archive.vma",
         tags=["job-1"],
+        callback_args={"operation_uuid": "stream-operation"},
     )
 
     assert popen_calls[0]["cmd"] == ["vzdump", "101", "--stdout"]
@@ -126,6 +130,7 @@ def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):
         "job-1",
     ]
     assert result["snapshot_id"] == "snap-1"
+    assert diagnostic_operations == ["stream-operation", "stream-operation"]
 
 
 def test_backup_delivers_scan_and_summary_despite_throttle(monkeypatch):

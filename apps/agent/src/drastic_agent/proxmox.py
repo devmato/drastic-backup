@@ -1,7 +1,7 @@
 import os
 import platform
 import re
-import subprocess
+import shutil
 
 import requests
 
@@ -136,29 +136,6 @@ class ProxmoxApiClient:
 
 class QemuVolumeGuestDriver:
     _QEMU_VOLUME_KEYS = re.compile(r"^(?:ide|sata|scsi|virtio)\d+$|^(?:efidisk0|tpmstate0)$")
-    _BACKUP_PROGRESS = re.compile(
-        r"(?:INFO:\s*)?(\d+(?:\.\d+)?)%\s*\((\d+(?:\.\d+)?)\s*([KMGTPE]?i?B) of (\d+(?:\.\d+)?)\s*([KMGTPE]?i?B)\)"
-    )
-
-    @classmethod
-    def parse_backup_progress(cls, line):
-        match = cls._BACKUP_PROGRESS.search(line)
-        if not match:
-            return None
-        percent, done, done_unit, total, total_unit = match.groups()
-
-        def to_bytes(value, unit):
-            exponent = "BKMGTPE".index(unit[0])
-            return int(float(value) * (1024 if "i" in unit else 1000) ** exponent)
-
-        total_bytes = to_bytes(total, total_unit)
-        if total_bytes <= 0 or not 0 <= float(percent) <= 100:
-            return None
-        return {
-            "percent_done": float(percent),
-            "bytes_processed": to_bytes(done, done_unit),
-            "bytes_total": total_bytes,
-        }
 
     def _extract_volid(self, value):
         if not value:
@@ -170,9 +147,7 @@ class QemuVolumeGuestDriver:
 
         return volid
 
-    def get_guest_backup_plan(self, config):
-        volumes = []
-
+    def has_backup_volumes(self, config):
         for key, value in (config or {}).items():
             if not self._QEMU_VOLUME_KEYS.match(str(key)):
                 continue
@@ -181,19 +156,10 @@ class QemuVolumeGuestDriver:
             if "media=cdrom" in value or "backup=0" in value:
                 continue
 
-            volid = self._extract_volid(value)
-            if not volid:
-                continue
+            if self._extract_volid(value):
+                return True
 
-            volumes.append(
-                {
-                    "disk": key,
-                    "volume": volid,
-                    "export_format": "raw+size",
-                }
-            )
-
-        return {"volumes": volumes}
+        return False
 
     def list_supported_guests(self, api):
         guests = []
@@ -204,8 +170,7 @@ class QemuVolumeGuestDriver:
                 continue
 
             config = api.get_qemu_config(vmid)
-            plan = self.get_guest_backup_plan(config)
-            if plan["volumes"]:
+            if self.has_backup_volumes(config):
                 guests.append(
                     {
                         "vmid": vmid,
@@ -218,54 +183,7 @@ class QemuVolumeGuestDriver:
 
         return guests
 
-    def export_qemu_backup_to_restic(
-        self,
-        api,
-        resticapi,
-        vmid,
-        stdin_filename,
-        tags,
-        callback,
-        callback_args,
-        callback_pid,
-        callback_throttle,
-        progress_callback=None,
-    ):
-        command = [
-            "vzdump",
-            str(vmid),
-            "--mode",
-            "snapshot",
-            "--stdout",
-            "--compress",
-            "0",
-            "--node",
-            api.get_node(),
-        ]
-
-        def process_stderr(line):
-            diagnostics.record("proxmox.output", {"vmid": vmid, "line": line},
-                               operation_uuid=getattr(getattr(callback, "__self__", None), "uuid", None))
-            progress = self.parse_backup_progress(line)
-            if progress is not None and progress_callback is not None:
-                progress_callback(progress)
-
-        return resticapi.backup_stdin_from_command(
-            command=command,
-            stdin_filename=stdin_filename,
-            tags=tags,
-            callback=callback,
-            callback_args=callback_args,
-            callback_pid=callback_pid,
-            callback_throttle=callback_throttle,
-            producer_stderr_callback=process_stderr if progress_callback else None,
-        )
-
-
-def ensure_vzdump_available():
-    try:
-        subprocess.run(["vzdump", "help"], check=True, capture_output=True, text=True)
-    except (FileNotFoundError, subprocess.CalledProcessError) as exc:
-        raise ProxmoxError(
-            "vzdump is not available on this agent. Run the agent directly on the Proxmox host."
-        ) from exc
+def ensure_proxmox_available():
+    for tool in ("qm", "perl", "blockdev", "lvs"):
+        if not shutil.which(tool):
+            raise ProxmoxError(f"{tool} is missing. Run the agent directly on the Proxmox host.")

@@ -32,6 +32,7 @@ agent_operation_artifacts = db["agent_operation_artifacts"]
 agent_operation_queue = db["agent_operation_queue"]
 agent_schema = db["agent_schema"]
 truenas_snapshots = db["truenas_snapshots"]
+proxmox_snapshots = db["proxmox_snapshots"]
 
 
 def initialize_schema():
@@ -151,6 +152,13 @@ def initialize_schema():
         db["agent"].create_index(["name"])
         db["agent_operation_queue"].create_index(["uuid"])
         agent_schema.upsert({"name": "agent", "version": 3}, ["name"])
+
+    if current < 4:
+        for name, kind in {"vmid": db.types.bigint, "snapshot_name": db.types.text,
+                           "owner": db.types.text, "host_id": db.types.text,
+                           "confirmed": db.types.boolean, "created_at": db.types.float}.items():
+            db["proxmox_snapshots"].create_column(name, kind)
+        agent_schema.upsert({"name": "agent", "version": 4}, ["name"])
 
 
 initialize_schema()

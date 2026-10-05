@@ -66,7 +66,8 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         old_columns = list(db.query("PRAGMA table_info(retentions)"))
 
     database_module.initialize_schema()
-    assert db["agent_schema"].find_one(name="agent")["version"] == 3
+    assert db["agent_schema"].find_one(name="agent")["version"] == 4
+    assert {"vmid", "snapshot_name", "owner", "host_id", "confirmed", "created_at"}.issubset(db["proxmox_snapshots"].columns)
     if existing:
         old_job = db["jobs"].find_one(id=7)
         assert old_job["config"] == {"paths": ["/old"]}

@@ -74,6 +74,21 @@ def test_vm_restore_dispatch_and_protocol_gate(restore_api):
     assert len(calls) == 1
 
 
+def test_snapshot_backup_restore_requires_updated_agent(restore_api, monkeypatch):
+    client, source, agent, _, job, calls = restore_api
+    snapshot = {"id": "snapshot", "tags": [f"job_uuid:{job.uuid}", "source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
+    monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: {
+        "state": AgentOperationState.success, "data": {"snapshots": [snapshot]},
+    })
+    payload = {**source, "mode": "proxmox_vm", "vmid": 101, "storage": "local-lvm"}
+    assert client.post("/api/restores/", json=payload).status_code == 400
+    assert not calls
+    agent.protocol_version = 7
+    db.session.commit()
+    assert client.post("/api/restores/", json=payload).status_code == 202
+    assert len(calls) == 1
+
+
 def test_known_failed_archives_are_rejected_but_plain_archive_restore_remains_available(restore_api):
     client, source, agent, _, job, calls = restore_api
     operation = AgentOperation(agent=agent, job=job, repository_id=source["repository_id"],

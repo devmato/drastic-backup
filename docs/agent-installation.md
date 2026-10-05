@@ -175,9 +175,9 @@ For Homelab deployments, register agents from a trusted network and then remove 
 
 ## Proxmox Backups
 
-For Proxmox jobs, open **Agents > your agent > Connections > Proxmox** while the agent is online. Enter the token ID (`user@realm!tokenname`) and token secret, then use **Test connection** and **Save**. The **Configure Proxmox** button in the backup job form opens the agent page in another tab, preserving the job draft. Protocol 3 agents expose Proxmox jobs when the connection is configured and local `vzdump` is available. Removing the connection also disables the environment fallback until credentials are saved again.
+For Proxmox jobs, open **Agents > your agent > Connections > Proxmox** while the agent is online. Enter the token ID (`user@realm!tokenname`) and token secret, then use **Test connection** and **Save**. The **Configure Proxmox** button in the backup job form opens the agent page in another tab, preserving the job draft. Current agents expose Proxmox jobs when the connection is configured and local `qm`, `perl`, `blockdev` and `lvs` are available. Removing the connection also disables the environment fallback until credentials are saved again.
 
-The test checks local `vzdump` availability and API access to supported VMs without saving changes. Saved settings apply to guest discovery and all Proxmox jobs on that agent immediately, without a restart. The secret is encrypted for the agent before command dispatch and stored encrypted in its local database; it is never returned to the web UI. Leaving the secret field empty preserves the current token. Changing the API URL or token ID requires entering a token secret again.
+The test checks local tool availability and API access to VMs without saving changes. Each backup separately validates LVM-thin snapshot support and pool headroom. Saved settings apply to guest discovery and all Proxmox jobs on that agent immediately, without a restart. The secret is encrypted for the agent before command dispatch and stored encrypted in its local database; it is never returned to the web UI. Leaving the secret field empty preserves the current token. Changing the API URL or token ID requires entering a token secret again.
 
 Under **Advanced**, the API URL defaults to `https://127.0.0.1:8006/api2/json`, the local node is detected automatically, and TLS verification can be enabled. Disable verification when using a self-signed certificate without a trusted CA.
 
@@ -189,4 +189,4 @@ Existing agent environment configuration remains supported until settings are sa
 - `DRASTIC_PROXMOX_NODE`
 - `DRASTIC_PROXMOX_VERIFY_TLS`
 
-The agent must run directly on the Proxmox node with the required tooling for `vzdump` based backups. A remote API URL does not enable remote backup execution. Update older agents to use the web UI configuration commands.
+The agent must run as root directly on the configured Proxmox node. New backups require LVM-thin disks and use temporary disk snapshots without RAM state or a full local copy. Update backend and agents together: protocol 7 adds disk-snapshot backup restore. A remote API URL does not enable remote backup execution.

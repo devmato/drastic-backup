@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import shutil
+import tarfile
 import time
 from contextlib import contextmanager
 from functools import cache
@@ -14,7 +15,7 @@ from uuid import UUID
 
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.config import DefaultConfig, env_int, env_value
-from drastic_common.process import run_process
+from drastic_common.process import ProcessCancelledError, run_process
 
 WORKSPACE_TTL = 3600
 HELPER = str(Path(__file__).with_name("guest_files.py"))
@@ -150,15 +151,93 @@ def session_action(action, session_id, identity, *, volume=None, path="/", cance
 
 def validate_archive(agent, snapshot):
     tags = snapshot.get("tags") or []
-    if not {"source:proxmox", "guest_type:qemu", "backup_method:vzdump"}.issubset(tags) or "kind:manifest" in tags:
+    if (not {"source:proxmox", "guest_type:qemu"}.issubset(tags) or "kind:manifest" in tags
+            or not any(tag in tags for tag in ("backup_method:vzdump", "backup_method:snapshot"))):
         raise ValueError("Select a Proxmox QEMU archive snapshot")
     entries = agent.resticapi.ls(snapshot_id=snapshot["id"], path="/") or []
     if isinstance(entries, dict):
         entries = [entries]
     files = [e for e in entries if e.get("type") == "file"]
-    if len(files) != 1 or not re.fullmatch(r"/?vzdump-qemu-\d+-[\d_-]+\.vma", files[0].get("path", "")):
-        raise ValueError("Snapshot must contain exactly one supported VMA archive")
+    pattern = r"/?qemu-\d+\.tar" if "backup_method:snapshot" in tags else r"/?vzdump-qemu-\d+-[\d_-]+\.vma"
+    if len(files) != 1 or not re.fullmatch(pattern, files[0].get("path", "")):
+        raise ValueError("Snapshot must contain exactly one supported VM archive")
     return files[0]
+
+
+def unpack_snapshot(archive_path, work, cancelled):
+    """Only known regular members are accepted; never extract links or arbitrary paths."""
+    sizes = {}
+    with tarfile.open(archive_path, mode="r|") as archive:
+        for member in archive:
+            name = member.name
+            disk = re.fullmatch(r"disks/disk-drive-((?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0)\.raw", name)
+            if (not member.isfile() or name in sizes or member.size < 0
+                    or (not disk and name not in {"manifest.json", "qemu-server.conf", "qemu-server.fw"})
+                    or (not disk and member.size > 65535) or len(sizes) >= 257):
+                raise ValueError("Unsafe or unsupported snapshot archive member")
+            if disk and (member.size == 0 or member.size % 512):
+                raise ValueError("Invalid snapshot disk size")
+            require_space(work, member.size)
+            target = work / name
+            target.parent.mkdir(exist_ok=True)
+            with archive.extractfile(member) as source, target.open("xb") as output:
+                while chunk := source.read(1024 * 1024):
+                    if cancelled():
+                        raise ProcessCancelledError("Restore cancelled")
+                    if disk and not any(chunk):
+                        output.seek(len(chunk), 1)
+                    else:
+                        output.write(chunk)
+                output.truncate(member.size)
+            sizes[name] = member.size
+    if not {"manifest.json", "qemu-server.conf"}.issubset(sizes):
+        raise ValueError("Snapshot archive lacks configuration or manifest")
+    manifest = json.loads((work / "manifest.json").read_text())
+    if not isinstance(manifest, dict) or manifest.get("version") != 1:
+        raise ValueError("Unsupported snapshot manifest")
+    if type(manifest.get("vmid")) is not int or archive_path.name != f"qemu-{manifest['vmid']}.tar":
+        raise ValueError("Snapshot manifest VM does not match archive")
+    volumes = manifest.get("volumes")
+    if not isinstance(volumes, list) or not volumes:
+        raise ValueError("Snapshot manifest has no disks")
+    expected = {}
+    for item in volumes:
+        if (not isinstance(item, dict) or not isinstance(item.get("disk"), str)
+                or not re.fullmatch(r"(?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0", item["disk"])
+                or type(item.get("size")) is not int or item["size"] <= 0):
+            raise ValueError("Invalid snapshot disk manifest")
+        name = f"disks/disk-drive-{item['disk']}.raw"
+        if name in expected:
+            raise ValueError("Duplicate manifest disk")
+        expected[name] = item["size"]
+    if expected != {name: size for name, size in sizes.items() if name.startswith("disks/")}:
+        raise ValueError("Snapshot disks do not match manifest")
+    archive_path.unlink()
+    return sum(expected.values())
+
+
+def create_vma(work, cancelled):
+    disks = sorted((work / "disks").glob("disk-drive-*.raw"))
+    require_space(work, sum(path.stat().st_size for path in disks) + 16 * 1024 * 1024)
+    archive = work / "restored.vma"
+    command = ["vma", "create", str(archive), "-c", str(work / "qemu-server.conf")]
+    if (work / "qemu-server.fw").exists():
+        command.extend(["-c", str(work / "qemu-server.fw")])
+    config = work / "qemu-server.conf"
+    text = "\n".join(line for line in config.read_text().splitlines() if not line.startswith("#qmdump#")) + "\n"
+    for path in disks:
+        device = path.name.removeprefix("disk-").removesuffix(".raw")
+        disk = device.removeprefix("drive-")
+        if device == "drive-tpmstate0":
+            device += "-backup"
+        # qmrestore requires these native device hints, including the TPM alias.
+        text += f"#qmdump#map:{disk}:{device}::raw:\n"
+        command.extend(["-d", f"format=raw:{device}={path}"])
+    config.write_text(text)
+    run_process(command, cancelled=cancelled)
+    shutil.rmtree(work / "disks")
+    run_process(["vma", "verify", str(archive)], cancelled=cancelled)
+    return archive
 
 
 def archive_devices(listing):
@@ -207,7 +286,7 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
 
     if mode == "proxmox_prepare":
         guest_tools_available()
-        if not shutil.which("vma"):
+        if "backup_method:snapshot" not in (snapshot.get("tags") or []) and not shutil.which("vma"):
             raise ValueError("vma is missing on the restore agent")
     elif mode == "proxmox_vm":
         if not isinstance(unique, bool):
@@ -229,17 +308,25 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
     with workspace(report.uuid, create=True) as work:
         try:
             require_space(work, int(archive.get("size") or 0))
-            phase("Restoring VMA archive")
+            snapshot_archive = "backup_method:snapshot" in (snapshot.get("tags") or [])
+            phase("Restoring VM archive" if snapshot_archive else "Restoring VMA archive")
             status = agent.resticapi.restore(
                 snapshot_id=snapshot["id"], target=str(work), include_paths=[archive["path"]],
                 overwrite_policy="fail_if_exists", callback=AgentReport.process_restore_status,
                 callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500)
             AgentReport.process_restore_status(status, operation_uuid=report.uuid)
             archive_path = work / archive["path"].lstrip("/")
-            phase("Verifying VMA archive")
-            run_process(["vma", "verify", str(archive_path)], cancelled=cancelled)
-            listing = run_process(["vma", "list", str(archive_path)], cancelled=cancelled)
-            disk_size = archive_devices(listing)
+            if snapshot_archive:
+                phase("Extracting snapshot disks")
+                disk_size = unpack_snapshot(archive_path, work, cancelled)
+                if mode == "proxmox_vm":
+                    phase("Preparing Proxmox import")
+                    archive_path = create_vma(work, cancelled)
+            else:
+                phase("Verifying VMA archive")
+                run_process(["vma", "verify", str(archive_path)], cancelled=cancelled)
+                listing = run_process(["vma", "list", str(archive_path)], cancelled=cancelled)
+                disk_size = archive_devices(listing)
             if mode == "proxmox_vm":
                 options = host_options(cancelled)
                 if vmid in options["used_vmids"]:
@@ -255,10 +342,11 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
                             cancelled=cancelled)
                 report.log_message(f"VM {vmid} restored on {options['node']}; VM is stopped")
             else:
-                require_space(work, disk_size)
-                phase("Extracting guest disks")
-                run_process(["vma", "extract", str(archive_path), str(work / "disks")], cancelled=cancelled)
-                archive_path.unlink()
+                if not snapshot_archive:
+                    require_space(work, disk_size)
+                    phase("Extracting guest disks")
+                    run_process(["vma", "extract", str(archive_path), str(work / "disks")], cancelled=cancelled)
+                    archive_path.unlink()
                 phase("Inspecting guest filesystems")
                 result = guest_request(work, "volumes", cancelled=cancelled)
                 if not any(not volume["error"] for volume in result["volumes"]):

@@ -430,7 +430,7 @@ class ResticApi:
         producer_stderr_callback=None,
     ):
         started = time.monotonic()
-        operation_uuid = getattr(getattr(callback, "__self__", None), "uuid", None)
+        operation_uuid = (callback_args or {}).get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None)
         cmd = self.__make_command(
             "backup",
             stdin=True,

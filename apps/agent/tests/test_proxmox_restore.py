@@ -1,5 +1,7 @@
+import io
 import json
 import os
+import tarfile
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -7,6 +9,7 @@ from uuid import uuid4
 
 import pytest
 
+from drastic_agent.proxmox_snapshot import write_archive
 from drastic_agent.services import proxmox_restore as restore
 from drastic_common.process import ProcessCancelledError
 
@@ -185,6 +188,87 @@ def test_failed_export_removes_prepared_images(monkeypatch, tmp_path):
                                    restore_location=str(tmp_path / "out"))
     assert list(restore.workspace_root().iterdir()) == []
     assert report.data["destination_may_contain_restored_data"]
+
+
+@pytest.mark.parametrize("mode", ["proxmox_vm", "proxmox_prepare"])
+def test_snapshot_restore_reuses_native_import_and_guest_browser(monkeypatch, tmp_path, mode):
+    agent, report, commands = setup_restore(monkeypatch, tmp_path)
+    raw = tmp_path / "source.raw"
+    raw.write_bytes(b"x" * 4096)
+    plan = {"vmid": 101, "config": "bios: ovmf\nscsi0: local-lvm:vm-101-disk-0\n", "volumes": [
+        {"disk": disk, "path": str(raw), "size": 4096} for disk in ("scsi0", "efidisk0", "tpmstate0")
+    ]}
+    snapshot = {"id": "snapshot", "tags": ["source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
+    agent.resticapi.ls = lambda **kw: [{"type": "file", "path": "/qemu-101.tar", "size": 20480}]
+
+    def download(**kwargs):
+        with (Path(kwargs["target"]) / "qemu-101.tar").open("wb") as output:
+            write_archive(plan, output)
+
+    agent.resticapi.restore = download
+    original = restore.run_process
+
+    def run(command, **kwargs):
+        if command[:2] == ["vma", "create"]:
+            config = Path(command[command.index("-c") + 1]).read_text()
+            assert "#qmdump#map:scsi0:drive-scsi0::raw:" in config
+            assert "#qmdump#map:tpmstate0:drive-tpmstate0-backup::raw:" in config
+            assert any(arg.startswith("format=raw:drive-tpmstate0-backup=") for arg in command)
+            assert all((Path(command[2]).parent / "disks" / f"disk-drive-{disk}.raw").read_bytes() == raw.read_bytes()
+                       for disk in ("scsi0", "efidisk0", "tpmstate0"))
+            Path(command[2]).write_bytes(b"vma")
+        return original(command, **kwargs)
+
+    monkeypatch.setattr(restore, "run_process", run)
+
+    def guest(work, action, **kwargs):
+        assert (work / "disks/disk-drive-scsi0.raw").read_bytes() == raw.read_bytes()
+        assert not (work / "qemu-101.tar").exists()
+        return {"volumes": [{"device": "/dev/sda1", "error": None}]}
+
+    monkeypatch.setattr(restore, "guest_request", guest)
+    restore.run_proxmox_restore(agent, report, snapshot, mode=mode, identity=IDENTITY,
+                               vmid=102, storage="local-lvm")
+    if mode == "proxmox_vm":
+        assert commands[-1][0] == "qmrestore"
+        assert list(restore.workspace_root().iterdir()) == []
+    else:
+        assert not commands
+        restore.cleanup_workspaces(all_workspaces=True)
+
+
+@pytest.mark.parametrize("name,kind", [("../escape", tarfile.REGTYPE), ("qemu-server.conf", tarfile.SYMTYPE),
+                                      ("disks/disk-drive-scsi0.raw", tarfile.BLKTYPE)])
+def test_snapshot_tar_rejects_unsafe_members_before_extraction(tmp_path, name, kind):
+    path = tmp_path / "qemu-101.tar"
+    with tarfile.open(path, "w") as archive:
+        member = tarfile.TarInfo(name)
+        member.type = kind
+        member.linkname = "/etc/passwd"
+        archive.addfile(member)
+    with pytest.raises(ValueError, match="Unsafe"):
+        restore.unpack_snapshot(path, tmp_path, lambda: False)
+    assert not (tmp_path.parent / "escape").exists()
+
+
+def test_snapshot_tar_rejects_manifest_mismatch_and_cancellation(tmp_path):
+    raw = tmp_path / "source.raw"
+    raw.write_bytes(b"x" * 4096)
+    plan = {"vmid": 101, "config": "memory: 512\n", "volumes": [{"disk": "scsi0", "path": str(raw), "size": 4096}]}
+    path = tmp_path / "qemu-101.tar"
+    with path.open("wb") as output:
+        write_archive(plan, output)
+    with pytest.raises(ProcessCancelledError):
+        restore.unpack_snapshot(path, tmp_path, lambda: True)
+    (tmp_path / "disks/disk-drive-scsi0.raw").unlink()
+    with tarfile.open(path, "w") as archive:
+        for name, data in [("qemu-server.conf", b"memory: 512\n"),
+                           ("manifest.json", json.dumps({"version": 1, "vmid": 101, "volumes": [{"disk": "scsi0", "size": 4096}]}).encode())]:
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    with pytest.raises(ValueError, match="do not match"):
+        restore.unpack_snapshot(path, tmp_path, lambda: False)
 
 
 def test_agent_status_reports_cached_guest_tools_error(monkeypatch):

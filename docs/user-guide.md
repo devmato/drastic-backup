@@ -47,7 +47,7 @@ Changing the account password re-encrypts the account recovery key for the new p
 
 ## Jobs
 
-File jobs back up selected filesystem paths from the agent host. Proxmox jobs use the Proxmox API and `vzdump` to stream VM backups into restic.
+File jobs back up selected filesystem paths from the agent host. Proxmox jobs stream temporary LVM-thin VM snapshots into restic without a full local copy, deduplicating stable disk contents on the agent.
 
 Only create jobs for data the agent can actually access. Docker agents typically mount the host filesystem read-only under `/mnt/host`.
 

@@ -8,8 +8,12 @@ from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
+import dataset
 import pytest
 
+import drastic_agent.jobs.base as backup_base
+import drastic_agent.jobs.proxmox_backup as proxmox_backup
+from drastic_agent.agent.report import AgentReport
 from drastic_agent.services.proxmox_restore import cleanup_workspaces, session_action
 from drastic_agent.services.restore import RestoreService
 from drastic_common.process import run_process
@@ -20,9 +24,11 @@ from drastic_common.restic.repository import ResticRepository
 @pytest.fixture
 def roundtrip(tmp_path, monkeypatch):
     archive = os.environ.get("DRASTIC_TEST_VMA")
-    if not archive:
-        pytest.skip("Set DRASTIC_TEST_VMA to a Linux or Windows test VM archive")
-    assert Path(archive).is_file()
+    source_vmid = os.environ.get("DRASTIC_TEST_PROXMOX_VMID")
+    if not archive and not source_vmid:
+        pytest.skip("Set DRASTIC_TEST_PROXMOX_VMID or DRASTIC_TEST_VMA on a Proxmox test host")
+    if archive and not source_vmid:
+        assert Path(archive).is_file()
     for tool in ("restic", "vma", "qmrestore", "pvesh"):
         assert shutil.which(tool), f"Missing {tool} on the test host"
     monkeypatch.setenv("DRASTIC_RESTORE_WORK_DIR", str(tmp_path / "work"))
@@ -30,11 +36,29 @@ def roundtrip(tmp_path, monkeypatch):
         location=str(tmp_path / "repository"), password="integration-test-only"))
     api.init()
     job_uuid = str(uuid4())
-    tags = [f"job_uuid:{job_uuid}", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]
-    api.backup_stdin_from_command(["/bin/cat", archive],
-                                 stdin_filename="vzdump-qemu-100-2026_10_02-00_00_00.vma", tags=tags)
-    snapshot_id = api.snapshots(tags=tags)[0]["id"]
     agent = SimpleNamespace(resticapi=api, configure_repository=lambda _: None)
+    db = dataset.connect("sqlite:///:memory:")
+    if source_vmid:
+        source_vmid = int(source_vmid)
+        assert source_vmid >= 100
+        proxmox_backup.ensure_proxmox_available()
+        proxmox_backup.check_thin_pools(proxmox_backup.snapshot_info(source_vmid))
+        monkeypatch.setattr(backup_base, "agent_operation_artifacts", db["artifacts"])
+        monkeypatch.setattr(proxmox_backup, "proxmox_snapshots", db["snapshots"])
+        agent.identifier = "integration-test"
+        report = AgentReport.command_report()
+        report.set_data("guests", [source_vmid])
+        report.set_data("backup_items_total", 1)
+        handler = proxmox_backup.ProxmoxBackupJobHandler(agent, {"id": 1, "uuid": job_uuid}, 1)
+        handler.operation = {"id": 1, "uuid": report.uuid}
+        handler._backup_qemu_guest(report, {"vmid": source_vmid}, 1)
+        assert not db["snapshots"].count()
+        snapshot_id = report.artifacts[0]["snapshot_id"]
+    else:
+        tags = [f"job_uuid:{job_uuid}", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]
+        api.backup_stdin_from_command(["/bin/cat", archive],
+                                     stdin_filename="vzdump-qemu-100-2026_10_02-00_00_00.vma", tags=tags)
+        snapshot_id = api.snapshots(tags=tags)[0]["id"]
     source = dict(job_id=1, job_uuid=job_uuid, repository_id=1, repository={},
                   snapshot_id=snapshot_id, expected_job_tag=f"job_uuid:{job_uuid}")
 
@@ -45,6 +69,7 @@ def roundtrip(tmp_path, monkeypatch):
 
     yield restore, source, tmp_path
     cleanup_workspaces(all_workspaces=True)
+    db.engine.dispose()
 
 
 def test_real_guest_file_roundtrip(roundtrip):
