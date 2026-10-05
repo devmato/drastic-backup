@@ -92,6 +92,8 @@ Configure Proxmox access through **Agents > your agent > Connections > Proxmox**
 
 Without web UI settings, the agent uses `DRASTIC_PROXMOX_TOKEN_ID` and `DRASTIC_PROXMOX_TOKEN_SECRET`. `DRASTIC_PROXMOX_API_URL` defaults to `https://127.0.0.1:8006/api2/json`; `DRASTIC_PROXMOX_VERIFY_TLS` defaults to `false`. Set `DRASTIC_PROXMOX_NODE` only when automatic node detection is insufficient. Once saved through the web UI, the complete saved configuration takes precedence over these environment variables.
 
+`DRASTIC_PROXMOX_MIN_FREE_GIB` sets the minimum free LVM-thin data reserve for snapshot backups (positive integer, default `20`; invalid/non-positive values fall back to `20`). Set it in the agent environment and restart the agent. This reserve applies independently of the saved API connection settings. Data reserve and metadata usage are checked separately; metadata at or above 95% blocks backup. Streaming checks use the existing progress callbacks and abort through normal snapshot cleanup when the reserve is undershot.
+
 ## Secret Handling
 
 `DRASTIC_APP_MASTER_SECRET` derives the backend settings-encryption key used for repository environment values and notification URLs. Repository passwords are wrapped with a per-user recovery key that is decrypted during login and kept only in browser memory. Database data plus `.env` is not enough to open repositories without a user password or an already provisioned agent.

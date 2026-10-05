@@ -1,5 +1,6 @@
 import json
 import logging
+import math
 import platform
 import sys
 import tempfile
@@ -10,6 +11,7 @@ from uuid import UUID
 
 from drastic_agent.agent.database import proxmox_snapshots
 from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.config import env_int
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.proxmox import ProxmoxError, QemuVolumeGuestDriver, ensure_proxmox_available
 from drastic_agent.proxmox_snapshot import snapshot_info
@@ -71,7 +73,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 raise ProxmoxError("No supported Proxmox guests matched this job configuration")
             # Preflight every selected guest before any snapshot or data transfer.
             for guest in guests:
-                check_thin_pools(snapshot_info(guest["vmid"]))
+                check_thin_pools(snapshot_info(guest["vmid"]), report=report)
             report.set_data("guests", [guest["vmid"] for guest in guests])
             report.set_data("backup_items_total", len(guests))
             completed, failed = [], []
@@ -176,10 +178,24 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             raise ResticCancelledError("Proxmox backup cancelled")
 
 
-def check_thin_pools(plan):
+def check_thin_pools(plan, report=None):
+    reserve_gib = env_int("DRASTIC_PROXMOX_MIN_FREE_GIB", 20)
     for pool in {item["pool"] for item in plan["volumes"]}:
-        result = json.loads(run_process(["lvs", pool, "--reportformat", "json", "-o", "data_percent,metadata_percent"], timeout=30))
-        values = result["report"][0]["lv"]
-        if len(values) != 1 or any(not values[0].get(key, "").strip() or float(values[0][key]) >= 95
-                                   for key in ("data_percent", "metadata_percent")):
-            raise ProxmoxError(f"Thin pool {pool} has insufficient data or metadata headroom (95% limit)")
+        output = run_process(["lvs", pool, "--reportformat", "json", "--units", "b", "--nosuffix",
+                              "-o", "lv_size,data_percent,metadata_percent"], timeout=30)
+        try:
+            (values,) = json.loads(output)["report"][0]["lv"]
+            size, data, metadata = (float(values[key]) for key in ("lv_size", "data_percent", "metadata_percent"))
+            if not math.isfinite(size) or size <= 0 or not 0 <= data <= 100 or not 0 <= metadata <= 100:
+                raise ValueError("Measurement outside valid range")
+        except (ValueError, TypeError, KeyError, IndexError) as exc:
+            raise ProxmoxError(f"Thin pool {pool}: missing or invalid LVM measurements (size, data or metadata)") from exc
+        free_gib = size * (1 - data / 100) / 1024**3
+        message = (f"Thin pool {pool}: ~{free_gib:.1f} GiB free; minimum reserve {reserve_gib} GiB; "
+                   f"data {data:.2f}%; metadata {metadata:.2f}% (limit 95%)")
+        if free_gib < reserve_gib:
+            raise ProxmoxError(f"{message} — data reserve below minimum")
+        if metadata >= 95:
+            raise ProxmoxError(f"{message} — metadata usage at or above limit")
+        if report:
+            report.log_message(message)

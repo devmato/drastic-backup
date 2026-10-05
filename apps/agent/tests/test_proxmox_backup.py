@@ -37,6 +37,7 @@ def test_guest_discovery_requires_at_least_one_backupable_volume():
 
 @pytest.fixture
 def job(monkeypatch):
+    monkeypatch.delenv("DRASTIC_PROXMOX_MIN_FREE_GIB", raising=False)
     db = dataset.connect("sqlite:///:memory:")
     monkeypatch.setattr(base, "agent_operation_artifacts", db["artifacts"])
     monkeypatch.setattr(backup, "proxmox_snapshots", db["snapshots"])
@@ -53,7 +54,8 @@ def job(monkeypatch):
     def run(command, **kwargs):
         commands.append(command)
         if command[0] == "lvs":
-            return json.dumps({"report": [{"lv": [{"data_percent": "40", "metadata_percent": "20"}]}]})
+            assert command[command.index("--units") + 1] == "b" and "--nosuffix" in command
+            return json.dumps({"report": [{"lv": [{"lv_size": str(1710.01 * 1024**3), "data_percent": "96.17", "metadata_percent": "3.55"}]}]})
         if command[1] == "snapshot":
             snapshots[command[3]] = command[-1]
         else:
@@ -95,6 +97,7 @@ def test_snapshot_stream_and_cleanup_use_one_artifact_per_vm(job):
     assert report.data["bytes_processed"] == 10240
     assert report.data["completed_guests"] == [101]
     assert report.data["proxmox_progress"]["phase"] == "complete"
+    assert report.log.count("~65.5 GiB free; minimum reserve 20 GiB; data 96.17%; metadata 3.55%") == 1
     assert [command[1] for command in commands if command[0] == "qm"] == ["snapshot", "delsnapshot"]
     assert not snapshots and not backup.proxmox_snapshots.count()
 
@@ -119,7 +122,7 @@ def test_pool_filling_during_stream_stops_backup_and_cleans_snapshot(job, monkey
         if command[0] == "lvs":
             checks += 1
             if checks > 1:
-                return json.dumps({"report": [{"lv": [{"data_percent": "96", "metadata_percent": "10"}]}]})
+                return json.dumps({"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "96", "metadata_percent": "10"}]}]})
         return original(command, **kwargs)
 
     monkeypatch.setattr(backup, "run_process", run)
@@ -199,7 +202,7 @@ def test_unknown_snapshot_creation_is_not_forgotten_early(job, monkeypatch):
         raise TimeoutError("snapshot timed out")
 
     monkeypatch.setattr(backup, "run_process", fail)
-    monkeypatch.setattr(backup, "check_thin_pools", lambda _: None)
+    monkeypatch.setattr(backup, "check_thin_pools", lambda *a, **kw: None)
     with pytest.raises(ProxmoxError):
         handler.run_backup(report)
     assert not exports and backup.proxmox_snapshots.count() == 1
@@ -207,10 +210,34 @@ def test_unknown_snapshot_creation_is_not_forgotten_early(job, monkeypatch):
 
 def test_thin_pool_headroom_is_checked(job, monkeypatch):
     handler, report, _, exports, _ = job
-    monkeypatch.setattr(backup, "run_process", lambda *a, **kw: json.dumps({"report": [{"lv": [{"data_percent": "96", "metadata_percent": "10"}]}]}))
-    with pytest.raises(ProxmoxError, match="headroom"):
+    monkeypatch.setattr(backup, "run_process", lambda *a, **kw: json.dumps({"report": [{"lv": [{"lv_size": str(100 * 1024**3), "data_percent": "96", "metadata_percent": "10"}]}]}))
+    with pytest.raises(ProxmoxError, match="4.0 GiB free.*reserve 20 GiB.*data reserve below minimum"):
         handler.run_backup(report)
     assert not exports and not backup.proxmox_snapshots.count()
+
+
+@pytest.mark.parametrize("reserve,changes,error", [
+    (20, {}, None), (21, {}, "data reserve below minimum"),
+    (10, {"metadata_percent": "95"}, "metadata usage at or above limit"),
+    (20, {"lv_size": None}, "invalid LVM measurements"),
+    (20, {"lv_size": "inf"}, "invalid LVM measurements"),
+    (20, {"data_percent": "nan"}, "invalid LVM measurements"),
+    (20, {"data_percent": "101"}, "invalid LVM measurements"),
+    (20, {"metadata_percent": ""}, "invalid LVM measurements"),
+])
+def test_pool_reserve_metadata_and_invalid_measurements(monkeypatch, reserve, changes, error):
+    monkeypatch.setenv("DRASTIC_PROXMOX_MIN_FREE_GIB", str(reserve))
+    values = {"lv_size": str(40 * 1024**3), "data_percent": "50", "metadata_percent": "3.55", **changes}
+    monkeypatch.setattr(backup, "run_process", lambda *a, **kw: json.dumps({"report": [{"lv": [values]}]}))
+    with pytest.raises(ProxmoxError, match=error) if error else nullcontext():
+        backup.check_thin_pools({"volumes": [{"pool": "pve/data"}]})
+
+
+@pytest.mark.parametrize("output", ["not json", "{}", '{"report":[{"lv":[]}]}', '{"report":[{"lv":[{},{}]}]}'])
+def test_missing_or_ambiguous_pool_report_is_a_measurement_error(monkeypatch, output):
+    monkeypatch.setattr(backup, "run_process", lambda *a, **kw: output)
+    with pytest.raises(ProxmoxError, match="missing or invalid LVM measurements"):
+        backup.check_thin_pools({"volumes": [{"pool": "pve/data"}]})
 
 
 def test_tar_is_deterministic_and_rejects_a_short_source(tmp_path):
