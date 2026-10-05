@@ -15,7 +15,7 @@ permissions:
 jobs:
   publish:
     name: Publish ${{ matrix.image }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -25,9 +25,9 @@ jobs:
           - image: drastic-backup-agent
             dockerfile: apps/agent/Dockerfile
     steps:
-      - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
-      - uses: docker/setup-buildx-action@v3
+      - uses: actions/checkout@v6
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
       - name: Publish image
         env:
           IMAGE_NAME: ${{ matrix.image }}
