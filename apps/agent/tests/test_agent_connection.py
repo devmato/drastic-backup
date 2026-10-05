@@ -1,6 +1,7 @@
 import bz2
 import configparser
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -36,6 +37,66 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__repository_passwords = {}
     agent._Agent__secret_values = {}
     return agent
+
+
+def test_diagnostics_use_server_consent_and_retry_unaccepted_events(monkeypatch):
+    from drastic_common import diagnostics
+
+    diagnostics.configure()
+    agent = build_agent()
+    sent = []
+    enabled, success = True, True
+    during_send = False
+
+    def send(action, **kwargs):
+        assert action == "operation"
+        sent.append(kwargs["operation_json"])
+        if during_send:
+            diagnostics.record("during_send", {})
+        return {"success": success, "result": {"enabled": enabled}}
+
+    monkeypatch.setattr(agent, "_Agent__send_request", send)
+    monkeypatch.setattr(diagnostics, "system_snapshot", lambda pids: {"scope": "host"})
+    monkeypatch.setattr(AgentReport, "pending_reports", [])
+    monkeypatch.setattr(AgentReport, "finished_reports", [])
+    monkeypatch.setattr(AgentReport, "running_operations", {})
+    try:
+        agent._Agent__sample_diagnostics()
+        agent._Agent__flush_report_queue()
+        report = agent._diagnostic_report
+        assert sent[0]["logs"] == []  # No collection before the server grants consent.
+        diagnostics.record("test", {"value": 42})
+        success = False
+        agent._Agent__sample_diagnostics()
+        agent._Agent__flush_report_queue()
+        unaccepted = sent[-1]["logs"]
+        assert any(log["message"] == "agent.sample" for log in unaccepted)
+        success, during_send = True, True
+        agent._Agent__flush_report_queue()
+        assert sent[-1]["logs"] == unaccepted
+        assert report.logs[0]["message"] == "during_send"
+        during_send = False
+        agent._Agent__flush_report_queue()
+        assert report.logs == []
+        for _ in range(diagnostics.MAX_EVENTS + 1):
+            diagnostics.record("overflow", {"text": "ä" * 7000})
+        assert len(report._logs) == diagnostics.MAX_EVENTS
+        assert report.data["dropped_events"] == 1
+        last_sequence = report._logs[-1]["sequence"]
+        enabled = False
+        agent._Agent__flush_report_queue()
+        assert len(json.dumps(sent[-1]).encode()) < 256 * 1024
+        assert not diagnostics.active()
+        assert report.logs == []
+        enabled = True
+        agent._Agent__sample_diagnostics()
+        agent._Agent__flush_report_queue()
+        diagnostics.record("after_reenable", {})
+        assert report.logs[0]["sequence"] > last_sequence
+    finally:
+        diagnostics.configure()
+        if hasattr(agent, "_Agent__execution"):
+            agent._Agent__execution.shutdown()
 
 
 @pytest.fixture
@@ -593,11 +654,14 @@ def test_progress_and_logs_created_during_send_remain_pending(monkeypatch):
     report = AgentReport.command_report()
     report.set_data("bytes_processed", 10)
     report.log_message("before send")
+    report.diagnostic_at = datetime(2000, 1, 1)
+    monkeypatch.setattr(agent_module.diagnostics, "active", lambda: True)
 
     def send_request(action, **kwargs):
         report.set_data("bytes_processed", 20)
         report.log_message("during send")
         assert kwargs["operation_json"]["data"]["bytes_processed"] == 10
+        assert kwargs["operation_json"]["diagnostic_at"] > "2000-01-01"
         return {"success": True}
 
     monkeypatch.setattr(agent, "_Agent__send_request", send_request)
@@ -606,6 +670,13 @@ def test_progress_and_logs_created_during_send_remain_pending(monkeypatch):
     Agent._Agent__flush_report_queue(agent)
     assert report.sent is False
     assert report.log == "during send"
+    assert not hasattr(report, "diagnostic_at")
+    report.diagnostic_at = datetime(2000, 1, 1)
+    monkeypatch.setattr(agent_module.diagnostics, "active", lambda: False)
+    sent = []
+    monkeypatch.setattr(agent, "_Agent__send_request", lambda action, **kwargs: sent.append(kwargs["operation_json"]) or {"success": True})
+    Agent._Agent__flush_report_queue(agent)
+    assert "diagnostic_at" not in sent[0]
 
 
 def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):

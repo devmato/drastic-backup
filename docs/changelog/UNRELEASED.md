@@ -2,6 +2,8 @@
 
 ## Release Notes
 
+- User settings now have a dedicated page for password changes, Recovery Export, and opt-in Debug MCP; light/dark mode remains directly in the user menu. One diagnostic switch applies to all agents in the account. The read-only, owner-bound endpoint exposes operations and bounded diagnostic timelines, including agent/process samples and Proxmox output. Update the backend first (new migration), then agents for protocol 5 recording support. Recording and MCP access are disabled by default.
+
 - Restic backups now use a stable agent-based hostname across container recreations unless `RESTIC_HOST` is explicitly configured. The first file backup after this change may reread unchanged files; repository deduplication is preserved. Retention skips redundant prune runs and persists pending cleanup for retry after failure or restart.
 
 - Operation start/end times, logs and last-run timestamps now include an explicit UTC offset, fixing incorrect local times and running durations for UTC containers viewed from another timezone. Update both server and agent. Existing naive database timestamps are interpreted as UTC; historical values from other timezones are not automatically shifted.

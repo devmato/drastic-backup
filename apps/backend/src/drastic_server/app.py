@@ -75,6 +75,11 @@ def create_app(config_object=None):
         cors_allowed_origins=app.config.get("SOCKETIO_CORS_ORIGINS") or "*",
     )
     app.register_blueprint(restic_proxy_blp)
+    from drastic_server.services.diagnostics import install_maintenance
+    from drastic_server.views.debug import blp as debug_blp
+
+    app.register_blueprint(debug_blp)
+    install_maintenance(app)
     # Register API blueprints via flask-smorest
     for blp in api_blueprints:
         smorest_api.register_blueprint(blp)

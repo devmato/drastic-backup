@@ -32,6 +32,7 @@ nav:
     - Agent Installation: agent-installation.md
     - TrueNAS: truenas.md
     - Backup and Restore: backup-and-restore.md
+    - Settings and Debug MCP: debug-access.md
   - Deployment:
     - Deployment: deployment.md
     - Configuration: configuration.md

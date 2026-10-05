@@ -1,5 +1,7 @@
 from marshmallow import EXCLUDE, Schema, fields, validate
 
+from drastic_server.schemas.user import UserResponseSchema
+
 
 class LoginInputSchema(Schema):
     class Meta:
@@ -14,13 +16,7 @@ class LoginResponseSchema(Schema):
     recovery_key = fields.String(allow_none=True)
 
 
-class AuthUserSchema(Schema):
-    id = fields.Integer(required=True)
-    name = fields.String(required=True)
-    email = fields.Email(allow_none=True)
-
-
 class AuthStatusResponseSchema(Schema):
     authenticated = fields.Boolean(required=True)
-    user = fields.Nested(AuthUserSchema, allow_none=True)
+    user = fields.Nested(UserResponseSchema, allow_none=True)
     environment = fields.String(required=True)

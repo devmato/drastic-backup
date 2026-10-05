@@ -100,7 +100,7 @@ class AgentNamespace(Namespace):
             return {'success': True, 'result': getattr(agent_request, data['action'])( **data['args'] ) }
         except Exception as e:
             print(e)
-            return {'success': False, 'result': e}
+            return {'success': False, 'result': {"error": type(e).__name__}}
 
 agentnamespace = AgentNamespace('/agent')
 socketio.on_namespace(agentnamespace)

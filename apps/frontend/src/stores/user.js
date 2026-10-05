@@ -3,6 +3,7 @@ import { defineStore } from 'pinia'
 import { api } from 'boot/axios'
 import { disconnectAppSocket } from 'src/utils/socket'
 import { isAuthError, isRecoveryKeyError } from 'src/utils/auth'
+import { setDiagnosticRecording } from 'src/utils/diagnostics'
 
 const RECOVERY_EXPORT_FALLBACK_FILENAME = 'drastic-backup-recovery-export.zip'
 
@@ -95,6 +96,7 @@ export const useUserStore = defineStore('user', () => {
     const response = await api.get('/auth/status', { _skipAuthRefresh: true })
     environment.value = response.data.environment || 'dev'
     user.value = response.data.authenticated ? response.data.user : null
+    setDiagnosticRecording(user.value?.debug_enabled)
     if (!response.data.authenticated) {
       recoveryKey.value = null
     }
@@ -114,6 +116,20 @@ export const useUserStore = defineStore('user', () => {
     })
     clearSessionState()
     return response.data
+  }
+
+  async function getDebugAccess() {
+    const { data } = await api.get('/user/debug')
+    if (user.value) user.value.debug_enabled = data.enabled
+    setDiagnosticRecording(data.enabled)
+    return data
+  }
+
+  async function setDebugAccess(enabled) {
+    const { data } = await api[enabled ? 'post' : 'delete']('/user/debug')
+    if (user.value) user.value.debug_enabled = data.enabled
+    setDiagnosticRecording(data.enabled)
+    return data
   }
 
   async function downloadRecoveryExport(password) {
@@ -217,6 +233,7 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function clearSessionState() {
+    setDiagnosticRecording(false)
     if (typeof window !== 'undefined') {
       localStorage.removeItem('access_token')
     }
@@ -270,6 +287,8 @@ export const useUserStore = defineStore('user', () => {
     fetchAuthStatus,
     initializeUser,
     changePassword,
+    getDebugAccess,
+    setDebugAccess,
     downloadRecoveryExport,
     requestReauth,
     confirmReauth,

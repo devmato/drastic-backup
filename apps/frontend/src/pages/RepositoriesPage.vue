@@ -20,6 +20,12 @@
       flat bordered
       :rows-per-page-options="[0]"
     >
+      <template v-slot:body-cell-size="props">
+        <q-td :props="props">
+          {{ props.value }}
+          <q-tooltip>Stored data according to Restic, accounting for deduplication and compression. Repository overhead and data awaiting pruning are not included. Updated after backups.</q-tooltip>
+        </q-td>
+      </template>
       <template v-slot:body-cell-actions="props">
         <q-td :props="props">
           <TableActionButton icon="lock_open" label="Unlock repository" @click="showUnlock(props.row)" />
@@ -126,7 +132,7 @@ import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
 import { ref, onMounted } from 'vue'
-import { copyToClipboard, useQuasar } from 'quasar'
+import { copyToClipboard, format, useQuasar } from 'quasar'
 import { useRepositoryStore } from 'stores/repository'
 import { useUserStore } from 'stores/user'
 import { useOperationStore } from 'stores/operation'
@@ -165,6 +171,7 @@ const columns = [
   { name: 'kind', label: 'Type', field: 'kind', align: 'left', sortable: true },
   { name: 'restic_id', label: 'Restic-ID', field: 'restic_id', align: 'left' },
   { name: 'location', label: 'Location', field: row => row.kind === 'native' ? row.repository_path || row.location : row.location, align: 'left' },
+  { name: 'size', label: 'Size', field: row => row.stats?.mode === 'raw-data' ? row.stats.total_size ?? null : null, format: value => value == null ? '—' : format.humanStorageSize(value), align: 'right', sortable: true },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
 

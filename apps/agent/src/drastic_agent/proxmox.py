@@ -6,6 +6,7 @@ import subprocess
 import requests
 
 from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
+from drastic_common import diagnostics
 
 
 class ProxmoxError(Exception):
@@ -33,6 +34,7 @@ class ProxmoxApiClient:
             "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS
         )
         self._node = None
+        diagnostics.remember_secrets({"token_secret": self.token_secret})
 
     @property
     def configured(self):
@@ -242,6 +244,8 @@ class QemuVolumeGuestDriver:
         ]
 
         def process_stderr(line):
+            diagnostics.record("proxmox.output", {"vmid": vmid, "line": line},
+                               operation_uuid=getattr(getattr(callback, "__self__", None), "uuid", None))
             progress = self.parse_backup_progress(line)
             if progress is not None and progress_callback is not None:
                 progress_callback(progress)

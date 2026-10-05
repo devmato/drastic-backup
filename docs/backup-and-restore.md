@@ -383,7 +383,7 @@ stopped for manual boot verification and subsequent removal in Proxmox.
 
 ## Create a User Recovery Export
 
-A signed-in user can generate a Recovery Export repeatedly from the user menu after re-entering the account password. The downloaded ZIP contains a standalone `recovery.html` that works offline and includes plaintext repository passwords, provider environment values, and configuration for agents and assignments, repositories, retention policies, jobs and actions, and schedules.
+A signed-in user can generate a Recovery Export repeatedly from **User menu > Settings > Account & Recovery** after re-entering the account password. The downloaded ZIP contains a standalone `recovery.html` that works offline and includes plaintext repository passwords, provider environment values, and configuration for agents and assignments, repositories, retention policies, jobs and actions, and schedules.
 
 Treat the export as secret material. Store it immediately as an encrypted attachment in Vaultwarden or an equivalent vault, replace older copies after configuration changes, and remove all plaintext local copies and downloads.
 

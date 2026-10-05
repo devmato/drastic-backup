@@ -2,7 +2,7 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields
 
-AGENT_PROTOCOL_VERSION = 4
+AGENT_PROTOCOL_VERSION = 5
 
 
 class AgentCommandName(str, enum.Enum):

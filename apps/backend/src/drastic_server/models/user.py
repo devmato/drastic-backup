@@ -17,6 +17,8 @@ class User(IdMixin, TimeMixin, db.Model):
     email = db.Column(db.String(120), unique=True)
     password = db.Column(db.String(120), nullable=False)
     encrypted_recovery_key = db.Column(db.JSON, nullable=False)
+    debug_token_hash = db.Column(db.String(64), nullable=True, unique=True)
+    debug_enabled_at = db.Column(db.DateTime, nullable=True)
     sessions = db.relationship(
         "UserSession",
         back_populates="user",

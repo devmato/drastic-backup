@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 from queue import Empty, Queue
 
 import drastic_common.restic.parsers as parsers
+from drastic_common import diagnostics
 from drastic_common.restic.exceptions import (
     ResticBinaryNotFoundError,
     ResticCancelledError,
@@ -98,6 +99,7 @@ class ResticApi:
             for key, value in self.repository.env.items():
                 env[key] = str(value)
 
+        diagnostics.remember_secrets(env)
         return env
 
     @contextmanager
@@ -148,6 +150,12 @@ class ResticApi:
     def __unregister_process(self, pid):
         with self._process_lock:
             self._processes.pop(pid, None)
+
+    @classmethod
+    def diagnostic_processes(cls):
+        with cls._process_lock:
+            return [process.pid for managed in cls._processes.values()
+                    for process in getattr(managed, "_processes", [])]
 
     def __drain_binary_stream(self, stream, output_chunks, callback=None):
         try:
@@ -266,6 +274,8 @@ class ResticApi:
         parser=parsers.default,
         cwd=None,
     ):
+        started = time.monotonic()
+        operation_uuid = getattr(getattr(callback, "__self__", None), "uuid", None)
         if cwd is not None:
             # Changing the source directory must not relocate the binary or local repository.
             cmd = list(cmd)
@@ -298,6 +308,9 @@ class ResticApi:
             )
 
             self.__register_process(process.pid, _ManagedProcess(process))
+            diagnostics.record("process.started", {"program": "restic", "pid": process.pid,
+                               "command": next((part for part in cmd if part in {"backup", "restore", "check", "stats", "prune", "forget", "snapshots", "ls", "dump", "init", "unlock"}), "other")},
+                               operation_uuid=operation_uuid)
             if callback is not None and callback_pid:
                 callback(None, **{**callback_args, "pid": process.pid})
 
@@ -333,6 +346,9 @@ class ResticApi:
             if process is not None:
                 if process.poll() is None:
                     _ManagedProcess(process).terminate(self.terminate_grace)
+                diagnostics.record("process.finished", {"program": "restic", "pid": process.pid,
+                                   "exit_code": process.poll(), "duration_seconds": time.monotonic() - started},
+                                   operation_uuid=operation_uuid)
                 self.__unregister_process(process.pid)
                 if callback is not None and callback_pid:
                     callback(None, **{**callback_args, "pid": None})
@@ -408,6 +424,8 @@ class ResticApi:
         callback_throttle=None,
         producer_stderr_callback=None,
     ):
+        started = time.monotonic()
+        operation_uuid = getattr(getattr(callback, "__self__", None), "uuid", None)
         cmd = self.__make_command(
             "backup",
             stdin=True,
@@ -455,6 +473,9 @@ class ResticApi:
 
             producer_process.stdout.close()
             self.__register_process(process.pid, _ManagedProcess(process, producer_process))
+            diagnostics.record("process.started", {"program": "restic", "pid": process.pid,
+                               "producer_pid": producer_process.pid, "producer": str(command[0])},
+                               operation_uuid=operation_uuid)
             if callback is not None and callback_pid:
                 callback(None, **{**callback_args, "pid": process.pid})
 
@@ -532,6 +553,9 @@ class ResticApi:
                 _ManagedProcess(producer_process).terminate(self.terminate_grace)
             if process is not None:
                 self.__unregister_process(process.pid)
+                diagnostics.record("process.finished", {"program": "restic", "pid": process.pid,
+                                   "exit_code": process.poll(), "producer_exit_code": producer_process.poll() if producer_process else None,
+                                   "duration_seconds": time.monotonic() - started}, operation_uuid=operation_uuid)
                 if callback is not None and callback_pid:
                     callback(None, **{**callback_args, "pid": None})
             if restic_env_context is not None:
@@ -567,8 +591,8 @@ class ResticApi:
         return self.__execute_command(cmd)
 
     def stats(self):
-        cmd = self.__make_command("stats")
-        return self.__execute_command(cmd)
+        cmd = self.__make_command("stats", mode="raw-data")
+        return {**self.__execute_command(cmd), "mode": "raw-data"}
 
     def check(self, read_data=False, read_data_subset=None):
         cmd = self.__make_command(

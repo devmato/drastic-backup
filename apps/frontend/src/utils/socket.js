@@ -1,4 +1,5 @@
 import { io } from 'socket.io-client'
+import { recordBrowserDiagnostic } from 'src/utils/diagnostics'
 
 let socketPromise = null
 let socketInstance = null
@@ -24,12 +25,19 @@ export async function ensureSocket() {
           withCredentials: true
         })
         socketInstance.on('connect_error', (error) => {
+          recordBrowserDiagnostic('socket.error')
           console.warn('Socket.IO connection failed:', error.message)
         })
         socketInstance.on('disconnect', (reason) => {
+          recordBrowserDiagnostic('socket.disconnected')
           if (reason === 'io server disconnect') {
             console.warn('Socket.IO disconnected by server')
           }
+        })
+        socketInstance.on('connect', () => recordBrowserDiagnostic('socket.connected'))
+        socketInstance.on('event', payload => {
+          const operationId = payload?.name?.match(/^operationupdate(\d+)$/)?.[1]
+          if (operationId) recordBrowserDiagnostic('operation.notice', Number(operationId))
         })
         socketInstance.connect()
         return socketInstance

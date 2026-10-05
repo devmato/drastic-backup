@@ -8,6 +8,7 @@ from drastic_agent.proxmox import (
     QemuVolumeGuestDriver,
     ensure_vzdump_available,
 )
+from drastic_common import diagnostics
 
 
 class ProxmoxBackupJobHandler(BackupJobHandler):
@@ -59,6 +60,11 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
         vmid = int(guest["vmid"])
         config = api.get_qemu_config(vmid)
         plan = driver.get_guest_backup_plan(config)
+        diagnostics.record("proxmox.configuration", {
+            "vmid": vmid, "guest": guest,
+            "settings": getattr(api, "public_settings", {}),
+            "volumes": {volume["disk"]: config[volume["disk"]] for volume in plan["volumes"]},
+        }, operation_uuid=getattr(report, "uuid", None))
 
         if not plan["volumes"]:
             raise ProxmoxError(f"VM {vmid} has no backupable volumes")

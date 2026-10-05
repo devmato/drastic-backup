@@ -13,6 +13,7 @@ from drastic_agent.agent.enums import (
     AgentOperationType,
 )
 from drastic_agent.agent.operation_store import operation_store
+from drastic_common import diagnostics
 
 _PID_UNSET = object()
 
@@ -426,7 +427,9 @@ class AgentOperation:
             self.finished_reports.append(self)
         return self
 
-    def log_message(self, message, final_state=None):
+    def log_message(self, message, final_state=None, data=None):
+        if self.type == AgentOperationType.command and not self.data.get("diagnostic"):
+            diagnostics.record("command.log", {"message": str(message)}, operation_uuid=self.uuid)
         with self._lock:
             level = AgentOperationLogLevel.info
             if final_state == AgentOperationState.failed:
@@ -441,13 +444,16 @@ class AgentOperation:
                 self.final_state = final_state
             self._logs.append(
                 {
-                    "sequence": len(self._logs) + 1,
+                    "sequence": (self._logs[-1]["sequence"] if self._logs else self._log_cursor) + 1,
                     "level": level,
                     "created": datetime.now(timezone.utc),
                     "message": str(message),
-                    "data": None,
+                    "data": data,
                 }
             )
+            if self.data.get("diagnostic") and len(self._logs) > diagnostics.MAX_EVENTS:
+                self._logs.pop(0)
+                self.data["dropped_events"] = self.data.get("dropped_events", 0) + 1
             self.sent = False
 
     def append_logs(self, logs):
@@ -460,6 +466,9 @@ class AgentOperation:
     @property
     def logs(self):
         with self._lock:
+            if self.data.get("diagnostic"):
+                # Four bounded entries fit below the Socket.IO message limit, including JSON escaping.
+                return list(self._logs[:4])
             if self._full_log:
                 return list(self._logs)
             return list(self._logs[self._log_cursor :])
@@ -479,12 +488,20 @@ class AgentOperation:
     def mark_logs_sent(self, sequence=None):
         with self._lock:
             if not self._full_log:
-                self._log_cursor = len(self._logs) if sequence is None else sequence
+                self._log_cursor = (self._logs[-1]["sequence"] if self._logs else self._log_cursor) if sequence is None else sequence
+                if self.data.get("diagnostic"):
+                    self._logs = [log for log in self._logs if log["sequence"] > self._log_cursor]
+                    if self._logs:
+                        self.sent = False
 
     mark_log_sent = mark_logs_sent
 
     def set_data(self, key, value):
         with self._lock:
+            if key in {"backup_phase", "restore_phase", "proxmox_progress", "truenas_progress"}:
+                previous = self.data.get(key)
+                if not isinstance(value, dict) or not isinstance(previous, dict) or value.get("phase") != previous.get("phase"):
+                    diagnostics.record("operation.phase", {key: value}, operation_uuid=self.uuid)
             logging.debug(f"Setting data attribute {key}:{value}")
             self.data[key] = value
             self.sent = False

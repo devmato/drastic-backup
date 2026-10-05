@@ -5,6 +5,7 @@ class UserResponseSchema(Schema):
     id = fields.Integer(required=True)
     name = fields.String(required=True)
     email = fields.Email(allow_none=True)
+    debug_enabled = fields.Function(lambda user: bool(user.debug_token_hash))
 
 
 class UserInitInputSchema(Schema):

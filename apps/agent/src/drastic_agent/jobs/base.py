@@ -7,6 +7,7 @@ from drastic_agent.agent.database import (
 )
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_common import diagnostics
 from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_common.restic.exceptions import ResticCancelledError, ResticError
 
@@ -92,6 +93,12 @@ class BackupJobHandler:
         report.log_message(
             f"Starting job {self.job['id']} on repository {self.repository['location']}"
         )
+        if diagnostics.active():
+            diagnostics.record("operation.configuration", {
+                "job": self.job, "run_options": self.run_options,
+                "repository": {key: self.repository.get(key) for key in ("id", "kind", "location")},
+                "retention": retentions.find_one(id=self.retention_id) if self.retention_id else None,
+            }, operation_uuid=report.uuid)
 
         try:
             if report.final_state != AgentOperationState.failed:

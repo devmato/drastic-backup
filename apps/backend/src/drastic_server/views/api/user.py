@@ -75,6 +75,8 @@ class UserPassword(MethodView):
 
         for session in list(user.sessions):
             SessionAuthService.revoke_session(session)
+        user.debug_token_hash = None
+        user.debug_enabled_at = None
         db.session.commit()
 
         response = make_response({"msg": "Password changed. Sign in again."})

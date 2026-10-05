@@ -18,6 +18,10 @@ module.exports = configure(function () {
       'material-icons',
     ],
     build: {
+      env: {
+        APP_VERSION: require('./package.json').version,
+        BUILD_TIME: new Date().toISOString()
+      },
       target: {
         browser: [ 'es2019', 'edge88', 'firefox78', 'chrome87', 'safari13.1' ],
         node: 'node20'
@@ -43,6 +47,10 @@ module.exports = configure(function () {
           target: apiProxyTarget,
           changeOrigin: true,
           pathRewrite: { '^/api': '/api' }
+        },
+        '/mcp': {
+          target: apiProxyTarget,
+          changeOrigin: true
         },
         '/install': {
           target: apiProxyTarget,

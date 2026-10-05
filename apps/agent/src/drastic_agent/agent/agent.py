@@ -64,6 +64,7 @@ from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASClient, TrueNASError
 from drastic_agent.version import agent_version
+from drastic_common import diagnostics
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
     ASYNC_AGENT_COMMANDS,
@@ -466,6 +467,12 @@ class Agent:
             # Process tasks that require server connection
             if self.connected:
                 self.__flush_report_queue()
+                if monotonic() >= getattr(self, "_next_diagnostics", 0):
+                    self._next_diagnostics = monotonic() + 10
+                    try:
+                        self.__sample_diagnostics()
+                    except Exception:
+                        logging.warning("Diagnostic sampling failed")
             else:
                 self.__maintain_server_connection(now)
 
@@ -648,6 +655,36 @@ class Agent:
                 queue.append(report)
             break
 
+    def __sample_diagnostics(self):
+        if not hasattr(self, "_diagnostic_report"):
+            self._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
+            AgentReport.pending_reports.append(self._diagnostic_report)
+        self._diagnostic_report.sent = False  # Poll consent through the normal report response, even when idle.
+        if diagnostics.active():
+            with AgentReport._registry_lock:
+                operations = list(AgentReport.running_operations.values())
+            manager = self.__execution_manager()
+            with manager._lock:
+                execution = {"admitted": manager._admitted, "max_workers": manager.max_workers,
+                             "max_pending": manager.max_pending, "maintenance": manager._maintenance,
+                             "resources": sorted(str(item) for item in manager._resources)}
+            for operation in operations:
+                with operation._lock:
+                    operation.diagnostic_at = datetime.now(timezone.utc)
+                    operation.sent = False
+            processes = ResticApi.diagnostic_processes()
+            diagnostics.record("agent.sample", {
+                "version": self.version, "protocol_version": AGENT_PROTOCOL_VERSION,
+                "agent_source": diagnostics.source_fingerprint("drastic_agent"),
+                "common_source": diagnostics.source_fingerprint("drastic_common"),
+                "restic_version": RESTIC_VERSION, "platform": self.platform,
+                "execution": execution, "running_operations": [operation.uuid for operation in operations],
+                "pending_reports": len(AgentReport.pending_reports),
+                "finished_reports": len(AgentReport.finished_reports),
+                "dropped_events": self._diagnostic_report.data.get("dropped_events", 0),
+                "system": diagnostics.system_snapshot(processes),
+            })
+
     def __maintain_server_connection(self, now):
         if self.connected:
             return
@@ -709,17 +746,32 @@ class Agent:
     def __send_report(self, report):
         try:
             with report._lock:
+                if hasattr(report, "diagnostic_at"):
+                    if diagnostics.active():
+                        report.diagnostic_at = datetime.now(timezone.utc)
+                    else:
+                        del report.diagnostic_at
+                diagnostic_at = getattr(report, "diagnostic_at", None)
                 report_json = deepcopy(AgentReportSchema().dump(report))
                 # Updates during network I/O must leave the report dirty for the next send.
                 report.sent = True
             logging.debug(f"Sending Report {report.uuid}")
             logging.debug(f"JSON-Data: {report_json}")
+            request_started = monotonic()
             request = self.__send_request("operation", operation_json=report_json)
             success = bool(request.get("success"))
             if success:
                 logs = report_json.get("logs") or []
                 if logs:
                     report.mark_logs_sent(logs[-1]["sequence"])
+                if report.data.get("diagnostic"):
+                    enabled = request["result"]["enabled"]
+                    diagnostics.configure(report if enabled else None, valid_for=60 - (monotonic() - request_started))
+                    if not enabled:
+                        report.mark_logs_sent()
+                with report._lock:
+                    if diagnostic_at is not None and getattr(report, "diagnostic_at", None) == diagnostic_at:
+                        del report.diagnostic_at
             else:
                 report.sent = False
             return success
@@ -1054,10 +1106,12 @@ class Agent:
         @client.event(namespace="/agent")
         def connect():
             logging.info("Connected to server")
+            diagnostics.record("connection.connected", {})
 
         @client.event(namespace="/agent")
         def disconnect():
             logging.warning("Disconnected from server")
+            diagnostics.record("connection.disconnected", {})
 
         @client.event(namespace="/agent")
         def connect_error(data=None):
@@ -1204,6 +1258,13 @@ class Agent:
         command = command_request["command"]
         command_name = command.value
         command_args = dict(command_request.get("args") or {})
+        diagnostics.record("command.received", {
+            "command": command_name,
+            "arguments": {key: value for key, value in command_args.items() if key in {
+                "job_id", "repository_id", "retention_id", "operation_uuid", "snapshot_id", "paths",
+                "target", "target_vmid", "target_storage", "run_options", "action", "read_data_subset",
+            }},
+        }, operation_uuid=command_args.get("operation_uuid"))
         logging.info(
             f"Executing command {command_name} with arguments: {_redact_secrets(command_args)}"
         )

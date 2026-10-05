@@ -185,6 +185,7 @@ import { subscribeToSocketEvents } from 'src/utils/socket'
 import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { backupStates, getBackupStateColor as stateColor } from 'src/utils/backup-results'
+import { recordBrowserDiagnostic } from 'src/utils/diagnostics'
 
 const route = useRoute()
 const $q = useQuasar()
@@ -660,8 +661,10 @@ async function loadOperation(background = false) {
     const updatedOperation = await agentStore.getOperation(operationId)
     if (disposed || request !== operationRequest || String(route.params.operationId) !== operationId) return
     operation.value = updatedOperation
+    recordBrowserDiagnostic('operation.loaded', Number(operationId))
     await syncOperationSocketListener()
   } catch (e) {
+    recordBrowserDiagnostic('operation.load_failed', Number(operationId), e?.response?.status || null)
     if (disposed || request !== operationRequest || String(route.params.operationId) !== operationId || background) return
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load operation'), color: 'red', position: 'top' })

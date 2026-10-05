@@ -19,6 +19,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
     useOperationStore: () => ({}),
     useQuasar: () => ({ notify: () => assert.fail('background error notification') }),
     subscribeToSocketEvents: async () => () => {},
+    recordBrowserDiagnostic: () => {},
     watch: () => {},
     onBeforeUnmount: () => {},
     defineOptions: () => {},

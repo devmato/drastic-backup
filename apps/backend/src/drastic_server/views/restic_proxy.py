@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 from threading import local
+from time import monotonic
 from urllib.parse import unquote
 
 import bcrypt
@@ -82,6 +83,16 @@ def proxy_restic(proxy_path: str):
     if repository is None:
         return jsonify({"msg": "Repository access denied"}), 403
 
+    debug_owner = (agent.user_id, agent.id, repository.id) if agent.user.debug_token_hash else None
+    started = monotonic()
+    input_bytes = request.content_length
+    response_bytes = 0
+
+    def finish_diagnostic(status):
+        if debug_owner:
+            from drastic_server.services.diagnostics import record_proxy
+            record_proxy(*debug_owner, status, monotonic() - started, input_bytes, response_bytes)
+
     upstream_path = f"/{normalized_proxy_path}"
     if has_trailing_slash:
         upstream_path = f"{upstream_path}/"
@@ -103,9 +114,11 @@ def proxy_restic(proxy_path: str):
             allow_redirects=False,
         )
     except requests.Timeout as exc:
+        finish_diagnostic(504)
         current_app.logger.warning("Restic proxy request timed out: %s", exc)
         return jsonify({"msg": "Rest-server request timed out"}), 504
     except requests.RequestException as exc:
+        finish_diagnostic(502)
         current_app.logger.warning("Restic proxy request failed: %s", exc)
         return jsonify({"msg": "Could not reach rest-server"}), 502
 
@@ -117,14 +130,23 @@ def proxy_restic(proxy_path: str):
 
     if request.method == "HEAD":
         upstream.close()
+        finish_diagnostic(upstream.status_code)
         return Response(status=upstream.status_code, headers=response_headers)
 
     @stream_with_context
     def stream_response():
+        nonlocal response_bytes
+        status = upstream.status_code
         try:
-            yield from upstream.iter_content(chunk_size=64 * 1024)
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                response_bytes += len(chunk)
+                yield chunk
+        except (Exception, GeneratorExit):
+            status = 502
+            raise
         finally:
             upstream.close()
+            finish_diagnostic(status)
 
     response = Response(
         stream_response(),

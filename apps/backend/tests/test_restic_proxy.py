@@ -74,6 +74,27 @@ def test_auth_reuses_only_successful_checks(proxy_app, mock_upstream, monkeypatc
     assert check.call_count == 3
 
 
+def test_diagnostic_proxy_summary_counts_completed_streams_only_when_enabled(proxy_app, mock_upstream):
+    from drastic_server.models.diagnostic import DiagnosticEvent
+    from drastic_server.services.diagnostics import flush_proxy
+
+    client = proxy_app.test_client()
+    auth = (str(proxy_app.config["TEST_AGENT_ID"]), "agent-secret")
+    client.get("/restic/native/repo/config", auth=auth, buffered=True)
+    with proxy_app.app_context():
+        flush_proxy()
+        assert DiagnosticEvent.query.count() == 0
+        user = User.query.first()
+        user.debug_token_hash = "enabled"
+        db.session.commit()
+    client.get("/restic/native/repo/config", auth=auth, buffered=True)
+    with proxy_app.app_context():
+        flush_proxy()
+        event = DiagnosticEvent.query.one()
+        assert event.payload["requests"] == 1
+        assert event.payload["response_bytes"] == len(b"backup")
+
+
 @pytest.mark.parametrize("change,expected", [("secret", 401), ("repository", 403), ("agent", 401)])
 def test_auth_cache_respects_database_changes(proxy_app, mock_upstream, change, expected):
     client = proxy_app.test_client()

@@ -274,6 +274,22 @@ def test_check_builds_command_with_read_data(monkeypatch):
     ]
 
 
+def test_stats_measures_stored_data_and_records_mode(monkeypatch):
+    def fake_popen(cmd, **kwargs):
+        assert cmd == ["restic", "--json", "-r", "/repo", "stats", "--mode", "raw-data"]
+        process = _FakeResticProcess(cmd)
+        process.stdout = _FakeTextStream(lines=['{"total_size":1024,"total_blob_count":2}\n'])
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    result = ResticApi(
+        binary_path="restic",
+        repository=ResticRepository(location="/repo", password="secret"),
+    ).stats()
+
+    assert result == {"total_size": 1024, "total_blob_count": 2, "mode": "raw-data"}
+
+
 def test_forget_prunes_by_default(monkeypatch):
     popen_calls = []
 
@@ -654,6 +670,11 @@ def test_real_restic_backup_restore_smoke(tmp_path):
     assert scan["data_size"] == backup_result["total_bytes_processed"] == 25
     assert scan["total_files"] == backup_result["total_files_processed"] == 2
     assert events[-1] == backup_result
+
+    stats = api.stats()
+    assert stats["mode"] == "raw-data"
+    assert stats["total_size"] > 0
+    assert stats["total_blob_count"] > 0
 
     (source_path / "hello.txt").write_text("changed after backup\n", encoding="utf-8")
     (source_path / "nested" / "data.txt").unlink()

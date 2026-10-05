@@ -32,6 +32,9 @@ class AgentOperationService:
 
     def ingest(self, operation_json):
         operation_data = AgentOperationSchema().load(operation_json)
+        if operation_data["type"] == AgentOperationType.command and operation_data["data"].get("diagnostic"):
+            from drastic_server.services.diagnostics import ingest_report
+            return ingest_report(self.agent, operation_data)
         operation = AgentOperation.query.filter(
             AgentOperation.uuid == operation_data["uuid"]
         ).first()
@@ -84,6 +87,10 @@ class AgentOperationService:
         )
         db.session.commit()
         operation_id = operation.id
+
+        if self.agent.user.debug_token_hash and operation_data.get("diagnostic_at"):
+            from drastic_server.services.diagnostics import capture_operation
+            capture_operation(operation, operation_data["diagnostic_at"])
 
         self._send_notifications(new_delivery_ids)
         self._emit_operation_event(

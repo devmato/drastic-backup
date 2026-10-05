@@ -68,6 +68,13 @@ const routes = [
   },
 
   {
+    path: '/settings',
+    component: () => import('layouts/MainLayout.vue'),
+    children: [{ path: '', component: () => import('pages/SettingsPage.vue') }],
+    meta: { auth: true, title: 'Settings' }
+  },
+
+  {
     path: '/:catchAll(.*)*',
     component: () => import('pages/ErrorNotFound.vue')
   }

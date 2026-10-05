@@ -136,6 +136,7 @@ class AgentOperationSchema(Schema):
     source = fields.Enum(AgentOperationSource, by_value=False, load_default=AgentOperationSource.manual)
     started = UTCDateTime(allow_none=True, load_default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
     ended = UTCDateTime(allow_none=True, load_default=None)
+    diagnostic_at = UTCDateTime()
     job_id = fields.Integer(allow_none=True, load_default=None)
     repository_id = fields.Integer(allow_none=True, load_default=None)
     schedule_id = fields.Integer(allow_none=True, load_default=None)

@@ -10,6 +10,7 @@ from drastic_server.models.agent import (
     AgentSession,
     agent_repositories,
 )
+from drastic_server.models.diagnostic import DiagnosticEvent
 from drastic_server.models.job import (
     Job,
     JobAction,
@@ -25,6 +26,7 @@ from drastic_server.models.user import User
 from drastic_server.models.user_session import UserSession
 
 __all__ = [
+    "DiagnosticEvent",
     "Agent",
     "AgentSecretEnvelope",
     "AgentOperation",
