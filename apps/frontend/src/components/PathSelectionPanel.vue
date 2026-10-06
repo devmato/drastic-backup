@@ -1,7 +1,7 @@
 <template>
-  <div class="row q-col-gutter-sm items-stretch">
-    <div class="col-12 col-lg-6">
-      <div class="text-subtitle2 q-mb-xs">{{ browserTitle }}</div>
+  <SelectionLayout :available-title="browserTitle" :selected-title="selectedTitle">
+    <template v-if="$slots.header" #header><slot name="header" /></template>
+    <template #available>
       <PathBrowser
         :mode="mode"
         :load-entries="loadEntries"
@@ -14,10 +14,9 @@
         @update:selection="emit('update:selection', $event)"
         @update:selected-paths="emit('update:selectedPaths', $event)"
       />
-    </div>
+    </template>
 
-    <div class="col-12 col-lg-6">
-      <div class="text-subtitle2 q-mb-xs">{{ selectedTitle }}</div>
+    <template #selected>
       <q-card flat bordered>
         <q-scroll-area :style="{ height }">
           <q-list v-if="selectedEntries.length > 0" separator>
@@ -40,15 +39,15 @@
           <div v-else class="text-grey q-pa-md">{{ emptySelectedLabel }}</div>
         </q-scroll-area>
       </q-card>
-
-      <slot name="selected-after" />
-    </div>
-  </div>
+    </template>
+    <template v-if="$slots.advanced" #advanced><slot name="advanced" /></template>
+  </SelectionLayout>
 </template>
 
 <script setup>
 import { computed } from 'vue'
 import PathBrowser from 'components/PathBrowser.vue'
+import SelectionLayout from 'components/SelectionLayout.vue'
 
 const props = defineProps({
   mode: { type: String, default: 'include-exclude' },

@@ -1,11 +1,5 @@
 <template>
   <div class="q-mt-md">
-    <div class="row items-center q-mb-sm">
-      <div class="text-subtitle1">File Selection</div>
-      <q-space />
-      <q-badge color="grey-7" :label="`${selectedEntries.length} selected`" />
-    </div>
-
     <PathSelectionPanel
       v-if="agentId && agentOnline"
       mode="include-exclude"
@@ -18,23 +12,26 @@
       error-message="Could not load directory listing"
       @update:selection="updateSelection"
     >
-      <template v-slot:selected-after>
-        <div class="q-mt-md">
-          <div class="text-subtitle2 q-mb-sm">Custom Exclude Pattern</div>
-          <div class="row q-col-gutter-sm items-start">
-            <div class="col">
-              <q-input
-                outlined
-                dense
-                v-model="excludePattern"
-                label="Exclude pattern"
-                placeholder="e.g. *.tmp or /var/cache/**"
-                @keyup.enter="addCustomExcludePattern"
-              />
-            </div>
-            <div class="col-auto">
-              <q-btn color="primary" icon="remove" label="Add exclude" @click="addCustomExcludePattern" />
-            </div>
+      <template #header>
+        <div class="text-subtitle1">File Selection</div>
+        <q-space />
+        <q-badge color="grey-7" :label="`${selectedEntries.length} selected`" />
+      </template>
+      <template #advanced>
+        <div class="text-subtitle2 q-mb-sm">Custom Exclude Pattern</div>
+        <div class="row q-col-gutter-sm items-start">
+          <div class="col">
+            <q-input
+              outlined
+              dense
+              v-model="excludePattern"
+              label="Exclude pattern"
+              placeholder="e.g. *.tmp or /var/cache/**"
+              @keyup.enter="addCustomExcludePattern"
+            />
+          </div>
+          <div class="col-auto">
+            <q-btn color="primary" icon="remove" label="Add exclude" @click="addCustomExcludePattern" />
           </div>
         </div>
       </template>

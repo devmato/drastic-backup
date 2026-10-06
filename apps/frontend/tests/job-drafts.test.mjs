@@ -217,3 +217,46 @@ test('Proxmox guest lists transfer selections and retain missing IDs across mode
   assert.deepEqual(ids(panel.selectedGuests), [])
   assert.deepEqual(original, { selection_mode: 'include', guest_ids: [101, 999] })
 })
+
+test('TrueNAS split selection retains missing datasets, rejects unavailable additions and preserves advanced settings', async () => {
+  const source = readFileSync(new URL('../src/components/jobs/forms/TrueNASBackupJobForm.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const original = { datasets: ['tank/data', 'tank/missing'], include_children: true, exclude_patterns: ['cache/**'] }
+  const props = reactive({ modelValue: original, agentId: 1, agentOnline: true })
+  let fail = false
+  const available = { id: 'tank/other', path: '/mnt/tank/other', available: true }
+  const unavailable = { id: 'tank/locked', error: 'Dataset unavailable', available: false }
+  const panel = runInNewContext(`${source}\n;({ loadDatasets, selectedDatasets, availableDatasets, addDataset, update, error })`, {
+    computed, ref,
+    defineProps: () => props,
+    defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
+    watch: () => {},
+    useAgentStore: () => ({ getTrueNASDatasets: async () => {
+      if (fail) throw new Error('Discovery failed')
+      return [{ id: 'tank/data', path: '/mnt/tank/data', available: true }, available, unavailable]
+    } }),
+    shouldIgnoreApiError: () => false,
+    getApiErrorMessage: error => error.message,
+  })
+  const ids = list => Array.from(list.value, item => item.id)
+  await panel.loadDatasets()
+  assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/missing'])
+  assert.deepEqual(ids(panel.availableDatasets), ['tank/other', 'tank/locked'])
+  panel.addDataset(unavailable)
+  assert.equal(props.modelValue.datasets.length, 2)
+  panel.addDataset(available)
+  panel.addDataset(available)
+  assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/missing', 'tank/other'])
+  assert.deepEqual(ids(panel.availableDatasets), ['tank/locked'])
+  panel.update({ datasets: props.modelValue.datasets.filter(id => id !== 'tank/missing') })
+  fail = true
+  await panel.loadDatasets()
+  assert.equal(panel.error.value, 'Discovery failed')
+  assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/other'])
+  props.agentOnline = false
+  await panel.loadDatasets()
+  assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/other'])
+  assert.equal(props.modelValue.include_children, true)
+  assert.deepEqual(Array.from(props.modelValue.exclude_patterns), ['cache/**'])
+  assert.deepEqual(original.datasets, ['tank/data', 'tank/missing'])
+})
