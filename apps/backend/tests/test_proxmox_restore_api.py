@@ -143,6 +143,27 @@ def test_guest_browser_authorizes_agent_repository_and_job(restore_api, monkeypa
     assert len(commands) == 1
 
 
+def test_on_demand_browser_receives_repository_context_only_on_updated_agents(restore_api, monkeypatch):
+    client, source, agent, _, _, _ = restore_api
+    commands = []
+
+    def send(target, command, **kwargs):
+        commands.append(kwargs)
+        return {"state": AgentOperationState.success, "data": {}}
+
+    monkeypatch.setattr(AgentService, "send_command", send)
+    payload = {**source, "action": "entries", "session_id": str(uuid4()), "volume": "/dev/sda1"}
+    assert client.post("/api/restores/proxmox", json=payload).status_code == 200
+    assert "repository" not in commands[-1]
+    agent.protocol_version = 10
+    db.session.commit()
+    assert client.post("/api/restores/proxmox", json=payload).status_code == 200
+    assert commands[-1]["repository"]["location"] == "/repo"
+    assert client.post("/api/restores/proxmox", json={
+        "action": "options", "mode": "proxmox_files", "agent_id": agent.id}).status_code == 200
+    assert commands[-1]["mode"] == "proxmox_files"
+
+
 @pytest.mark.parametrize("extra", [
     {"mode": "proxmox_vm"},
     {"mode": "proxmox_vm", "vmid": 99, "storage": "local"},

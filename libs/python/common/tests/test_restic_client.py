@@ -2,7 +2,10 @@ import json
 import os
 import subprocess
 import threading
+from contextlib import contextmanager
+from pathlib import Path
 from shutil import which
+from types import SimpleNamespace
 
 import pytest
 
@@ -13,6 +16,25 @@ from drastic_common.restic.exceptions import (
     ResticTimeoutError,
 )
 from drastic_common.restic.repository import ResticRepository
+
+
+def test_mount_defers_snapshot_lookup_to_supervised_consumer(monkeypatch, tmp_path):
+    @contextmanager
+    def mounted(*args, **kwargs):
+        yield SimpleNamespace(pid=12345)
+
+    def forbid_lookup(path):
+        pytest.fail("Snapshot lookup must not block the agent worker")
+
+    monkeypatch.setattr("drastic_common.restic.client.mounted_process", mounted)
+    monkeypatch.setattr(Path, "is_dir", forbid_lookup)
+    api = ResticApi("restic")
+    mountpoint = tmp_path / "repository"
+    with api.mount("snapshot", mountpoint) as root:
+        assert root == mountpoint / "ids/snapshot"
+        assert 12345 in api.diagnostic_processes()
+    assert not mountpoint.exists()
+    assert 12345 not in api.diagnostic_processes()
 
 
 class _FakeTextStream:

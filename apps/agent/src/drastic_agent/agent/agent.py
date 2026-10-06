@@ -2359,7 +2359,8 @@ class Agent:
         cancelled = getattr(self, "_Agent__shutdown_event", Event()).is_set
         try:
             if action == "options":
-                report.data = host_options(cancelled)
+                report.data = host_options(cancelled) if kwargs.get("mode", "proxmox_vm") == "proxmox_vm" else {}
+                report.data["guest_files_on_demand"] = True
                 try:
                     guest_tools_available()
                     report.data["guest_files_error"] = None
@@ -2367,14 +2368,14 @@ class Agent:
                     report.data["guest_files_error"] = str(exc)
             elif action == "entries":
                 future = self.__execution_manager().submit(
-                    session_action, action, cancelled=cancelled,
+                    session_action, action, agent=self, cancelled=cancelled,
                     resources={("restore-session", kwargs.get("session_id"))}, **kwargs,
                 )
                 if future is None:
                     raise ValueError("Execution capacity or restore workspace is busy")
                 report.data = future.result()
             else:
-                report.data = session_action(action, **kwargs)
+                report.data = session_action(action, agent=self, **kwargs)
         except Exception as exc:
             report.log_message(str(exc), final_state=AgentReportState.failed)
         return report.finish()

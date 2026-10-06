@@ -171,6 +171,7 @@ Only a small metadata plan and bounded streaming buffers are staged on the sourc
 - Pool checks run through the existing process monitor at five-second intervals even when progress output stalls. Reserve exhaustion aborts through native failure cleanup. Fleecing is not a fixed-space guarantee.
 - Storage selection is fixed during preflight for each VM backup and logged as automatic or configured. The selected pool is checked again before setup and monitored throughout the backup. No suitable storage causes a preflight error with the available capacity-check reasons.
 - **Job details** shows requested/effective mode, full-read reason, actual disk bytes read, disk bytes reused, newly stored packed bytes and cleanup status. Disk I/O avoided and Restic deduplication are separate metrics.
+- Native jobs show one **Data processed (all VMs)** progress bar. Preflight reads the selected volumes' logical sizes; each VM's frozen export corrects its contribution and adds the exact backup metadata size before transfer. Restic's processed bytes include both read and reused data, so CBT can advance the bar quickly. The bar remains visible across VMs and finalization; 100% means data processing is complete, while the operation status and phase indicate whether cleanup and post-backup work have finished. This is not an upload or elapsed-time percentage.
 
 ## TrueNAS Backups
 
@@ -289,10 +290,15 @@ VMID, guest name when available, and timestamp. VM modes exclude manifest snapsh
 and archives known to have failed. Successfully backed-up VMs from a partially
 failed multi-VM operation remain usable.
 
-The target agent must be online, updated to agent protocol 8 for native block backups (protocol 7 for TAR snapshots, protocol 2 for legacy VMA), running
-directly on the Proxmox node with root privileges, and assigned the source
-repository. Another node can be selected; the original backup agent need not be
-online. Local `pvesh`, `vma`, and `qmrestore` perform host operations, so restoring
+The target agent must be online and assigned the source repository. Protocol 10
+enables on-demand TAR/native guest file restore; older agents require protocol 8
+for native block backups, protocol 7 for TAR snapshots and protocol 2 for legacy
+VMA, and materialize guest disks locally. Whole-VM restore requires an agent
+running directly on the Proxmox node with root privileges. Guest file restore
+uses the Linux/FUSE/libguestfs backend and does not require Proxmox host tools
+for TAR/native backups; legacy VMA preparation additionally requires `vma`.
+Another agent can be selected; the original backup agent need not be online.
+Local `pvesh`, `vma`, and `qmrestore` perform VM host operations, so restoring
 does not require the original node's API credentials.
 
 **Whole VM**
@@ -311,7 +317,7 @@ does not require the original node's API credentials.
 **Files from VM**
 
 On detected Proxmox hosts, the native installer and updater attempt to install
-`python3-guestfs` and `libguestfs-tools` automatically. They use root privileges,
+`python3-guestfs`, `libguestfs-tools`, `python3-fuse`, `fuse3` and native backup dependencies automatically. They use root privileges,
 or ask through sudo when the dependency script is run with an interactive
 terminal. Missing permissions, denied sudo authorization or package-manager
 failures produce a warning and leave the agent usable without guest file restore.
@@ -327,7 +333,7 @@ installer; run the update once more if the warning remains.
 For manual installation on the restore host:
 
 ```bash
-apt-get install --no-remove --no-install-recommends python3-guestfs libguestfs-tools
+apt-get install --no-remove --no-install-recommends python3-guestfs libguestfs-tools python3-fuse fuse3
 libguestfs-test-tool
 ```
 
@@ -335,8 +341,10 @@ The agent invokes the host's `/usr/bin/python3` for the system libguestfs bindin
 it does not install another Python package into its virtual environment.
 
 1. Choose the agent, repository and VM snapshot, then **Prepare file browser**.
-2. Wait for archive download, verification, extraction and filesystem inspection.
-   Preparation is an asynchronous restore operation and can be cancelled.
+2. Wait for metadata validation and filesystem inspection. TAR and Native/CBT
+   backups are read on demand via read-only virtual disks. Legacy VMA backups
+   still download, verify and extract the archive first. Preparation is an
+   asynchronous restore operation and can be cancelled.
 3. Choose a guest filesystem/volume, then select files or directories. Linux LVM
    logical volumes and additional Windows NTFS partitions appear separately.
 4. Choose an absolute destination directory on the agent and start the export.
@@ -349,6 +357,28 @@ their reason and cannot be selected. Guest filesystems are opened read-only in
 an isolated libguestfs appliance; no guest filesystem is mounted in the host
 kernel. An appliance is started and closed for each browse/export request, so
 directory listing can take several seconds.
+
+For TAR/native backups, Restic serves seekable snapshot files through a private
+FUSE mount. Uncompressed TAR disk members are accessed by their offset and size;
+all disk slices share one archive handle for the entire request, including indexing,
+so Restic's blob-offset index is not rebuilt on each read. Snapshot lookup and
+metadata validation run in the timeout/cancellation-supervised disk helper.
+Native disks are mapped to their existing 4-MiB block files. Only requested disk
+ranges are read, though filesystem inspection, metadata and Restic blob sizes
+can cause more data to be transferred than the selected file size. Manifests and
+archive layout are validated; unread disk contents are not exhaustively checked
+during preparation. Missing, short or inaccessible data fails the read rather
+than substituting zeros. Repository access is required for each browse/export
+request; a snapshot removed between requests is no longer browsable.
+
+The platform boundary is `services/guest_backend.py`: `GuestFileBackend` owns
+capability checks, disk presentation, guest access and workspace locking/cleanup.
+The first implementation is `services/guest_linux.py`. `guest_disks.py` contains
+platform-neutral `SnapshotFiles` (seekable file provider) and `DiskReader`
+(`size`, `read_at(offset, length)`) contracts and TAR/native layout validation.
+Other platforms can implement those contracts without duplicating backup layout
+logic. Windows/macOS restore-agent backends are not implemented yet; guest OS
+and browser OS are independent of the restore-agent backend.
 
 Export preserves regular file contents, basic file permissions/timestamps and
 symbolic links without following them into the host filesystem. It strips
@@ -363,10 +393,13 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
   directory on a sufficiently large filesystem. Restart the agent after changing
   it. The directory is private to the agent and must not be shared by multiple
   agent instances.
-- Whole-VM restore of a new snapshot backup needs workspace for the TAR plus extracted disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. Legacy VMA restore needs workspace for the VMA archive. File browsing needs space for the archive plus extracted disks,
-  even when exporting one small file. Capacity checks conservatively use the
-  disks' logical sizes; allow additional space for the export itself.
-- Prepared images expire after one hour without a browse/export request. They
+- Whole-VM restore of a new snapshot backup needs workspace for the TAR plus extracted disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. Legacy VMA restore needs workspace for the VMA archive. On-demand TAR/native file browsing needs workspace for metadata and appliance working data, Restic's repository metadata cache, and space for the exported files, not full guest disk images. Legacy VMA file browsing still needs archive plus extracted-disk space. Its capacity checks conservatively use the disks' logical sizes.
+- On-demand mounts and helpers live only for a single request and are closed on
+  success, failure or cancellation. A repository read lock is held while mounted,
+  so prune may be blocked during active requests, not during idle sessions.
+  Cleanup detects mounts through the Linux mount table, including disconnected
+  FUSE endpoints left by a helper crash, before removing workspace directories.
+- Prepared sessions expire after one hour without a browse/export request. They
   are removed after export (including failed/cancelled exports), when closing the dialog, on periodic
   expiry, and on agent restart. Active requests lock their workspace against
   cleanup. **Prepare again** recreates an expired workspace.
@@ -381,7 +414,17 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
 
 The ordinary tests mock Proxmox tools and cover collision checks, command flags,
 workspace ownership/expiry, failure cleanup, cancellation and symlink-safe file
-export. For a real round trip, run the opt-in agent integration test on a test
+export. The disk-reader tests index a sparse 1-TiB TAR disk with bounded reads and
+exercise cross-block native reads and malformed/missing data. The real
+Restic/FUSE checks run without Proxmox or guestfs when Linux, `/dev/fuse`,
+`fusermount3`, Restic and system `python3-fuse` are available:
+
+```bash
+cd apps/agent
+.venv/bin/python -m pytest tests/test_guest_disks.py tests/test_guest_linux.py -v
+```
+
+For a real guest filesystem round trip, run the opt-in agent integration test on a test
 Proxmox node with `restic`, `vma`, `qmrestore` and the guestfs dependencies installed:
 
 ```bash

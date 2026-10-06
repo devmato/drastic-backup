@@ -1,3 +1,4 @@
+import io
 import os
 import sys
 import time
@@ -6,7 +7,13 @@ from threading import Event, Timer
 
 import pytest
 
-from drastic_common.process import ProcessCancelledError, run_process
+from drastic_common.process import (
+    ProcessCancelledError,
+    is_mounted,
+    mounted_process,
+    run_process,
+    unmount,
+)
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError
 
@@ -68,3 +75,53 @@ def test_cancellation_kills_children_even_when_the_leader_exits_first(tmp_path):
     else:
         os.kill(pid, 9)
         pytest.fail("Restore child process survived cancellation")
+
+
+@pytest.mark.parametrize("failure", ["exit", "timeout", "cancel"])
+def test_mount_startup_failure_terminates_helper(tmp_path, monkeypatch, failure):
+    import subprocess
+
+    processes = []
+    original = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    started = time.monotonic()
+    program = "import sys; sys.stderr.write('mount failed'); sys.exit(3)" if failure == "exit" else "import time; time.sleep(60)"
+    error = {"exit": RuntimeError, "timeout": TimeoutError, "cancel": ProcessCancelledError}[failure]
+    with pytest.raises(error), mounted_process(
+        [sys.executable, "-c", program], tmp_path / "not-mounted", timeout=0.2,
+        cancelled=lambda: failure == "cancel" and time.monotonic() - started > 0.05,
+    ):
+        pytest.fail("An unavailable mount must not be used")
+    assert len(processes) == 1 and processes[0].poll() is not None
+
+
+def test_disconnected_mount_is_detected_without_stat_and_lazy_unmounted(monkeypatch):
+    path = "/tmp/restore work\tline\n\\disk"
+    mountinfo = r"42 1 0:1 / /tmp/restore\040work\011line\012\134disk rw - fuse.test test rw" + "\n"
+    original_open = open
+
+    def read_mounts(name, *args, **kwargs):
+        if name == "/proc/self/mountinfo":
+            return io.StringIO(mountinfo)
+        return original_open(name, *args, **kwargs)
+
+    monkeypatch.setattr("builtins.open", read_mounts)
+    monkeypatch.setattr(os.path, "ismount", lambda _: pytest.fail("Must not stat a FUSE mount"))
+    commands = []
+
+    def run(command, **kwargs):
+        commands.append(command)
+        if command[1] == "-u":
+            raise RuntimeError("Transport endpoint is not connected")
+
+    monkeypatch.setattr("drastic_common.process.run_process", run)
+    assert is_mounted(path)
+    assert not is_mounted(path + "-other")
+    unmount(path)
+    assert commands == [["fusermount3", "-u", path], ["fusermount3", "-uz", path]]

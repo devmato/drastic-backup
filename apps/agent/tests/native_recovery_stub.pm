@@ -77,6 +77,7 @@ package PVE::Storage;
 sub config { {ids => RecoveryMock::load()->{storages}} }
 sub storage_ids { keys %{$_[0]->{ids}} }
 sub storage_config { $_[0]->{ids}->{$_[1]} or die "Unknown storage $_[1]" }
+sub volume_size_info { RecoveryMock::load()->{volume_sizes}->{$_[1]} }
 sub storage_check_enabled {
     my $s = storage_config(@_);
     return !$s->{disable} && (!$s->{nodes} || $s->{nodes}->{pve});

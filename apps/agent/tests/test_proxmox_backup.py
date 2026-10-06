@@ -14,6 +14,7 @@ import drastic_agent.jobs.base as base
 import drastic_agent.jobs.proxmox_backup as backup
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.proxmox import ProxmoxError, QemuVolumeGuestDriver
+from drastic_agent.proxmox_blocks import make_manifest, view_metadata
 from drastic_agent.proxmox_snapshot import write_archive
 from drastic_agent.services.proxmox_restore import unpack_snapshot
 from drastic_common.restic.client import ResticApi
@@ -119,6 +120,104 @@ def test_multiple_vm_snapshots_aggregate_once_and_clean_between_guests(job):
     assert report.data["bytes_processed"] == report.data["bytes_total"] == 20480
     assert report.data["completed_guests"] == [101, 102]
     assert not snapshots and not backup.proxmox_snapshots.count()
+
+
+@pytest.mark.parametrize("fail_second", [False, True])
+def test_native_job_progress_uses_logical_sizes_and_keeps_failed_vm_in_total(job, monkeypatch, tmp_path, fail_second):
+    from drastic_agent.jobs import proxmox_native as native
+
+    handler, report, _, _, _ = job
+    handler.job["config"]["backup_mode"] = "native_cbt"
+    handler.agent.get_proxmox_client().list_qemu_guests = lambda: [{"vmid": 101}, {"vmid": 102}]
+    db = dataset.connect("sqlite:///:memory:")
+    monkeypatch.setattr(native, "proxmox_checkpoints", db["checkpoints"])
+    monkeypatch.setattr(native, "proxmox_native_runs", db["runs"])
+    monkeypatch.setattr(backup, "proxmox_native_runs", db["runs"])
+    def recover(*args):
+        for row in db["runs"].all():
+            shutil.rmtree(row["data"]["work"])
+        db["runs"].delete()
+
+    monkeypatch.setattr(native, "recover_runs", recover)
+    monkeypatch.setattr(native, "_session_process", lambda *a: "test")
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    plans = {vmid: {"disk_bytes": size, "sources": {"scsi0": f"local-lvm:vm-{vmid}-disk-0"},
+                   "host": "test", "vm_identity": {}, "session": "42:7", "pools": [{"pool": "pve/data"}],
+                   "fleecing_storage": "local-lvm"} for vmid, size in ((101, 1024), (102, 4096))}
+    monkeypatch.setattr(native, "preflight", lambda vmid, storage: plans[vmid])
+    monkeypatch.setattr(native.os.path, "ismount", lambda *a: True)
+    selector = SimpleNamespace(register=lambda *a: None, select=lambda **kw: True)
+    monkeypatch.setattr(native.selectors, "DefaultSelector", lambda: nullcontext(selector))
+
+    def launch(command, **kwargs):
+        if command[0] == "perl":
+            vmid = json.loads(Path(command[-1]).read_text())["vmid"]
+            info = {key: value for key, value in plans[vmid].items() if key != "disk_bytes"}
+            # VM 102 changed size after preflight; its frozen export is authoritative.
+            volumes = {"drive-scsi0": {"disk": "scsi0", "size": 2048 if vmid == 102 else 1024,
+                                      "dirty": [0], "bitmap-mode": "new"}}
+            messages = [{"event": "query", "info": info, "devices": volumes},
+                        {"event": "ready", "volumes": volumes, "config": "name: größe\n", "firewall": ""},
+                        {"event": "done"}]
+        else:
+            plan = json.loads(Path(command[-2]).read_text())
+            Path(plan["metrics"]).write_text(json.dumps({"bytes_read": 0}))
+            messages = []
+        process = SimpleNamespace(pid=123, returncode=None, stdin=io.StringIO(),
+                                  stdout=io.StringIO("".join(json.dumps(message) + "\n" for message in messages)))
+        process.poll = lambda: process.returncode
+        process.wait = lambda **kw: setattr(process, "returncode", 0)
+        return process
+
+    def run(command, **kwargs):
+        if "prepare" in command:
+            request = json.loads(Path(command[-2]).read_text())
+            manifest, count = make_manifest(request["vmid"], list(request["volumes"].values()))
+            Path(command[-1]).write_text(json.dumps({"manifest": manifest, "sources": list(request["volumes"].values()),
+                                                    "bytes_to_read": count}))
+
+    monkeypatch.setattr(native.subprocess, "Popen", launch)
+    monkeypatch.setattr(native, "run_process", run)
+    restic = handler.agent.resticapi
+    restic.cat_config = lambda: {"id": "repo"}
+    restic.snapshots = lambda **kw: []
+    totals, processed = [], []
+
+    def save(**kwargs):
+        plan = json.loads((Path(kwargs["cwd"]).parent / "view.json").read_text())
+        size = sum(volume["size"] for volume in plan["manifest"]["volumes"]) + sum(map(len, view_metadata(plan).values()))
+        totals.append(report.data["proxmox_bytes_total"])
+        processed.append(report.data.get("bytes_processed", 0))
+        kwargs["callback"]({"message_type": "status", "bytes_done": size // 2})
+        if fail_second and len(totals) == 2:
+            raise ResticFailedError("injected partial read")
+        summary = {"message_type": "summary", "total_bytes_processed": size, "snapshot_id": f"snap-{len(totals)}"}
+        kwargs["callback"](summary)
+        return summary  # Processing the summary twice must not double-count it.
+
+    restic.backup = save
+    try:
+        try:
+            handler.run_backup(report)
+        except ProxmoxError:
+            assert fail_second, report.log
+        else:
+            assert not fail_second, report.log
+        assert len(totals) == 2, report.log
+        assert processed == [0, totals[0] - 4096]
+        assert totals[1] < totals[0]  # Resize corrected, not hidden behind a fixed estimate.
+        assert report.data["proxmox_bytes_total"] == totals[1]
+        if fail_second:
+            assert processed[1] < report.data["bytes_processed"] < totals[1]
+            assert report.data["failed_guests"][0]["vmid"] == 102
+            assert report.data["proxmox_progress"]["phase"] == "failed"
+        else:
+            assert report.data["bytes_processed"] == totals[1]
+            assert report.data["completed_guests"] == [101, 102]
+        assert all("disk_bytes" not in row["data"].get("info", {}) for row in db["checkpoints"].all())
+        assert plans[101]["disk_bytes"] == 1024  # No mutation of preflight/CBT identity.
+    finally:
+        db.engine.dispose()
 
 
 @pytest.mark.parametrize("config,expected", [

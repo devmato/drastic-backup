@@ -8,10 +8,12 @@ import threading
 import time
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from pathlib import Path
 from queue import Empty, Queue
 
 import drastic_common.restic.parsers as parsers
 from drastic_common import diagnostics
+from drastic_common.process import is_mounted, mounted_process
 from drastic_common.restic.exceptions import (
     ResticBinaryNotFoundError,
     ResticCancelledError,
@@ -373,6 +375,28 @@ class ResticApi:
 
     def set_repository(self, repository):
         self._state.repository = repository
+
+    @contextmanager
+    def mount(self, snapshot_id, mountpoint, *, cancelled=lambda: False, timeout=120):
+        """Linux on-demand snapshot access, retaining repository/SSH credentials until close."""
+        mountpoint = Path(mountpoint)
+        mountpoint.mkdir(mode=0o700)
+        command = self.__make_command("mount", str(mountpoint), path_template="ids/%I", quiet=True)
+        try:
+            with self.__restic_env() as env, mounted_process(
+                command, mountpoint, env=env, cancelled=lambda: self._cancelled() or cancelled(),
+                timeout=min(self.timeout or timeout, timeout),
+            ) as process:
+                self.__register_process(process.pid, _ManagedProcess(process))
+                try:
+                    # Snapshot lookup can block on repository I/O. The supervised disk
+                    # helper opens this path; never access it in the agent worker here.
+                    yield mountpoint / "ids" / snapshot_id
+                finally:
+                    self.__unregister_process(process.pid)
+        finally:
+            if not is_mounted(mountpoint):
+                mountpoint.rmdir()
 
     def backup(
         self,

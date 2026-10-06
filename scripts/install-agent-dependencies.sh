@@ -12,7 +12,7 @@ if [ "${DRASTIC_AGENT_DEPLOYMENT:-}" = docker ]; then
 fi
 
 command -v pveversion >/dev/null 2>&1 || exit 0
-PACKAGES=(python3-guestfs libguestfs-tools python3-fuse python3-libnbd libnbd-bin)
+PACKAGES=(python3-guestfs libguestfs-tools python3-fuse fuse3 python3-libnbd libnbd-bin)
 MISSING=false
 for package in "${PACKAGES[@]}"; do
     [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" = 'install ok installed' ] || MISSING=true

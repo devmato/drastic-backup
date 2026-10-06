@@ -17,7 +17,7 @@
     <template v-if="options && mode === 'proxmox_files'">
       <q-banner v-if="options.guest_files_error" class="text-negative">{{ options.guest_files_error }}</q-banner>
       <template v-else>
-        <div class="text-caption q-mb-sm">Preparing downloads the entire VMA archive and extracts the guest disks on this agent. Allow space for both. Prepared disks expire after one hour of inactivity.</div>
+        <div class="text-caption q-mb-sm">{{ options.guest_files_on_demand ? 'TAR and Native/CBT backups are read on demand without storing complete guest disks locally. Allow space for working data and exported files. Legacy VMA backups still require archive download and disk extraction.' : 'Preparation downloads and extracts the guest disks on this agent. Allow space for the backup data, extracted disks and exported files.' }} Browser sessions expire after one hour of inactivity.</div>
         <div v-if="!selection.session_id" class="row items-center q-gutter-sm">
           <q-btn color="primary" label="Prepare file browser" :loading="preparing" :disable="preparing" @click="prepare" />
           <q-btn v-if="preparing && operationId" flat label="Cancel preparation" @click="cancelPreparation" />
@@ -96,7 +96,7 @@ async function pollPreparation() {
   try {
     const operation = await agentStore.getOperation(operationId.value)
     if (disposed) return
-    phase.value = operation.data?.restore_phase || 'Preparing archive…'
+    phase.value = operation.data?.restore_phase || 'Preparing guest file access…'
     if (operation.state !== 'running') {
       preparing.value = false
       if (['success', 'warning'].includes(operation.state) && operation.data?.session_id) {
@@ -158,7 +158,7 @@ async function loadEntries(path) {
 
 onMounted(async () => {
   try {
-    const result = await restoreStore.proxmoxAction({ action: 'options', agent_id: source.agent_id })
+    const result = await restoreStore.proxmoxAction({ action: 'options', mode: props.mode, agent_id: source.agent_id })
     if (disposed) return
     options.value = result
     if (props.mode === 'proxmox_vm') {

@@ -190,8 +190,7 @@ def test_failed_export_removes_prepared_images(monkeypatch, tmp_path):
     assert report.data["destination_may_contain_restored_data"]
 
 
-@pytest.mark.parametrize("mode", ["proxmox_vm", "proxmox_prepare"])
-def test_snapshot_restore_reuses_native_import_and_guest_browser(monkeypatch, tmp_path, mode):
+def test_snapshot_vm_restore_reuses_native_import(monkeypatch, tmp_path):
     agent, report, commands = setup_restore(monkeypatch, tmp_path)
     raw = tmp_path / "source.raw"
     raw.write_bytes(b"x" * 4096)
@@ -221,20 +220,10 @@ def test_snapshot_restore_reuses_native_import_and_guest_browser(monkeypatch, tm
 
     monkeypatch.setattr(restore, "run_process", run)
 
-    def guest(work, action, **kwargs):
-        assert (work / "disks/disk-drive-scsi0.raw").read_bytes() == raw.read_bytes()
-        assert not (work / "qemu-101.tar").exists()
-        return {"volumes": [{"device": "/dev/sda1", "error": None}]}
-
-    monkeypatch.setattr(restore, "guest_request", guest)
-    restore.run_proxmox_restore(agent, report, snapshot, mode=mode, identity=IDENTITY,
+    restore.run_proxmox_restore(agent, report, snapshot, mode="proxmox_vm", identity=IDENTITY,
                                vmid=102, storage="local-lvm")
-    if mode == "proxmox_vm":
-        assert commands[-1][0] == "qmrestore"
-        assert list(restore.workspace_root().iterdir()) == []
-    else:
-        assert not commands
-        restore.cleanup_workspaces(all_workspaces=True)
+    assert commands[-1][0] == "qmrestore"
+    assert list(restore.workspace_root().iterdir()) == []
 
 
 @pytest.mark.parametrize("name,kind", [("../escape", tarfile.REGTYPE), ("qemu-server.conf", tarfile.SYMTYPE),
@@ -296,3 +285,71 @@ def test_agent_status_reports_cached_guest_tools_error(monkeypatch):
         assert Agent.connection_status(agent)["proxmox"]["guest_files_error"] is None
     finally:
         restore.guest_tools_error.cache_clear()
+
+
+@pytest.mark.parametrize("method", ["snapshot", "native"])
+def test_on_demand_prepare_browse_export_never_materializes_disks(monkeypatch, tmp_path, method):
+    agent, report, commands = setup_restore(monkeypatch, tmp_path)
+    snapshot = {"id": "snapshot", "tags": ["source:proxmox", "guest_type:qemu", f"backup_method:{method}", "vmid:101"]}
+    agent.resticapi.ls = lambda **kw: [{"type": "file", "path": "/qemu-101.tar", "size": 1024**4}]
+    configured, calls = [], []
+    agent.configure_repository = configured.append
+
+    def no_materialization(*args, **kwargs):
+        pytest.fail("On-demand file restore must not download or check space for complete disks")
+
+    agent.resticapi.restore = no_materialization
+    monkeypatch.setattr(restore, "require_space", no_materialization)
+    backend = restore.get_guest_file_backend()
+
+    def request(api, descriptor, work, action, **kwargs):
+        assert api is agent.resticapi
+        assert descriptor["format"] == ("tar" if method == "snapshot" else "native")
+        assert not (work / "disks").exists()
+        calls.append(action)
+        if kwargs["cancelled"]():
+            raise ProcessCancelledError("cancelled")
+        return {"volumes": [{"device": "/dev/sda1", "error": None}], "entries": [],
+                "files": 1, "bytes": 6, "skipped_special_files": 0}
+
+    monkeypatch.setattr(backend, "request", request)
+    monkeypatch.setattr(restore, "get_guest_file_backend", lambda: backend)
+    restore.run_proxmox_restore(agent, report, snapshot, mode="proxmox_prepare", identity=IDENTITY)
+    assert report.data["guest_files_on_demand"]
+    work = restore.workspace_root() / f"session-{report.uuid}"
+    assert {p.name for p in work.iterdir()} == {"lock", "session.json", "remote.json"}
+    restore.session_action("entries", report.uuid, IDENTITY, agent=agent, repository={"location": "repo"}, volume="/dev/sda1")
+    assert configured == [{"location": "repo"}]
+    restore.run_proxmox_restore(agent, report, snapshot, mode="proxmox_files", identity=IDENTITY,
+                               session_id=report.uuid, volume="/dev/sda1", include_paths=["/etc/hostname"],
+                               restore_location=str(tmp_path / "out"))
+    assert calls == ["volumes", "entries", "export"]
+    assert not commands
+    assert not work.exists()
+
+
+def test_on_demand_prepare_failure_cleans_session(monkeypatch, tmp_path):
+    agent, report, _ = setup_restore(monkeypatch, tmp_path)
+    snapshot = {"id": "snapshot", "tags": ["source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
+    agent.resticapi.ls = lambda **kw: [{"type": "file", "path": "/qemu-101.tar", "size": 1024**4}]
+
+    def fail(*args, **kwargs):
+        raise ProcessCancelledError("cancelled")
+
+    monkeypatch.setattr(restore, "guest_request", fail)
+    with pytest.raises(ProcessCancelledError):
+        restore.run_proxmox_restore(agent, report, snapshot, mode="proxmox_prepare", identity=IDENTITY)
+    assert not list(restore.workspace_root().iterdir())
+
+
+def test_file_browser_options_do_not_require_proxmox_host_tools(monkeypatch):
+    from drastic_agent.agent.agent import Agent
+
+    def no_host_tools(*args):
+        pytest.fail("Guest file options must not query Proxmox VM import tools")
+
+    monkeypatch.setattr(restore, "host_options", no_host_tools)
+    monkeypatch.setattr(restore, "guest_tools_available", lambda: None)
+    report = Agent.cmd_proxmox_restore(SimpleNamespace(), "options", mode="proxmox_files")
+    assert report.data["guest_files_on_demand"]
+    assert report.data["guest_files_error"] is None

@@ -96,6 +96,14 @@ def make_manifest(vmid, volumes, previous=None):
     return manifest, changed
 
 
+def view_metadata(plan):
+    files = {"manifest.json": json.dumps(plan["manifest"], separators=(",", ":")).encode(),
+             "qemu-server.conf": plan["config"].encode()}
+    if plan.get("firewall") is not None:
+        files["qemu-server.fw"] = plan["firewall"].encode()
+    return files
+
+
 def mount_view(plan, mountpoint):
     import fuse
     import nbd
@@ -109,10 +117,7 @@ def mount_view(plan, mountpoint):
             self.handles, self.dirty, self.read_end = {}, {}, {}
             self.metrics = {"bytes_read": 0, "blocks_read": 0}
             self.last_publish = 0
-            self.files = {"manifest.json": json.dumps(plan["manifest"], separators=(",", ":")).encode(),
-                          "qemu-server.conf": plan["config"].encode()}
-            if plan.get("firewall") is not None:
-                self.files["qemu-server.fw"] = plan["firewall"].encode()
+            self.files = view_metadata(plan)
             for source in plan["sources"]:
                 handle = nbd.NBD()
                 handle.set_export_name(source["device"])

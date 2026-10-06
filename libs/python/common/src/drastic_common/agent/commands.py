@@ -2,7 +2,7 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields, validate
 
-AGENT_PROTOCOL_VERSION = 9
+AGENT_PROTOCOL_VERSION = 10
 DEBUG_SECTIONS = ("runtime", "logs", "threads")
 
 

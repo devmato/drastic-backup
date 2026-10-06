@@ -13,6 +13,7 @@ from drastic_agent.proxmox_blocks import (
     dirty_blocks,
     make_manifest,
     validate_manifest,
+    view_metadata,
 )
 from drastic_agent.services.proxmox_restore import restore_native_blocks
 from drastic_common.restic.client import ResticApi
@@ -51,8 +52,10 @@ def test_native_preflight_selects_healthy_storage_and_honors_override(tmp_path, 
     for id, values in changes.items():
         storages[id].update(values)
     state = {"config": {}, "active": False, "exports": [], "calls": [], "storages": storages,
+             "volume_sizes": {"vm-a:vm-103-disk-0": 1024, "vm-b:vm-103-disk-0": 4096},
              "volumes": [{"included": True, "key": disk, "volume_config": {"file": f"{id}:vm-103-disk-0"}}
                          for disk, id in (("scsi0", "vm-a"), ("scsi1", "vm-b"))]}
+    state["volumes"].append({"included": False, "key": "scsi2", "volume_config": {"file": "excluded"}})
     state_path = tmp_path / "state.json"
     state_path.write_text(json.dumps(state))
     monkeypatch.setenv("RECOVERY_STATE", str(state_path))
@@ -72,6 +75,7 @@ def test_native_preflight_selects_healthy_storage_and_honors_override(tmp_path, 
         info = native.preflight(103, storage)
         assert info["fleecing_storage"] == expected
         assert info["pools"] == [{"pool": f"{expected}/data"}]
+        assert info["disk_bytes"] == 5120
         assert "storages" not in info  # Changing free space must not invalidate CBT identity.
 
 
@@ -150,8 +154,9 @@ def test_native_layout_restores_latest_after_prune_and_rejects_missing_blocks(tm
     source.mkdir()
     data = b"a" * BLOCK_SIZE + b"b" * 512
     manifest, _ = make_manifest(103, [{"disk": "scsi0", "size": len(data), "dirty": {0, 1}, "bitmap-mode": "new"}])
-    (source / "manifest.json").write_text(json.dumps(manifest))
-    (source / "qemu-server.conf").write_text("memory: 256\n")
+    metadata = view_metadata({"manifest": manifest, "config": "memory: 256\n# größe\n", "firewall": ""})
+    for name, content in metadata.items():
+        (source / name).write_bytes(content)
     for index in range(2):
         path = source / block_path("scsi0", index)
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -162,6 +167,7 @@ def test_native_layout_restores_latest_after_prune_and_rejects_missing_blocks(tm
     first = api.backup(["."], cwd=str(source), tags=tags)
     second = api.backup(["."], cwd=str(source), parent=first["snapshot_id"], tags=tags)
     assert second["data_added"] == 0
+    assert first["total_bytes_processed"] == second["total_bytes_processed"] == len(data) + sum(map(len, metadata.values()))
     api.forget_snapshots([first["snapshot_id"]], prune=True)
     target = tmp_path / "restored"
     target.mkdir()

@@ -16,7 +16,7 @@ from drastic_agent.agent.database import proxmox_checkpoints, proxmox_native_run
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.config import DefaultConfig, env_value
 from drastic_agent.proxmox import ProxmoxError
-from drastic_agent.proxmox_blocks import check_manifest_entry, validate_manifest
+from drastic_agent.proxmox_blocks import check_manifest_entry, validate_manifest, view_metadata
 from drastic_common.process import run_process
 from drastic_common.restic.exceptions import ResticCancelledError
 
@@ -126,12 +126,17 @@ def run_native(handler, report, guest, index, info=None):
 
     vmid = int(guest["vmid"])
     mode = handler.job["config"]["backup_mode"]
+    progress = {"vmid": vmid, "guest_index": index, "guests_total": len(report.data["guests"]),
+                "phase": "snapshots", "percent_done": None, "backup_mode": mode}
+    report.set_data("proxmox_progress", progress)
     repository_id = handler.agent.resticapi.cat_config()["id"]
     key = hashlib.sha256(f"{handler.job['uuid']}:{repository_id}:{vmid}".encode()).hexdigest()
     previous = proxmox_checkpoints.find_one(key=key)
     checkpoint = previous["data"] if previous else {}
     storage = handler.job["config"].get("fleecing_storage", "")
-    info = info if info is not None else preflight(vmid, storage)
+    info = dict(info if info is not None else preflight(vmid, storage))
+    # Progress estimates are not part of the confirmed CBT source identity.
+    planned_bytes = info.pop("disk_bytes")
     report.log_message(f"VM {vmid}: temporary backup storage {info['fleecing_storage']} ({'configured' if storage else 'automatic'})")
     check_thin_pools({"volumes": info["pools"]}, report=report)
     old_manifest, parent, reason = None, None, "CBT disabled" if mode == "native" else "No confirmed checkpoint"
@@ -166,9 +171,6 @@ def run_native(handler, report, guest, index, info=None):
     proxmox_native_runs.insert({"key": operation, "data": journal})
     process = view = artifact = status = None
     log = (work / "native.log").open("w+")
-    progress = {"vmid": vmid, "guest_index": index, "guests_total": len(report.data["guests"]),
-                "phase": "snapshots", "percent_done": None, "backup_mode": mode}
-    report.set_data("proxmox_progress", progress)
     metrics = {}
 
     last_pool_check = 0
@@ -247,7 +249,11 @@ def run_native(handler, report, guest, index, info=None):
         report.log_message(f"VM {vmid}: {details['effective_mode']}" + (f" — {reason}" if reason else ""))
         artifact = handler.start_artifact(f"vm:{vmid}", report=report, data=details)
         plan = {"manifest": manifest, "sources": [{**v, "dirty": sorted(v["dirty"])} for v in volumes],
-                "config": ready["config"], "firewall": ready.get("firewall"), "metrics": str(work / "metrics.json")}
+                 "config": ready["config"], "firewall": ready.get("firewall"), "metrics": str(work / "metrics.json")}
+        if report.data.get("proxmox_bytes_total") is not None:
+            # Use the frozen export sizes, including the exact metadata Restic reads.
+            logical_bytes = details["disk_bytes"] + sum(len(data) for data in view_metadata(plan).values())
+            report.set_data("proxmox_bytes_total", report.data["proxmox_bytes_total"] - planned_bytes + logical_bytes)
         (work / "view.json").write_text(json.dumps(plan))
         # System Python provides FUSE/libnbd, keeping them out of the agent's venv.
         view = subprocess.Popen(["/usr/bin/python3", str(VIEW), str(work / "view.json"), str(work / "mount")],
@@ -259,6 +265,7 @@ def run_native(handler, report, guest, index, info=None):
         if not os.path.ismount(work / "mount"):
             raise ProxmoxError("Native block view could not be mounted")
         progress.update(phase="backing_up", bytes_total=bytes_to_read, bytes_processed=0, disk_bytes=details["disk_bytes"])
+        report.set_data("proxmox_progress", dict(progress))
         tags = [f"job_uuid:{handler.job['uuid']}", f"operation_uuid:{operation}", "source:proxmox", "guest_type:qemu",
                 f"vmid:{vmid}", "backup_method:native", f"artifact_uuid:{artifact['uuid']}", f"artifact_key:vm:{vmid}"]
         with handler.agent.resticapi.operation_cancellation(report.cancel_event):
@@ -267,6 +274,8 @@ def run_native(handler, report, guest, index, info=None):
                 monitor_callback=monitor)
         monitor()
         report.process_backup_status(status)
+        progress["phase"] = "cleanup"
+        report.set_data("proxmox_progress", dict(progress))
         run_process(["fusermount3", "-u", str(work / "mount")], timeout=15)
         view.wait(timeout=15)
         view = None
@@ -285,6 +294,7 @@ def run_native(handler, report, guest, index, info=None):
             "data_added_packed": status.get("data_added_packed"), "cleanup": "complete"})
         report.set_data("proxmox_progress", {**progress, "phase": "complete", "percent_done": 100})
     except Exception as exc:
+        report.set_data("proxmox_progress", {**progress, "phase": "failed"})
         if artifact and status and status.get("snapshot_id"):
             handler.finish_artifact(artifact, snapshot_id=status["snapshot_id"], data={**metrics, "cleanup": "pending",
                 "data_added_packed": status.get("data_added_packed")})

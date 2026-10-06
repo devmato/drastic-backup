@@ -67,13 +67,13 @@ def roundtrip(tmp_path, monkeypatch):
         assert result.final_state.name == "success", result.log
         return result
 
-    yield restore, source, tmp_path
+    yield restore, source, tmp_path, agent
     cleanup_workspaces(all_workspaces=True)
     db.engine.dispose()
 
 
 def test_real_guest_file_roundtrip(roundtrip):
-    restore, source, target = roundtrip
+    restore, source, target, agent = roundtrip
     volume = os.environ.get("DRASTIC_TEST_GUEST_VOLUME")
     path = os.environ.get("DRASTIC_TEST_GUEST_FILE")
     checksum = os.environ.get("DRASTIC_TEST_GUEST_SHA256")
@@ -82,7 +82,7 @@ def test_real_guest_file_roundtrip(roundtrip):
     prepared = restore(mode="proxmox_prepare")
     assert any(v["device"] == volume and not v["error"] for v in prepared.data["volumes"])
     identity = {k: source[k] for k in ("job_uuid", "repository_id", "snapshot_id")}
-    entries = session_action("entries", prepared.uuid, identity, volume=volume, path=str(Path(path).parent))
+    entries = session_action("entries", prepared.uuid, identity, agent=agent, volume=volume, path=str(Path(path).parent))
     assert any(entry["path"] == path for entry in entries["entries"])
     restore(mode="proxmox_files", session_id=prepared.uuid, volume=volume,
             include_paths=[path], restore_location=str(target / "files"))
@@ -92,7 +92,7 @@ def test_real_guest_file_roundtrip(roundtrip):
 
 
 def test_real_vm_roundtrip(roundtrip):
-    restore, _, target = roundtrip
+    restore, _, target, _ = roundtrip
     vmid = os.environ.get("DRASTIC_TEST_RESTORE_VMID")
     storage = os.environ.get("DRASTIC_TEST_RESTORE_STORAGE")
     if not vmid or not storage:

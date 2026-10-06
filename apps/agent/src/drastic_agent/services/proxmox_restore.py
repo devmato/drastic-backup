@@ -1,6 +1,5 @@
 """Local QEMU restore and short-lived, disk-only guest browsing workspaces."""
 
-import fcntl
 import json
 import os
 import platform
@@ -15,11 +14,11 @@ from pathlib import Path
 from uuid import UUID
 
 from drastic_agent.agent.report import AgentReport
-from drastic_agent.config import DefaultConfig, env_int, env_value
+from drastic_agent.config import DefaultConfig, env_value
+from drastic_agent.services.guest_backend import get_guest_file_backend
 from drastic_common.process import ProcessCancelledError, run_process
 
 WORKSPACE_TTL = 3600
-HELPER = str(Path(__file__).with_name("guest_files.py"))
 
 
 def workspace_root(*, create=True):
@@ -33,6 +32,12 @@ def workspace_root(*, create=True):
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         root.chmod(0o700)
     return root
+
+
+def remove_workspace(path):
+    # Also recover private mounts left by an interrupted agent before walking the tree.
+    get_guest_file_backend().cleanup_workspace(path)
+    shutil.rmtree(path)
 
 
 @contextmanager
@@ -54,7 +59,7 @@ def workspace(session_id, *, create=False, identity=None):
     acquired = False
     try:
         try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            get_guest_file_backend().lock_workspace(fd)
         except BlockingIOError as exc:
             raise ValueError("Restore workspace is busy") from exc
         if not create:
@@ -83,9 +88,9 @@ def cleanup_workspaces(*, all_workspaces=False):
                 continue
             fd = os.open(path / "lock", os.O_RDWR | os.O_NOFOLLOW)
             try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                get_guest_file_backend().lock_workspace(fd)
                 if all_workspaces or time.time() - os.fstat(fd).st_mtime > WORKSPACE_TTL:
-                    shutil.rmtree(path)
+                    remove_workspace(path)
             finally:
                 os.close(fd)
         except (FileNotFoundError, BlockingIOError, ValueError):
@@ -112,10 +117,7 @@ def host_options(cancelled=lambda: False):
 
 
 def guest_tools_available():
-    try:
-        run_process(["/usr/bin/python3", "-c", "import guestfs"], timeout=15)
-    except (OSError, RuntimeError, TimeoutError) as exc:
-        raise ValueError("Guest file restore requires python3-guestfs and libguestfs-tools on the agent host") from exc
+    get_guest_file_backend().check_available()
 
 
 @cache
@@ -128,25 +130,26 @@ def guest_tools_error():
     return None
 
 
-def guest_request(path, action, *, cancelled=lambda: False, **kwargs):
-    disks = sorted(str(p) for p in (path / "disks").glob("disk-*.raw")
-                   if re.fullmatch(r"disk-drive-(?:ide|sata|scsi|virtio)\d+\.raw", p.name)
-                   and p.is_file() and not p.is_symlink())
-    if not disks:
-        raise ValueError("The VMA archive contains no supported guest disks")
-    request = {"action": action, "disks": disks, **kwargs}
-    return json.loads(run_process(["/usr/bin/python3", HELPER], cancelled=cancelled,
-                                 timeout=90 if action == "entries" else env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400),
-                                 input_text=json.dumps(request)))
+def guest_request(work, action, *, agent=None, cancelled=lambda: False, **kwargs):
+    remote = work / "remote.json"
+    descriptor = json.loads(remote.read_text()) if remote.exists() else None
+    if descriptor and agent is None:
+        raise ValueError("On-demand guest browsing requires repository access")
+    return get_guest_file_backend().request(
+        agent.resticapi if agent else None, descriptor, work, action,
+        cancelled=cancelled, **kwargs)
 
 
-def session_action(action, session_id, identity, *, volume=None, path="/", cancelled=lambda: False):
+def session_action(action, session_id, identity, *, agent=None, repository=None,
+                   volume=None, path="/", cancelled=lambda: False):
     with workspace(session_id, identity=identity) as work:
         if action == "close":
-            shutil.rmtree(work)
+            remove_workspace(work)
             return {}
         if action == "entries":
-            return guest_request(work, "entries", cancelled=cancelled, volume=volume, path=path)
+            if repository is not None:
+                agent.configure_repository(repository)
+            return guest_request(work, "entries", agent=agent, cancelled=cancelled, volume=volume, path=path)
         raise ValueError("Unsupported restore session action")
 
 
@@ -332,11 +335,11 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
             phase("Exporting guest files")
             report.set_data("destination_may_contain_restored_data", True)
             try:
-                result = guest_request(work, "export", cancelled=cancelled, volume=volume,
+                result = guest_request(work, "export", agent=agent, cancelled=cancelled, volume=volume,
                                        paths=include_paths, target=restore_location,
                                        overwrite_policy=overwrite_policy)
             finally:
-                shutil.rmtree(work)
+                remove_workspace(work)
             report.set_data("restore_files_restored", result["files"])
             report.set_data("restore_bytes_restored", result["bytes"])
             if result["skipped_special_files"]:
@@ -371,6 +374,20 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
     with workspace(report.uuid, create=True) as work:
         try:
             snapshot_archive = "backup_method:snapshot" in (snapshot.get("tags") or [])
+            if mode == "proxmox_prepare" and (native or snapshot_archive):
+                descriptor = {"format": "native" if native else "tar", "snapshot_id": snapshot["id"]}
+                if native:
+                    vmids = [tag.removeprefix("vmid:") for tag in snapshot.get("tags", []) if tag.startswith("vmid:")]
+                    if len(vmids) != 1 or not vmids[0].isdigit():
+                        raise ValueError("Native snapshot has no unique VM identity")
+                    descriptor["vmid"] = int(vmids[0])
+                else:
+                    descriptor["archive"] = archive["path"].lstrip("/")
+                (work / "remote.json").write_text(json.dumps(descriptor))
+                phase("Opening backup disks on demand")
+                prepare_browser(agent, report, work, identity)
+                keep_workspace = True
+                return
             if native:
                 phase("Restoring native VM blocks")
                 disk_size = restore_native_blocks(agent, report, snapshot, work, cancelled)
@@ -416,14 +433,19 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
                     run_process(["vma", "extract", str(archive_path), str(work / "disks")], cancelled=cancelled)
                     archive_path.unlink()
                 phase("Inspecting guest filesystems")
-                result = guest_request(work, "volumes", cancelled=cancelled)
-                if not any(not volume["error"] for volume in result["volumes"]):
-                    raise ValueError(f"No readable guest filesystems: {result['volumes']}")
-                (work / "session.json").write_text(json.dumps(identity))
-                report.set_data("session_id", report.uuid)
-                report.set_data("volumes", result["volumes"])
-                report.set_data("restore_phase", "Ready to browse (expires after 1 hour of inactivity)")
+                prepare_browser(agent, report, work, identity)
                 keep_workspace = True
         finally:
             if not keep_workspace:
-                shutil.rmtree(work)
+                remove_workspace(work)
+
+
+def prepare_browser(agent, report, work, identity):
+    result = guest_request(work, "volumes", agent=agent, cancelled=report.cancel_event.is_set)
+    if not any(not volume["error"] for volume in result["volumes"]):
+        raise ValueError(f"No readable guest filesystems: {result['volumes']}")
+    (work / "session.json").write_text(json.dumps(identity))
+    report.set_data("session_id", report.uuid)
+    report.set_data("volumes", result["volumes"])
+    report.set_data("guest_files_on_demand", (work / "remote.json").exists())
+    report.set_data("restore_phase", "Ready to browse (expires after 1 hour of inactivity)")

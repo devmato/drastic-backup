@@ -107,6 +107,12 @@ my $info = {sources => \%sources, session => $session,
     host => PVE::Tools::file_get_contents('/etc/machine-id'),
     vm_identity => {smbios1 => $conf->{smbios1}, vmgenid => $conf->{vmgenid}}};
 if ($request->{check}) {
+    $info->{disk_bytes} = 0;
+    for my $volid (values %sources) {
+        my ($size) = PVE::Storage::volume_size_info($cfg, $volid, 10);
+        die "Cannot determine disk size for $volid\n" if !defined($size) || $size !~ /^\d+$/ || $size <= 0;
+        $info->{disk_bytes} += $size;
+    }
     my $status = PVE::Storage::storage_info({ids => \%storages}, 'images');
     $info->{storages} = [map { {id => $_, pool => "$storages{$_}->{vgname}/$storages{$_}->{thinpool}"} }
         grep { $status->{$_}->{active} } sort keys %storages];

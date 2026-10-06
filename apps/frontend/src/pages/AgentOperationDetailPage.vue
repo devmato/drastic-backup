@@ -42,7 +42,7 @@
                 </div>
               </q-linear-progress>
             </div>
-            <div v-if="operation.state === 'running' && progressBasis" class="text-caption db-break-word" role="status">{{ progressBasis }}</div>
+            <div v-if="progressBasis && (operation.state === 'running' || proxmoxBytesTotal > 0)" class="text-caption db-break-word" role="status">{{ progressBasis }}</div>
 
             <div>
               <div class="row q-col-gutter-md text-body2">
@@ -295,10 +295,14 @@ const restoreBytesRestored = computed(() => numberOrNull(operationData.value.res
 const restoreBytesTotal = computed(() => numberOrNull(operationData.value.restore_bytes_total ?? operationData.value.total_bytes))
 const restoreFilesRestored = computed(() => numberOrNull(operationData.value.restore_files_restored ?? operationData.value.files_restored))
 const restoreFilesTotal = computed(() => numberOrNull(operationData.value.restore_files_total ?? operationData.value.total_files))
+const proxmoxBytesTotal = computed(() => numberOrNull(operationData.value.proxmox_bytes_total))
 
 const progressSource = computed(() => {
   if (isBackupOperation.value) {
+    const nativeTotal = proxmoxBytesTotal.value
+    const nativeProgress = nativeTotal > 0 ? clampProgress((bytesProcessed.value ?? 0) / nativeTotal) : null
     if (operation.value?.state !== 'running') {
+      if (nativeProgress !== null) return { value: nativeProgress, basis: 'Data processed (all VMs)' }
       return { value: ['success', 'warning'].includes(operation.value?.state) && !operationData.value.partial_failure ? 1 : null }
     }
 
@@ -311,7 +315,20 @@ const progressSource = computed(() => {
       hooks: 'Running backup actions',
     }
     if (operationData.value.backup_phase && operationData.value.backup_phase !== 'backup') {
-      return { value: null, basis: phases[operationData.value.backup_phase] || 'Finalizing backup' }
+      const phase = phases[operationData.value.backup_phase] || 'Finalizing backup'
+      return { value: nativeProgress,
+        basis: `${nativeProgress === null ? '' : 'Data processed (all VMs) — '}${phase}` }
+    }
+    if (nativeProgress !== null) {
+      const progress = proxmoxProgress.value
+      const phases = {
+        snapshots: 'Preparing VM backup', backing_up: `Backing up VM ${progress?.vmid}`,
+        cleanup: 'Cleaning up VM backup', complete: 'VM backup completed', failed: 'VM backup failed',
+      }
+      return { value: nativeProgress,
+        basis: `Data processed (all VMs) — ${progress
+          ? `VM ${progress.guest_index} of ${progress.guests_total} · ${phases[progress.phase] || 'Finalizing VM backup'}`
+          : 'Preparing VM backups'}` }
     }
   }
 
@@ -395,6 +412,17 @@ const progressBasis = computed(() => progressSource.value.basis)
 
 const metricCards = computed(() => {
   const metrics = []
+
+  if (isBackupOperation.value && proxmoxBytesTotal.value > 0) {
+    const progress = proxmoxProgress.value
+    return [
+      { label: 'Data processed (all VMs)', value: formatProcessed(bytesProcessed.value ?? 0, proxmoxBytesTotal.value, formatBytes) },
+      ...(operation.value?.state === 'running' && progress?.bytes_processed != null
+        ? [{ label: 'Disk data read (current VM)', value: formatProcessed(progress.bytes_processed, progress.bytes_total, formatBytes) }] : []),
+      ...(operationData.value.data_added_packed != null
+        ? [{ label: 'Newly stored (job)', value: formatBytes(operationData.value.data_added_packed) }] : []),
+    ]
+  }
 
   if (proxmoxProgress.value && operation.value?.state === 'running') {
     const progress = proxmoxProgress.value

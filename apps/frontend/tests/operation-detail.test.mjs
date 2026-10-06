@@ -164,6 +164,50 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.progressIndeterminate.value, false)
 
   page.operation.value = {
+    id: 1, type: 'backup', state: 'running', data: { backup_phase: 'backup', proxmox_bytes_total: 4096 },
+  }
+  const native = page.operation.value.data
+  assert.equal(page.progressLabel.value, '0%')
+  assert.equal(field(page.metricCards.value, 'Data processed (all VMs)'), '0 B / 4 KiB')
+  native.proxmox_progress = { vmid: 101, guest_index: 1, guests_total: 2, phase: 'backing_up',
+    percent_done: 99, bytes_processed: 512, bytes_total: 512 }
+  native.bytes_processed = 1024 // Restic has processed read AND reused data.
+  assert.equal(page.progressLabel.value, '25%')
+  assert.equal(field(page.metricCards.value, 'Disk data read (current VM)'), '512 B / 512 B')
+  assert.match(page.progressBasis.value, /Data processed \(all VMs\).*VM 1 of 2/)
+  for (const phase of ['cleanup', 'complete', 'snapshots']) {
+    native.proxmox_progress.phase = phase
+    assert.equal(page.progressLabel.value, '25%', phase)
+  }
+  native.proxmox_progress = { vmid: 102, guest_index: 2, guests_total: 2, phase: 'backing_up',
+    bytes_processed: 0, bytes_total: 0, percent_done: null }
+  assert.equal(page.progressLabel.value, '25%') // No reset, even with zero dirty blocks.
+  assert.match(page.progressBasis.value, /VM 2 of 2/)
+  native.bytes_processed = 2048
+  assert.equal(page.progressLabel.value, '50%')
+  native.proxmox_bytes_total = 8192 // Authoritative export size changed after preflight.
+  assert.equal(page.progressLabel.value, '25%')
+  native.bytes_processed = 8192
+  for (const phase of ['finalizing', 'check', 'retention', 'statistics', 'hooks']) {
+    native.backup_phase = phase
+    assert.equal(page.progressLabel.value, '100%', phase)
+    assert.equal(page.progressIndeterminate.value, false, phase)
+    assert.match(page.progressBasis.value, /Data processed \(all VMs\) — /, phase)
+  }
+  native.bytes_processed = 2048
+  native.partial_failure = true
+  for (const state of ['warning', 'failed', 'cancelled']) {
+    page.operation.value.state = state
+    assert.equal(page.progressLabel.value, '25%', state)
+    assert.equal(page.progressIndeterminate.value, false, state)
+  }
+  native.partial_failure = false
+  native.bytes_processed = 8192
+  page.operation.value.state = 'success'
+  assert.equal(page.progressLabel.value, '100%')
+  assert.equal(page.progressBasis.value, 'Data processed (all VMs)')
+
+  page.operation.value = {
     id: 1, type: 'backup', state: 'running',
     data: {
       backup_phase: 'backup', bytes_processed: 2048, bytes_total: null,

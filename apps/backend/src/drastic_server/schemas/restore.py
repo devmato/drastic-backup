@@ -127,6 +127,7 @@ class ProxmoxRestoreInputSchema(Schema):
         unknown = EXCLUDE
 
     action = fields.String(required=True, validate=validate.OneOf(("options", "entries", "close")))
+    mode = fields.String(load_default="proxmox_vm", validate=validate.OneOf(("proxmox_vm", "proxmox_files")))
     agent_id = fields.Integer(required=True)
     job_id = fields.Integer()
     repository_id = fields.Integer()

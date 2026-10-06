@@ -151,6 +151,8 @@ class RestoreService:
     def proxmox_action(cls, user_id, data):
         agent = cls._get_agent(user_id, data["agent_id"])
         kwargs = {}
+        if data["action"] == "options" and (agent.protocol_version or 0) >= 10:
+            kwargs["mode"] = data["mode"]
         if data["action"] != "options":
             job = cls._get_job(user_id, data["job_id"])
             repository = cls._get_repository(user_id, data["repository_id"])
@@ -160,6 +162,8 @@ class RestoreService:
                 "identity": {"job_uuid": job.uuid, "repository_id": repository.id, "snapshot_id": data["snapshot_id"]},
                 "volume": data.get("volume"), "path": data["path"],
             }
+            if data["action"] == "entries" and (agent.protocol_version or 0) >= 10:
+                kwargs["repository"] = cls._repository_payload(repository, agent)
         response = AgentService.send_command(agent, AgentCommandName.proxmox_restore,
                                              action=data["action"], timeout=120, **kwargs)
         cls._raise_for_agent_failure(response)

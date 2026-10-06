@@ -94,6 +94,8 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                     native_plans[guest["vmid"]] = preflight(guest["vmid"], config.get("fleecing_storage", ""))
             report.set_data("guests", [guest["vmid"] for guest in guests])
             report.set_data("backup_items_total", len(guests))
+            if native_plans:
+                report.set_data("proxmox_bytes_total", sum(plan["disk_bytes"] for plan in native_plans.values()))
             completed, failed = [], []
             for index, guest in enumerate(guests, 1):
                 self._check_cancelled(report)
