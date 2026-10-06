@@ -40,12 +40,8 @@ class LinuxGuestFileBackend:
             raise ValueError("Guest file restore requires python3-guestfs, libguestfs-tools and python3-fuse on the agent host") from exc
 
     def request(self, resticapi, descriptor, work, action, *, cancelled, **kwargs):
-        from drastic_common.process import is_mounted, mounted_process
-
-        if descriptor is None:
-            return self.local_request(work, action, cancelled=cancelled, **kwargs)
-
         from drastic_agent.config import env_int
+        from drastic_common.process import is_mounted, mounted_process
 
         # Browsing is a synchronous command with a 120-second backend response budget.
         deadline = time.monotonic() + (110 if action == "entries" else env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400))
@@ -73,8 +69,7 @@ class LinuxGuestFileBackend:
             if not is_mounted(mountpoint) and mountpoint.exists():
                 mountpoint.rmdir()
 
-    def local_request(self, work, action, *, cancelled, timeout=None, **kwargs):
-        from drastic_agent.config import env_int
+    def local_request(self, work, action, *, cancelled, timeout, **kwargs):
         from drastic_common.process import run_process
 
         disks = sorted(str(p) for p in (work / "disks").glob("disk-*.raw")
@@ -84,7 +79,7 @@ class LinuxGuestFileBackend:
             raise ValueError("Backup contains no supported guest disks")
         result = run_process(["/usr/bin/python3", str(Path(__file__).with_name("guest_files.py"))],
                              cancelled=cancelled, input_text=json.dumps({"action": action, "disks": disks, **kwargs}),
-                             timeout=timeout if timeout is not None else (90 if action == "entries" else env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400)))
+                             timeout=timeout)
         return json.loads(result)
 
 

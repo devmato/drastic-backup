@@ -33,8 +33,8 @@ def restore_api(monkeypatch):
         user.set_initial_password("test-password", recovery_key="recovery")
         other = User(name="other")
         other.set_initial_password("other-password", recovery_key="other-recovery")
-        agent = Agent(user=user, secret="secret", protocol_version=2)
-        foreign = Agent(user=other, secret="other-secret", protocol_version=2)
+        agent = Agent(user=user, secret="secret", protocol_version=7)
+        foreign = Agent(user=other, secret="other-secret", protocol_version=7)
         AgentSession(agent=agent, request_sid="sid")
         repository = Repository(user=user, name="Repo", kind=Repository.KIND_CUSTOM, location="/repo")
         agent.repositories.append(repository)
@@ -43,7 +43,7 @@ def restore_api(monkeypatch):
         db.session.commit()
         client = app.test_client()
         assert client.post("/api/auth/login", json={"username": user.name, "password": "test-password"}).status_code == 200
-        snapshot = {"id": "snapshot", "tags": [f"job_uuid:{job.uuid}", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]}
+        snapshot = {"id": "snapshot", "tags": [f"job_uuid:{job.uuid}", "source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
         monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: {
             "state": AgentOperationState.success, "data": {"snapshots": [snapshot]},
         })
@@ -68,25 +68,34 @@ def test_vm_restore_dispatch_and_protocol_gate(restore_api):
     assert calls[0]["vmid"] == 101 and calls[0]["unique"] is True
     assert calls[0]["mode"] == "proxmox_vm"
     assert calls[0]["expected_job_tag"].startswith("job_uuid:")
-    agent.protocol_version = 1
+    agent.protocol_version = 6
     db.session.commit()
     assert client.post("/api/restores/", json=payload).status_code == 400
     assert len(calls) == 1
 
 
-def test_snapshot_backup_restore_requires_updated_agent(restore_api, monkeypatch):
-    client, source, agent, _, job, calls = restore_api
-    snapshot = {"id": "snapshot", "tags": [f"job_uuid:{job.uuid}", "source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
+@pytest.mark.parametrize("mode", ["proxmox_vm", "proxmox_prepare", "proxmox_files"])
+def test_legacy_vma_is_hidden_and_rejected_but_plain_restore_remains_available(restore_api, monkeypatch, mode):
+    client, source, _, _, job, calls = restore_api
+    snapshot = {"id": "snapshot", "tags": [f"job_uuid:{job.uuid}", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]}
     monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: {
         "state": AgentOperationState.success, "data": {"snapshots": [snapshot]},
     })
-    payload = {**source, "mode": "proxmox_vm", "vmid": 101, "storage": "local-lvm"}
-    assert client.post("/api/restores/", json=payload).status_code == 400
+    query = {key: value for key, value in source.items() if key != "snapshot_id"}
+    response = client.get("/api/restores/snapshots", query_string=query)
+    assert response.status_code == 200
+    assert response.json["snapshots"][0]["proxmox_archive"] is False
+    payload = {**source, "mode": mode, "vmid": 101, "storage": "local-lvm",
+               "restore_location": "/restore", "include_paths": ["/etc"],
+               "session_id": str(uuid4()), "volume": "/dev/sda1"}
+    response = client.post("/api/restores/", json=payload)
+    assert response.status_code == 400
+    assert "legacy VMA" in response.json["message"]
     assert not calls
-    agent.protocol_version = 7
-    db.session.commit()
-    assert client.post("/api/restores/", json=payload).status_code == 202
-    assert len(calls) == 1
+    response = client.post("/api/restores/", json={**source, "mode": "plain_file", "restore_location": "/restore",
+                                                  "include_paths": ["/archive.vma"]})
+    assert response.status_code == 202
+    assert calls[0]["mode"] == "plain_file"
 
 
 def test_native_backup_restore_protocol_gate(restore_api, monkeypatch):
@@ -152,6 +161,8 @@ def test_on_demand_browser_receives_repository_context_only_on_updated_agents(re
         return {"state": AgentOperationState.success, "data": {}}
 
     monkeypatch.setattr(AgentService, "send_command", send)
+    agent.protocol_version = 9
+    db.session.commit()
     payload = {**source, "action": "entries", "session_id": str(uuid4()), "volume": "/dev/sda1"}
     assert client.post("/api/restores/proxmox", json=payload).status_code == 200
     assert "repository" not in commands[-1]

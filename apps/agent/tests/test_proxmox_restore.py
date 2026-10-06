@@ -1,6 +1,7 @@
 import io
 import json
 import os
+import shutil
 import tarfile
 from pathlib import Path
 from threading import Event
@@ -13,10 +14,9 @@ from drastic_agent.proxmox_snapshot import write_archive
 from drastic_agent.services import proxmox_restore as restore
 from drastic_common.process import ProcessCancelledError
 
-ARCHIVE = "vzdump-qemu-100-2026_10_02-12_00_00.vma"
+ARCHIVE = "qemu-101.tar"
 IDENTITY = {"job_uuid": "job", "repository_id": 2, "snapshot_id": "snapshot"}
-SNAPSHOT = {"id": "snapshot", "tags": ["job_uuid:job", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]}
-LISTING = "CFG: size: 100 name: qemu-server.conf\nCFG: size: 12 name: qemu-server.fw\nDEV: dev_id=1 size: 4096 devname: drive-scsi0\nDEV: dev_id=2 size: 4096 devname: drive-tpmstate0-backup\n"
+SNAPSHOT = {"id": "snapshot", "tags": ["job_uuid:job", "source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
 
 
 class Report:
@@ -41,6 +41,12 @@ def setup_restore(monkeypatch, tmp_path, fail_at=None):
         "node": "pve", "used_vmids": [100], "storages": [{"storage": "local-lvm", "avail": 10**9}],
     })
     commands = []
+    raw = tmp_path / "source.raw"
+    raw.write_bytes(b"x" * 4096)
+    source = tmp_path / ARCHIVE
+    with source.open("wb") as output:
+        write_archive({"vmid": 101, "config": "memory: 512\n", "volumes": [
+            {"disk": "scsi0", "path": str(raw), "size": 4096}]}, output)
 
     def run(command, **kwargs):
         if kwargs.get("cancelled", lambda: False)():
@@ -48,20 +54,17 @@ def setup_restore(monkeypatch, tmp_path, fail_at=None):
         commands.append(command)
         if fail_at and fail_at in command:
             raise RuntimeError("tool failed")
-        if command[:2] == ["vma", "list"]:
-            return LISTING
-        if command[:2] == ["vma", "extract"]:
-            Path(command[-1]).mkdir()
-            (Path(command[-1]) / "disk-drive-scsi0.raw").touch()
+        if command[:2] == ["vma", "create"]:
+            Path(command[2]).write_bytes(b"vma")
         return ""
 
     def restic_restore(**kwargs):
         commands.append(["restic", "restore"])
-        (Path(kwargs["target"]) / ARCHIVE).write_bytes(b"archive")
+        shutil.copyfile(source, Path(kwargs["target"]) / ARCHIVE)
 
     monkeypatch.setattr(restore, "run_process", run)
     agent = SimpleNamespace(resticapi=SimpleNamespace(
-        ls=lambda **kw: [{"type": "file", "path": "/" + ARCHIVE, "size": 7}],
+        ls=lambda **kw: [{"type": "file", "path": "/" + ARCHIVE, "size": source.stat().st_size}],
         restore=restic_restore,
     ))
     return agent, Report(), commands
@@ -74,7 +77,8 @@ def test_vm_restore_verifies_archive_uses_safe_flags_and_cleans_work(monkeypatch
     command = commands[-1]
     assert command[0] == "qmrestore"
     assert command[2:] == ["101", "--storage", "local-lvm", "--unique", "1", "--start", "0", "--force", "0"]
-    assert ["vma", "verify"] == commands[1][:2]
+    assert commands[1][:2] == ["vma", "create"]
+    assert commands[-2][:2] == ["vma", "verify"]
     assert report.data["target_vmid"] == 101
     assert list(restore.workspace_root().iterdir()) == []
 
@@ -88,40 +92,16 @@ def test_invalid_vm_destination_never_downloads_or_imports(monkeypatch, tmp_path
     assert commands == []
 
 
-@pytest.mark.parametrize("failure", ["verify", "extract", "qmrestore"])
+@pytest.mark.parametrize("failure", ["create", "verify", "qmrestore"])
 def test_tool_failure_cleans_workspace_without_deleting_vm(monkeypatch, tmp_path, failure):
     agent, report, commands = setup_restore(monkeypatch, tmp_path, fail_at=failure)
     with pytest.raises(RuntimeError, match="tool failed"):
         restore.run_proxmox_restore(agent, report, SNAPSHOT, identity=IDENTITY,
-                                   mode="proxmox_prepare" if failure == "extract" else "proxmox_vm",
+                                   mode="proxmox_vm",
                                    vmid=101, storage="local-lvm")
     assert list(restore.workspace_root().iterdir()) == []
     assert not any("destroy" in command for command in commands)
     assert bool(report.data.get("destination_may_contain_restored_data")) == (failure == "qmrestore")
-
-
-def test_prepare_browse_export_reuses_images_and_removes_session(monkeypatch, tmp_path):
-    agent, report, commands = setup_restore(monkeypatch, tmp_path)
-    calls = []
-
-    def guest(work, action, **kwargs):
-        calls.append(action)
-        assert (work / "disks" / "disk-drive-scsi0.raw").exists()
-        assert not (work / ARCHIVE).exists()
-        return {"volumes": [{"device": "/dev/vg/root", "filesystem": "ext4", "error": None}],
-                "entries": [{"path": "/etc", "type": "dir"}], "files": 1, "bytes": 6, "skipped_special_files": 0}
-
-    monkeypatch.setattr(restore, "guest_request", guest)
-    restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_prepare", identity=IDENTITY)
-    session_id = report.data["session_id"]
-    result = restore.session_action("entries", session_id, IDENTITY, volume="/dev/vg/root")
-    assert result["entries"][0]["path"] == "/etc"
-    restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_files", identity=IDENTITY,
-                               session_id=session_id, volume="/dev/vg/root", include_paths=["/etc"],
-                               restore_location=str(tmp_path / "out"))
-    assert calls == ["volumes", "entries", "export"]
-    assert commands.count(["restic", "restore"]) == 1
-    assert list(restore.workspace_root().iterdir()) == []
 
 
 def test_workspace_identity_expiry_and_active_lock(monkeypatch, tmp_path):
@@ -145,10 +125,8 @@ def test_workspace_identity_expiry_and_active_lock(monkeypatch, tmp_path):
 
 def test_bad_archive_or_insufficient_space_never_imports(monkeypatch, tmp_path):
     agent, report, commands = setup_restore(monkeypatch, tmp_path)
-    with pytest.raises(ValueError, match="QEMU archive"):
-        restore.validate_archive(agent, {**SNAPSHOT, "tags": [*SNAPSHOT["tags"], "kind:manifest"]})
-    with pytest.raises(ValueError, match="unsafe"):
-        restore.archive_devices(LISTING.replace("drive-scsi0", "../../escape"))
+    with pytest.raises(ValueError, match="QEMU TAR"):
+        restore.validate_tar_archive(agent, {**SNAPSHOT, "tags": [*SNAPSHOT["tags"], "kind:manifest"]})
     monkeypatch.setattr(restore.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
     with pytest.raises(ValueError, match="space"):
         restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_vm", identity=IDENTITY,
@@ -173,7 +151,7 @@ def test_cancellation_between_download_and_import_cleans_workspace(monkeypatch, 
     assert list(restore.workspace_root().iterdir()) == []
 
 
-def test_failed_export_removes_prepared_images(monkeypatch, tmp_path):
+def test_failed_export_removes_prepared_session(monkeypatch, tmp_path):
     agent, report, _ = setup_restore(monkeypatch, tmp_path)
     with restore.workspace(report.uuid, create=True) as work:
         (work / "session.json").write_text(json.dumps(IDENTITY))
@@ -188,6 +166,22 @@ def test_failed_export_removes_prepared_images(monkeypatch, tmp_path):
                                    restore_location=str(tmp_path / "out"))
     assert list(restore.workspace_root().iterdir()) == []
     assert report.data["destination_may_contain_restored_data"]
+
+
+@pytest.mark.parametrize("mode", ["proxmox_vm", "proxmox_prepare", "proxmox_files"])
+def test_legacy_vma_is_rejected_before_tools_or_workspace_creation(monkeypatch, tmp_path, mode):
+    agent, report, commands = setup_restore(monkeypatch, tmp_path)
+    snapshot = {"id": "snapshot", "tags": ["job_uuid:job", "source:proxmox", "guest_type:qemu", "backup_method:vzdump"]}
+
+    def no_guest_tools():
+        pytest.fail("Legacy VMA must fail before checking guest dependencies")
+
+    monkeypatch.setattr(restore, "guest_tools_available", no_guest_tools)
+    with pytest.raises(ValueError, match="legacy VMA"):
+        restore.run_proxmox_restore(agent, report, snapshot, mode=mode, identity=IDENTITY,
+                                   vmid=101, storage="local-lvm", session_id=report.uuid)
+    assert commands == []
+    assert not restore.workspace_root(create=False).exists()
 
 
 def test_snapshot_vm_restore_reuses_native_import(monkeypatch, tmp_path):

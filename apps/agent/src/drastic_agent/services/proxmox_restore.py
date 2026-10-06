@@ -130,13 +130,10 @@ def guest_tools_error():
     return None
 
 
-def guest_request(work, action, *, agent=None, cancelled=lambda: False, **kwargs):
-    remote = work / "remote.json"
-    descriptor = json.loads(remote.read_text()) if remote.exists() else None
-    if descriptor and agent is None:
-        raise ValueError("On-demand guest browsing requires repository access")
+def guest_request(work, action, *, agent, cancelled=lambda: False, **kwargs):
+    descriptor = json.loads((work / "remote.json").read_text())
     return get_guest_file_backend().request(
-        agent.resticapi if agent else None, descriptor, work, action,
+        agent.resticapi, descriptor, work, action,
         cancelled=cancelled, **kwargs)
 
 
@@ -153,18 +150,17 @@ def session_action(action, session_id, identity, *, agent=None, repository=None,
         raise ValueError("Unsupported restore session action")
 
 
-def validate_archive(agent, snapshot):
+def validate_tar_archive(agent, snapshot):
     tags = snapshot.get("tags") or []
-    if (not {"source:proxmox", "guest_type:qemu"}.issubset(tags) or "kind:manifest" in tags
-            or not any(tag in tags for tag in ("backup_method:vzdump", "backup_method:snapshot"))):
-        raise ValueError("Select a Proxmox QEMU archive snapshot")
+    if (not {"source:proxmox", "guest_type:qemu", "backup_method:snapshot"}.issubset(tags)
+            or "kind:manifest" in tags):
+        raise ValueError("Select a Proxmox QEMU TAR snapshot")
     entries = agent.resticapi.ls(snapshot_id=snapshot["id"], path="/") or []
     if isinstance(entries, dict):
         entries = [entries]
     files = [e for e in entries if e.get("type") == "file"]
-    pattern = r"/?qemu-\d+\.tar" if "backup_method:snapshot" in tags else r"/?vzdump-qemu-\d+-[\d_-]+\.vma"
-    if len(files) != 1 or not re.fullmatch(pattern, files[0].get("path", "")):
-        raise ValueError("Snapshot must contain exactly one supported VM archive")
+    if len(files) != 1 or not re.fullmatch(r"/?qemu-\d+\.tar", files[0].get("path", "")):
+        raise ValueError("Snapshot must contain exactly one VM TAR archive")
     return files[0]
 
 
@@ -246,17 +242,6 @@ def create_vma(work, cancelled):
     return archive
 
 
-def archive_devices(listing):
-    devices = re.findall(r"^DEV:.*?size:[ \t]*(\d+)[ \t]+devname:[ \t]*(.*)$", listing, re.MULTILINE)
-    configs = re.findall(r"^CFG:.*?name:[ \t]*(.*)$", listing, re.MULTILINE)
-    if not devices or "qemu-server.conf" not in configs or not set(configs) <= {"qemu-server.conf", "qemu-server.fw"}:
-        raise ValueError("Unsupported VMA archive layout")
-    if any(not re.fullmatch(r"drive-(?:(?:ide|sata|scsi|virtio)\d+|efidisk\d+|tpmstate\d+(?:-backup)?)", name)
-           for _, name in devices):
-        raise ValueError("VMA archive contains an unsafe or unsupported device name")
-    return sum(int(size) for size, _ in devices)
-
-
 def require_space(path, size):
     if shutil.disk_usage(path).free < size + 64 * 1024 * 1024:
         raise ValueError(f"Insufficient workspace space: at least {size} bytes plus 64 MiB required")
@@ -325,6 +310,11 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
                         unique=True, session_id=None, volume=None, include_paths=(),
                         restore_location=None, overwrite_policy="fail_if_exists"):
     cancelled = report.cancel_event.is_set
+    tags = snapshot.get("tags") or []
+    native = "backup_method:native" in tags
+    if (not {"source:proxmox", "guest_type:qemu"}.issubset(tags) or "kind:manifest" in tags
+            or not (native or "backup_method:snapshot" in tags)):
+        raise ValueError("Proxmox VM/file restore supports only TAR and Native/CBT snapshots; legacy VMA backups are not supported")
 
     def phase(value):
         report.set_data("restore_phase", value)
@@ -351,8 +341,6 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
 
     if mode == "proxmox_prepare":
         guest_tools_available()
-        if not any(tag in (snapshot.get("tags") or []) for tag in ("backup_method:snapshot", "backup_method:native")) and not shutil.which("vma"):
-            raise ValueError("vma is missing on the restore agent")
     elif mode == "proxmox_vm":
         if not isinstance(unique, bool):
             raise ValueError("Unique MAC address selection must be a boolean")
@@ -368,13 +356,11 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
     else:
         raise ValueError("Unsupported Proxmox restore mode")
 
-    native = "backup_method:native" in (snapshot.get("tags") or [])
-    archive = None if native else validate_archive(agent, snapshot)
+    archive = None if native else validate_tar_archive(agent, snapshot)
     keep_workspace = False
     with workspace(report.uuid, create=True) as work:
         try:
-            snapshot_archive = "backup_method:snapshot" in (snapshot.get("tags") or [])
-            if mode == "proxmox_prepare" and (native or snapshot_archive):
+            if mode == "proxmox_prepare":
                 descriptor = {"format": "native" if native else "tar", "snapshot_id": snapshot["id"]}
                 if native:
                     vmids = [tag.removeprefix("vmid:") for tag in snapshot.get("tags", []) if tag.startswith("vmid:")]
@@ -391,50 +377,32 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
             if native:
                 phase("Restoring native VM blocks")
                 disk_size = restore_native_blocks(agent, report, snapshot, work, cancelled)
-                archive_path = None
             else:
                 require_space(work, int(archive.get("size") or 0))
-                phase("Restoring VM archive" if snapshot_archive else "Restoring VMA archive")
+                phase("Restoring VM archive")
                 status = agent.resticapi.restore(
                     snapshot_id=snapshot["id"], target=str(work), include_paths=[archive["path"]],
                     overwrite_policy="fail_if_exists", callback=AgentReport.process_restore_status,
                     callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500)
                 AgentReport.process_restore_status(status, operation_uuid=report.uuid)
                 archive_path = work / archive["path"].lstrip("/")
-            if snapshot_archive:
                 phase("Extracting snapshot disks")
                 disk_size = unpack_snapshot(archive_path, work, cancelled)
-            elif not native:
-                phase("Verifying VMA archive")
-                run_process(["vma", "verify", str(archive_path)], cancelled=cancelled)
-                listing = run_process(["vma", "list", str(archive_path)], cancelled=cancelled)
-                disk_size = archive_devices(listing)
-            if mode == "proxmox_vm":
-                if native or snapshot_archive:
-                    phase("Preparing Proxmox import")
-                    archive_path = create_vma(work, cancelled)
-                options = host_options(cancelled)
-                if vmid in options["used_vmids"]:
-                    raise ValueError(f"VMID {vmid} already exists in the cluster")
-                available = next((s.get("avail", 0) for s in options["storages"] if s["storage"] == storage), 0)
-                if int(available) < disk_size:
-                    raise ValueError("Target storage has insufficient free space for the restored disks")
-                phase(f"Importing VM {vmid} into {storage}")
-                report.set_data("destination_may_contain_restored_data", True)
-                report.set_data("target_vmid", vmid)
-                run_process(["qmrestore", str(archive_path), str(vmid), "--storage", storage,
-                             "--unique", "1" if unique else "0", "--start", "0", "--force", "0"],
-                            cancelled=cancelled)
-                report.log_message(f"VM {vmid} restored on {options['node']}; VM is stopped")
-            else:
-                if not snapshot_archive and not native:
-                    require_space(work, disk_size)
-                    phase("Extracting guest disks")
-                    run_process(["vma", "extract", str(archive_path), str(work / "disks")], cancelled=cancelled)
-                    archive_path.unlink()
-                phase("Inspecting guest filesystems")
-                prepare_browser(agent, report, work, identity)
-                keep_workspace = True
+            phase("Preparing Proxmox import")
+            archive_path = create_vma(work, cancelled)
+            options = host_options(cancelled)
+            if vmid in options["used_vmids"]:
+                raise ValueError(f"VMID {vmid} already exists in the cluster")
+            available = next((s.get("avail", 0) for s in options["storages"] if s["storage"] == storage), 0)
+            if int(available) < disk_size:
+                raise ValueError("Target storage has insufficient free space for the restored disks")
+            phase(f"Importing VM {vmid} into {storage}")
+            report.set_data("destination_may_contain_restored_data", True)
+            report.set_data("target_vmid", vmid)
+            run_process(["qmrestore", str(archive_path), str(vmid), "--storage", storage,
+                         "--unique", "1" if unique else "0", "--start", "0", "--force", "0"],
+                        cancelled=cancelled)
+            report.log_message(f"VM {vmid} restored on {options['node']}; VM is stopped")
         finally:
             if not keep_workspace:
                 remove_workspace(work)
@@ -447,5 +415,5 @@ def prepare_browser(agent, report, work, identity):
     (work / "session.json").write_text(json.dumps(identity))
     report.set_data("session_id", report.uuid)
     report.set_data("volumes", result["volumes"])
-    report.set_data("guest_files_on_demand", (work / "remote.json").exists())
+    report.set_data("guest_files_on_demand", True)
     report.set_data("restore_phase", "Ready to browse (expires after 1 hour of inactivity)")

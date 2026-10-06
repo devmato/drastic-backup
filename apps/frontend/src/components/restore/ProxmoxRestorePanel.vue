@@ -17,7 +17,7 @@
     <template v-if="options && mode === 'proxmox_files'">
       <q-banner v-if="options.guest_files_error" class="text-negative">{{ options.guest_files_error }}</q-banner>
       <template v-else>
-        <div class="text-caption q-mb-sm">{{ options.guest_files_on_demand ? 'TAR and Native/CBT backups are read on demand without storing complete guest disks locally. Allow space for working data and exported files. Legacy VMA backups still require archive download and disk extraction.' : 'Preparation downloads and extracts the guest disks on this agent. Allow space for the backup data, extracted disks and exported files.' }} Browser sessions expire after one hour of inactivity.</div>
+        <div class="text-caption q-mb-sm">{{ options.guest_files_on_demand ? 'TAR and Native/CBT backups are read on demand without storing complete guest disks locally. Allow space for working data and exported files.' : 'Update the restore agent for on-demand guest file access. This agent downloads and extracts TAR or Native/CBT disks locally; allow space for backup data, extracted disks and exported files.' }} Browser sessions expire after one hour of inactivity.</div>
         <div v-if="!selection.session_id" class="row items-center q-gutter-sm">
           <q-btn color="primary" label="Prepare file browser" :loading="preparing" :disable="preparing" @click="prepare" />
           <q-btn v-if="preparing && operationId" flat label="Cancel preparation" @click="cancelPreparation" />
@@ -105,6 +105,7 @@ async function pollPreparation() {
         volumes.value = operation.data.volumes || []
         selection.value = { session_id: sessionId, volume: volumeOptions.value[0]?.value || null, include_paths: [] }
       } else {
+        phase.value = `Preparation ${operation.state}`
         error.value = operation.logs?.filter(log => log.level === 'error').slice(-1)[0]?.message || `Preparation ${operation.state}`
       }
       return
@@ -118,6 +119,7 @@ async function pollPreparation() {
 
 async function prepare() {
   error.value = ''
+  phase.value = 'Preparing guest file access…'
   preparing.value = true
   try {
     const result = await operationStore.startRestore({ ...source, mode: 'proxmox_prepare' })
@@ -126,6 +128,7 @@ async function prepare() {
     await pollPreparation()
   } catch (e) {
     preparing.value = false
+    phase.value = 'Preparation failed'
     error.value = getApiErrorMessage(e)
   }
 }

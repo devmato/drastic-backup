@@ -109,7 +109,7 @@ class RestoreService:
             artifact = by_snapshot.get(snapshot.get("id"))
             tags = snapshot.get("tags") or []
             snapshot["proxmox_archive"] = ({"source:proxmox", "guest_type:qemu"}.issubset(tags)
-                and any(tag in tags for tag in ("backup_method:vzdump", "backup_method:snapshot", "backup_method:native"))
+                and any(tag in tags for tag in ("backup_method:snapshot", "backup_method:native"))
                 and "kind:manifest" not in tags)
             if artifact:
                 snapshot["guest_name"] = (artifact.data or {}).get("guest_name")
@@ -204,17 +204,16 @@ class RestoreService:
             raise RestoreServiceException("Unsupported restore mode")
 
         proxmox = data["mode"] != RESTORE_MODE_PLAIN_FILE
-        if proxmox and (agent.protocol_version or 0) < 2:
-            raise RestoreServiceException("Update the agent to use Proxmox restore")
         snapshot = cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
         if proxmox:
+            cls._annotate_proxmox_snapshots(job, repository, [snapshot])
+            if not snapshot["proxmox_archive"] or snapshot.get("restore_error"):
+                raise RestoreServiceException(snapshot.get("restore_error") or
+                    "Proxmox VM/file restore supports only TAR and Native/CBT snapshots; legacy VMA backups are not supported")
             if "backup_method:native" in (snapshot.get("tags") or []) and (agent.protocol_version or 0) < 8:
                 raise RestoreServiceException("Update the agent to restore native Proxmox backups (protocol 8)")
             if "backup_method:snapshot" in (snapshot.get("tags") or []) and (agent.protocol_version or 0) < 7:
                 raise RestoreServiceException("Update the agent to restore Proxmox disk snapshots (protocol 7)")
-            cls._annotate_proxmox_snapshots(job, repository, [snapshot])
-            if not snapshot["proxmox_archive"] or snapshot.get("restore_error"):
-                raise RestoreServiceException(snapshot.get("restore_error") or "Select a Proxmox QEMU archive snapshot")
 
         keys = ("mode", "snapshot_id", "restore_location", "include_paths", "overwrite_policy")
         if proxmox:

@@ -371,7 +371,7 @@ const progressSource = computed(() => {
       return { value: 1 }
     }
 
-    if (operationData.value.restore_phase && !['Restoring VMA archive', 'Restoring VM archive'].includes(operationData.value.restore_phase)) {
+    if (operationData.value.restore_phase && operationData.value.restore_phase !== 'Restoring VM archive') {
       return { value: null, basis: operationData.value.restore_phase }
     }
 

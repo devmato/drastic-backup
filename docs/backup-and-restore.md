@@ -286,17 +286,21 @@ If restic fails after writing has started, the operation remains `failed` and is
 
 Open **Backup Jobs → Restore** (the purple restore icon). Proxmox jobs offer
 **Whole VM**, **Files from VM**, and **Archive files**. Snapshots show their source
-VMID, guest name when available, and timestamp. VM modes exclude manifest snapshots
-and archives known to have failed. Successfully backed-up VMs from a partially
+VMID, guest name when available, and timestamp. VM and guest-file modes support
+Snapshot/TAR and Native/CBT backups and exclude manifest snapshots, legacy VMA
+snapshots, and backups known to have failed. Successfully backed-up VMs from a partially
 failed multi-VM operation remain usable.
+
+Legacy `vzdump`/VMA backups are no longer supported by the Proxmox VM or guest-file
+restore paths. **Archive files** can still recover their original files through
+ordinary Restic restore. VMA remains an internal import format for whole-VM restore.
 
 The target agent must be online and assigned the source repository. Protocol 10
 enables on-demand TAR/native guest file restore; older agents require protocol 8
-for native block backups, protocol 7 for TAR snapshots and protocol 2 for legacy
-VMA, and materialize guest disks locally. Whole-VM restore requires an agent
+for native block backups and protocol 7 for TAR snapshots, and materialize guest
+disks locally. Whole-VM restore requires an agent
 running directly on the Proxmox node with root privileges. Guest file restore
-uses the Linux/FUSE/libguestfs backend and does not require Proxmox host tools
-for TAR/native backups; legacy VMA preparation additionally requires `vma`.
+uses the Linux/FUSE/libguestfs backend and does not require Proxmox host tools.
 Another agent can be selected; the original backup agent need not be online.
 Local `pvesh`, `vma`, and `qmrestore` perform VM host operations, so restoring
 does not require the original node's API credentials.
@@ -308,7 +312,7 @@ does not require the original node's API credentials.
    original VMID can be reused only when it is free, including across the cluster.
 3. Keep **Generate new MAC addresses** enabled for a separate recovered VM, or
    disable it when deliberately preserving the original network identity.
-4. Start the restore. TAR snapshots are validated and extracted; native block backups are validated and assembled into RAW disks. Both use native `vma create` to prepare an importable archive. Legacy VMA backups are still accepted. It then verifies the VMA and runs
+4. Start the restore. TAR snapshots are validated and extracted; native block backups are validated and assembled into RAW disks. Both use native `vma create` to prepare an importable archive. It then verifies the VMA and runs
    `qmrestore` without force/overwrite and without starting the VM.
 5. Check the operation result and the restored VM configuration in Proxmox before
    starting it. Referenced bridges, ISO images and other host resources must be
@@ -342,8 +346,7 @@ it does not install another Python package into its virtual environment.
 
 1. Choose the agent, repository and VM snapshot, then **Prepare file browser**.
 2. Wait for metadata validation and filesystem inspection. TAR and Native/CBT
-   backups are read on demand via read-only virtual disks. Legacy VMA backups
-   still download, verify and extract the archive first. Preparation is an
+   backups are read on demand via read-only virtual disks. Preparation is an
    asynchronous restore operation and can be cancelled.
 3. Choose a guest filesystem/volume, then select files or directories. Linux LVM
    logical volumes and additional Windows NTFS partitions appear separately.
@@ -393,7 +396,7 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
   directory on a sufficiently large filesystem. Restart the agent after changing
   it. The directory is private to the agent and must not be shared by multiple
   agent instances.
-- Whole-VM restore of a new snapshot backup needs workspace for the TAR plus extracted disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. Legacy VMA restore needs workspace for the VMA archive. On-demand TAR/native file browsing needs workspace for metadata and appliance working data, Restic's repository metadata cache, and space for the exported files, not full guest disk images. Legacy VMA file browsing still needs archive plus extracted-disk space. Its capacity checks conservatively use the disks' logical sizes.
+- Whole-VM restore needs workspace for downloaded TAR/native data and reconstructed disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. On-demand TAR/native file browsing needs workspace for metadata and appliance working data, Restic's repository metadata cache, and space for the exported files, not full guest disk images.
 - On-demand mounts and helpers live only for a single request and are closed on
   success, failure or cancellation. A repository read lock is held while mounted,
   so prune may be blocked during active requests, not during idle sessions.
@@ -430,7 +433,6 @@ Proxmox node with `restic`, `vma`, `qmrestore` and the guestfs dependencies inst
 ```bash
 # A SMALL test VM on LVM-thin; creates and deletes a temporary disk snapshot:
 export DRASTIC_TEST_PROXMOX_VMID=990000
-# Alternatively test legacy restore with DRASTIC_TEST_VMA=/path/to/test-vm.vma
 export DRASTIC_TEST_GUEST_VOLUME=/dev/vg/root
 export DRASTIC_TEST_GUEST_FILE=/etc/hostname
 export DRASTIC_TEST_GUEST_SHA256=<sha256-of-the-original-file>
@@ -441,9 +443,9 @@ cd apps/agent
 .venv/bin/python -m pytest tests/test_proxmox_restore_integration.py -v
 ```
 
-The tests stream the test VM's snapshot (or the supplied legacy VMA) into a temporary real restic repository,
+The tests stream the test VM's TAR snapshot into a temporary real restic repository,
 restore/export a selected file and compare its SHA-256, and optionally restore
-a whole stopped VM. Repeat with an unencrypted Windows/NTFS test archive and a
+a whole stopped VM. Repeat with an unencrypted Windows/NTFS test VM and a
 known file, for example `/Users/Test/Documents/restore-check.txt`, using its
 volume device and a different free VMID. Use `--basetemp` on a sufficiently large
 filesystem if the system temporary directory is too small. The test VMs are left
