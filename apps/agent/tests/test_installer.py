@@ -571,7 +571,7 @@ esac
     calls = (tmp_path / "calls").read_text() if (tmp_path / "calls").exists() else ""
     if expected == "installed":
         assert (tmp_path / "installed").exists()
-        assert "--no-remove --no-install-recommends python3-guestfs libguestfs-tools python3-fuse python3-libnbd libnbd-bin" in calls
+        assert "--no-remove --no-install-recommends python3-guestfs libguestfs-tools python3-fuse fuse3 python3-libnbd libnbd-bin" in calls
         assert ("sudo -v" in calls) == (uid != 0)
         assert "dependencies are available" in output
     elif expected == "skip":
