@@ -344,9 +344,9 @@ function submitForm() {
   }
 
   if (jobForm.type === 'proxmox' && (jobForm.config?.backup_mode || 'snapshot') !== 'snapshot'
-    && !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(jobForm.config?.fleecing_storage || '')) {
+    && !/^(?:[A-Za-z][A-Za-z0-9_.-]*)?$/.test(jobForm.config?.fleecing_storage || '')) {
     activeSection.value = 'entries'
-    $q.notify({ message: 'Enter a temporary backup storage ID for native backups', color: 'negative' })
+    $q.notify({ message: 'Enter a valid temporary backup storage ID or leave it empty for automatic selection', color: 'negative' })
     return
   }
 

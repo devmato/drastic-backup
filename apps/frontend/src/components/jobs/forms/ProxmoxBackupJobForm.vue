@@ -6,13 +6,17 @@
           label="Backup Mode" emit-value map-options
           @update:model-value="value => updateConfig({ backup_mode: value })" />
       </div>
-      <div v-if="configModel.backup_mode !== 'snapshot'" class="col-12 col-lg-6">
-        <q-input outlined dense :model-value="configModel.fleecing_storage" label="Temporary backup storage"
-          hint="Local LVM-thin storage ID, e.g. local-lvm. Native backups use fleecing here."
-          :rules="[value => /^[A-Za-z][A-Za-z0-9_.-]*$/.test(value || '') || 'Enter a storage ID']"
+    </div>
+    <q-expansion-item v-if="configModel.backup_mode !== 'snapshot'" label="Advanced" dense
+      :caption="configModel.fleecing_storage ? `Temporary storage: ${configModel.fleecing_storage}` : 'Temporary storage: automatic'"
+      class="q-mb-md">
+      <div class="q-pa-sm">
+        <q-input outlined dense :model-value="configModel.fleecing_storage" label="Temporary backup storage (optional)"
+          hint="Leave empty to select a suitable local LVM-thin storage automatically."
+          :rules="[value => /^(?:[A-Za-z][A-Za-z0-9_.-]*)?$/.test(value || '') || 'Enter a valid storage ID']"
           @update:model-value="value => updateConfig({ fleecing_storage: value })" />
       </div>
-    </div>
+    </q-expansion-item>
     <q-banner v-if="configModel.backup_mode !== 'snapshot' && nativeError" class="bg-negative text-white q-mb-md">
       {{ nativeError }}
     </q-banner>
@@ -136,7 +140,9 @@ const guests = ref([])
 const loadingGuests = ref(false)
 const loadError = ref('')
 const selectedAgent = computed(() => agentStore.agents.find(agent => String(agent.id) === String(props.agentId)))
-const nativeError = computed(() => selectedAgent.value?.connections?.proxmox?.native_backups_error || '')
+const nativeError = computed(() => selectedAgent.value?.connections?.proxmox?.native_backups_error
+  || (!configModel.value.fleecing_storage && (selectedAgent.value?.protocol_version || 0) < 9
+    ? 'Update the agent to select temporary backup storage automatically (protocol 9 required).' : ''))
 let loadVersion = 0
 
 const selectionModeOptions = [

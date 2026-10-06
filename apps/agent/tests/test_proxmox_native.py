@@ -19,6 +19,62 @@ from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
 
 
+@pytest.mark.parametrize("storage,changes,expected,error", [
+    ("", {}, "vm-b", None),
+    ("", {"vm-b": {"data_percent": "60"}}, "vm-a", None),
+    ("", {"vm-a": {"data_percent": "95"}, "vm-b": {"metadata_percent": "95"}}, "spare", None),
+    ("", {"vm-a": {"active": 0}, "vm-b": {"active": 0}}, "spare", None),
+    ("", {"vm-a": {"data_percent": "nan"}, "vm-b": {"metadata_percent": ""}}, "spare", None),
+    ("spare", {}, "spare", None),
+    ("vm-a", {"vm-a": {"data_percent": "95"}}, None, "vm-a.*reserve 20 GiB"),
+    ("disabled", {}, None, "disabled.*No active local LVM-thin"),
+    ("missing", {}, None, "Unknown storage missing"),
+    ("", {id: {"data_percent": "95"} for id in ("vm-a", "vm-b", "spare")}, None, "reserve 20 GiB"),
+    ("", {id: {"metadata_percent": "95"} for id in ("vm-a", "vm-b", "spare")}, None, "metadata usage"),
+    ("", {id: {"disable": 1} for id in ("vm-a", "vm-b", "spare")}, None, "No active local LVM-thin"),
+])
+def test_native_preflight_selects_healthy_storage_and_honors_override(tmp_path, monkeypatch, storage, changes, expected, error):
+    if not shutil.which("perl"):
+        pytest.skip("Perl is required for the real adapter preflight check")
+    from drastic_agent.jobs import proxmox_backup as backup
+    from drastic_agent.jobs import proxmox_native as native
+
+    storages = {id: {"type": "lvmthin", "vgname": id, "thinpool": "data", "content": {"images": 1},
+                     "active": 1, "lv_size": str(100 * 1024**3), "data_percent": used, "metadata_percent": "3"}
+                for id, used in {"vm-a": "60", "vm-b": "40", "spare": "20", "disabled": "0",
+                                 "remote": "0", "other-node": "0", "wrong-content": "0", "zfs": "0"}.items()}
+    storages["disabled"]["disable"] = 1
+    storages["remote"]["shared"] = 1
+    storages["other-node"]["nodes"] = {"other": 1}
+    storages["wrong-content"]["content"] = {"rootdir": 1}
+    storages["zfs"]["type"] = "zfspool"
+    for id, values in changes.items():
+        storages[id].update(values)
+    state = {"config": {}, "active": False, "exports": [], "calls": [], "storages": storages,
+             "volumes": [{"included": True, "key": disk, "volume_config": {"file": f"{id}:vm-103-disk-0"}}
+                         for disk, id in (("scsi0", "vm-a"), ("scsi1", "vm-b"))]}
+    state_path = tmp_path / "state.json"
+    state_path.write_text(json.dumps(state))
+    monkeypatch.setenv("RECOVERY_STATE", str(state_path))
+    monkeypatch.setenv("DRASTIC_PROXMOX_MIN_FREE_GIB", "20")
+    monkeypatch.setattr(native, "check_dependencies", lambda: None)
+    process = native.run_process
+    stub = Path(__file__).with_name("native_recovery_stub.pm")
+    monkeypatch.setattr(native, "run_process", lambda cmd, **kw: process(
+        ["perl", "-e", 'require $ARGV[0]; shift @ARGV; my $file = shift @ARGV; do $file; die $@ if $@;',
+         str(stub), *cmd[1:]], **kw))
+    monkeypatch.setattr(backup, "run_process", lambda cmd, **kw: json.dumps(
+        {"report": [{"lv": [storages[cmd[1].split("/")[0]]]}]}))
+    if error:
+        with pytest.raises(RuntimeError if storage == "missing" else native.ProxmoxError, match=error):
+            native.preflight(103, storage)
+    else:
+        info = native.preflight(103, storage)
+        assert info["fleecing_storage"] == expected
+        assert info["pools"] == [{"pool": f"{expected}/data"}]
+        assert "storages" not in info  # Changing free space must not invalidate CBT identity.
+
+
 @pytest.mark.parametrize("scenario", ["exported-bitmap", "pre-setup", "foreign-export", "stop-failure"])
 def test_recovery_adapter_orders_cleanup_and_handles_previous_target(tmp_path, scenario):
     if not shutil.which("perl"):

@@ -89,9 +89,13 @@ if ($pid) {
     die "Existing NBD exports; finish the other backup first\n" if @{mon_cmd($vmid, 'query-block-exports')};
 }
 my $cfg = PVE::Storage::config();
-my $scfg = PVE::Storage::storage_config($cfg, $request->{fleecing_storage});
-die "Temporary backup storage must be local LVM-thin\n" if $scfg->{type} ne 'lvmthin';
-PVE::Storage::storage_check_enabled($cfg, $request->{fleecing_storage});
+my %storages;
+for my $id ($request->{fleecing_storage} ? ($request->{fleecing_storage}) : PVE::Storage::storage_ids($cfg)) {
+    my $scfg = PVE::Storage::storage_config($cfg, $id);
+    next if $scfg->{type} ne 'lvmthin' || $scfg->{shared} || !$scfg->{content}->{images};
+    next if !PVE::Storage::storage_check_enabled($cfg, $id, undef, 1);
+    $storages{$id} = $scfg;
+}
 my %sources;
 for my $volume (@{PVE::QemuConfig->get_backup_volumes($conf)}) {
     next if !$volume->{included};
@@ -101,12 +105,18 @@ die "No backupable disks\n" if !keys %sources;
 my $session = $pid ? "$pid:" . PVE::ProcFSTools::read_proc_starttime($pid) : 'stopped';
 my $info = {sources => \%sources, session => $session,
     host => PVE::Tools::file_get_contents('/etc/machine-id'),
-    vm_identity => {smbios1 => $conf->{smbios1}, vmgenid => $conf->{vmgenid}},
-    pools => [{pool => "$scfg->{vgname}/$scfg->{thinpool}"}]};
+    vm_identity => {smbios1 => $conf->{smbios1}, vmgenid => $conf->{vmgenid}}};
 if ($request->{check}) {
+    my $status = PVE::Storage::storage_info({ids => \%storages}, 'images');
+    $info->{storages} = [map { {id => $_, pool => "$storages{$_}->{vgname}/$storages{$_}->{thinpool}"} }
+        grep { $status->{$_}->{active} } sort keys %storages];
     print $protocol encode_json($info), "\n";
     exit;
 }
+my $storage = $request->{fleecing_storage} // '';
+my $scfg = $storages{$storage} or die "Temporary backup storage '$storage' is not an enabled local LVM-thin image storage\n";
+$info->{fleecing_storage} = $storage;
+$info->{pools} = [{pool => "$scfg->{vgname}/$scfg->{thinpool}"}];
 
 package DrasticBackupProvider;
 use JSON;

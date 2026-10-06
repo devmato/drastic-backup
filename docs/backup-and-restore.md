@@ -105,7 +105,7 @@ Required agent prerequisites:
 - The agent must run on the Proxmox host.
 - The agent must run as root, with local `qm`, `perl`, `blockdev`, `lvs` and the installed Proxmox Perl modules available.
 - Snapshot mode requires LVM-thin source disks. Native modes require protocol 8, the installed Proxmox external Backup Access API, `/dev/fuse`, `fusermount3`, `python3-fuse`, `python3-libnbd` and `libnbd-bin`. Native prerequisites are checked at runtime and reported by the agent. This integration is tested on PVE 9.2/QEMU 11 with LVM-thin disks.
-- For native modes, enter **Temporary backup storage**: a local LVM-thin storage ID such as `local-lvm`. It holds old blocks overwritten during backup (fleecing), not a preallocated full VM copy. Its growth still requires free data and metadata capacity.
+- Native modes automatically select an active local LVM-thin storage with sufficient data and metadata headroom (agent protocol 9). Suitable VM source storages are preferred, then the most free capacity, with storage ID as a stable tie-breaker. **Advanced → Temporary backup storage** optionally pins a specific storage; an unavailable or unsuitable explicit choice fails instead of switching elsewhere. Fleecing holds old blocks overwritten during backup, not a preallocated full VM copy. Its growth still requires free data and metadata capacity.
 - Proxmox API credentials must be configured on the agent.
 - The configured API token must be able to list nodes, list QEMU guests and read QEMU configs. Snapshot operations use the local root agent, not the API token.
 
@@ -122,7 +122,7 @@ Agent environment variables remain a fallback when no configuration has been sav
 Configuration:
 
 - `backup_mode` -- `snapshot` (default), `native` or `native_cbt`.
-- `fleecing_storage` -- Required for native modes; local LVM-thin storage ID. Hidden in the form for Snapshot mode.
+- `fleecing_storage` -- Optional local LVM-thin storage ID for native modes; empty or omitted means automatic selection. Available under **Advanced**, hidden for Snapshot mode. Explicit selection remains compatible with agent protocol 8; automatic selection requires protocol 9.
 - `selection_mode` -- Guest selection strategy. Supported values are `all` and `include`.
 - `guest_ids` -- List of selected VMIDs. Required only when `selection_mode` is `include`.
 
@@ -169,6 +169,7 @@ Only a small metadata plan and bounded streaming buffers are staged on the sourc
 - A small durable agent-local journal tracks owned workspaces and helper processes. Startup and subsequent Proxmox jobs retry cleanup. Uncertain/foreign ownership remains pending instead of deleting unrelated VM resources.
 - Recovery records setup intent and exact export/node ownership. It stops owned NBD exports and waits for their removal before tearing down Backup Access, so exported bitmaps are no longer busy. A pre-setup failure skips teardown when QEMU has no active backup access, even if a previous target ID remains cached. Foreign resources or failed NBD shutdown leave cleanup pending.
 - Pool checks run through the existing process monitor at five-second intervals even when progress output stalls. Reserve exhaustion aborts through native failure cleanup. Fleecing is not a fixed-space guarantee.
+- Storage selection is fixed during preflight for each VM backup and logged as automatic or configured. The selected pool is checked again before setup and monitored throughout the backup. No suitable storage causes a preflight error with the available capacity-check reasons.
 - **Job details** shows requested/effective mode, full-read reason, actual disk bytes read, disk bytes reused, newly stored packed bytes and cleanup status. Disk I/O avoided and Restic deduplication are separate metrics.
 
 ## TrueNAS Backups
@@ -415,7 +416,7 @@ DRASTIC_TEST_NATIVE_ROUNDTRIP=1 .venv/bin/python -m pytest \
   --basetemp=/var/tmp/drastic-native-test -s
 ```
 
-It tests initial/full and CBT runs, a changed block, upload failure, lost bitmap, SIGKILL of the backup controller and Perl provider helper, pre-setup failure after a different completed target, checkpoint invalidation/recovery, pruning older backups and real VM import with EFI/TPM. Recovery checks that QEMU remains running with the same process ID and releases the owned backup lock. It never selects VM 103 or another existing VM for writes, crash tests or restore. A real Windows boot/application recovery check is still required before relying on the new mode for production recovery.
+It tests automatic temporary storage selection, initial/full and CBT runs, a changed block, upload failure, lost bitmap, SIGKILL of the backup controller and Perl provider helper, pre-setup failure after a different completed target, checkpoint invalidation/recovery, pruning older backups and real VM import with EFI/TPM. Recovery checks that QEMU remains running with the same process ID and releases the owned backup lock. It never selects VM 103 or another existing VM for writes, crash tests or restore. A real Windows boot/application recovery check is still required before relying on the new mode for production recovery.
 
 ## Create a User Recovery Export
 

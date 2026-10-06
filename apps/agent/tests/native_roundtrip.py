@@ -39,7 +39,7 @@ try:
     api=ResticApi(str(BASE/'restic'),repository=ResticRepository(location=str(ROOT/'repo'),password='isolated-native-evaluation'))
     api.init()
     agent=SimpleNamespace(identifier='native-evaluation',resticapi=api)
-    job={'id':1,'uuid':str(uuid4()),'config':{'backup_mode':'native_cbt','fleecing_storage':'local-lvm'}}
+    job={'id':1,'uuid':str(uuid4()),'config':{'backup_mode':'native_cbt','fleecing_storage':''}}
     handler=ProxmoxBackupJobHandler(agent,job,1)
     for operation_id,stage in enumerate(('initial','unchanged','changed','failed','retry','native-full','cbt-reseed','bitmap-lost',
                                        'crash','crash-reseed','helper-crash','helper-reseed',

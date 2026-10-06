@@ -30,7 +30,9 @@ sub call {
     my $state = load();
     push @{$state->{calls}}, $command;
     my $result;
-    if ($command eq 'query-block-exports') {
+    if ($command eq 'query-proxmox-support') {
+        $result = {'backup-access-api' => 1};
+    } elsif ($command eq 'query-block-exports') {
         $result = $state->{exports};
         if ($state->{stopping}) {
             $state->{exports} = [];
@@ -64,6 +66,7 @@ package PVE::Tools;
 sub file_get_contents { open(my $f, '<', $_[0]) or die $!; local $/; return <$f>; }
 package PVE::QemuConfig;
 sub load_config { RecoveryMock::load()->{config} }
+sub get_backup_volumes { RecoveryMock::load()->{volumes} }
 sub cleanup_fleecing_images { RecoveryMock::call('cleanup-fleecing'); }
 sub remove_lock { RecoveryMock::call('unlock'); }
 package PVE::QemuServer::Helpers;
@@ -71,7 +74,19 @@ sub vm_running_locally { 42 }
 package PVE::ProcFSTools;
 sub read_proc_starttime { 7 }
 package PVE::Storage;
-sub config { {} }
+sub config { {ids => RecoveryMock::load()->{storages}} }
+sub storage_ids { keys %{$_[0]->{ids}} }
+sub storage_config { $_[0]->{ids}->{$_[1]} or die "Unknown storage $_[1]" }
+sub storage_check_enabled {
+    my $s = storage_config(@_);
+    return !$s->{disable} && (!$s->{nodes} || $s->{nodes}->{pve});
+}
+sub storage_info {
+    my ($cfg) = @_;
+    return {map { $_ => {active => $cfg->{ids}->{$_}->{active}} } keys %{$cfg->{ids}}};
+}
+package PVE::VZDump::QemuServer;
+sub archive_external { }
 package PVE::QemuServer::Monitor;
 sub import { no strict 'refs'; *{caller() . '::mon_cmd'} = \&mon_cmd; }
 sub mon_cmd { shift; RecoveryMock::call(@_); }

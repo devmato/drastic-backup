@@ -49,7 +49,7 @@ Changing the account password re-encrypts the account recovery key for the new p
 
 File jobs back up selected filesystem paths from the agent host. Proxmox jobs stream temporary LVM-thin VM snapshots into restic without a full local copy, deduplicating stable disk contents on the agent.
 
-Proxmox jobs also offer **Native — read all disks** and **Native — with CBT** on updated, supported agents. Select a local LVM-thin temporary backup storage for these modes. CBT skips unchanged large-disk blocks only when tracking is confirmed; otherwise a full native read is logged. All modes produce independently restorable Restic snapshots, and old TAR/VMA backups remain available. Job details separates actual disk reads/reuse from newly stored repository bytes.
+Proxmox jobs also offer **Native — read all disks** and **Native — with CBT** on updated, supported agents. A suitable local LVM-thin temporary backup storage is selected automatically; optionally specify one under **Advanced**. The selected storage is shown in the job log. CBT skips unchanged large-disk blocks only when tracking is confirmed; otherwise a full native read is logged. All modes produce independently restorable Restic snapshots, and old TAR/VMA backups remain available. Job details separates actual disk reads/reuse from newly stored repository bytes.
 
 Only create jobs for data the agent can actually access. Docker agents typically mount the host filesystem read-only under `/mnt/host`.
 

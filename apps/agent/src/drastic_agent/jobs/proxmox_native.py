@@ -45,12 +45,28 @@ def dependency_error():
     return None
 
 
-def preflight(vmid, storage):
+def preflight(vmid, storage=""):
+    from drastic_agent.jobs.proxmox_backup import check_thin_pools
+
     check_dependencies()
     with tempfile.NamedTemporaryFile("w") as file:
         json.dump({"vmid": vmid, "fleecing_storage": storage, "check": True}, file)
         file.flush()
-        return json.loads(run_process(["perl", str(ADAPTER), file.name], timeout=60))
+        info = json.loads(run_process(["perl", str(ADAPTER), file.name], timeout=60))
+    candidates, errors = [], []
+    source_storages = {volume.split(":", 1)[0] for volume in info["sources"].values()}
+    for candidate in info.pop("storages"):
+        try:
+            free = check_thin_pools({"volumes": [candidate]})[candidate["pool"]]
+        except (ProxmoxError, OSError, RuntimeError, TimeoutError) as exc:
+            errors.append(f"{candidate['id']}: {exc}")
+            continue
+        candidates.append((candidate["id"] not in source_storages, -free, candidate["id"], candidate["pool"]))
+    if not candidates:
+        reason = "; ".join(errors) or "No active local LVM-thin storage for VM images"
+        raise ProxmoxError(f"No suitable temporary backup storage{f' ({storage})' if storage else ''}: {reason}")
+    _, _, selected, pool = min(candidates)
+    return {**info, "fleecing_storage": selected, "pools": [{"pool": pool}]}
 
 
 def _session_process(pid):
@@ -105,7 +121,7 @@ def recover_runs(report=None):
                 logging.warning(message)
 
 
-def run_native(handler, report, guest, index):
+def run_native(handler, report, guest, index, info=None):
     from drastic_agent.jobs.proxmox_backup import check_thin_pools
 
     vmid = int(guest["vmid"])
@@ -114,7 +130,9 @@ def run_native(handler, report, guest, index):
     key = hashlib.sha256(f"{handler.job['uuid']}:{repository_id}:{vmid}".encode()).hexdigest()
     previous = proxmox_checkpoints.find_one(key=key)
     checkpoint = previous["data"] if previous else {}
-    info = preflight(vmid, handler.job["config"]["fleecing_storage"])
+    storage = handler.job["config"].get("fleecing_storage", "")
+    info = info if info is not None else preflight(vmid, storage)
+    report.log_message(f"VM {vmid}: temporary backup storage {info['fleecing_storage']} ({'configured' if storage else 'automatic'})")
     check_thin_pools({"volumes": info["pools"]}, report=report)
     old_manifest, parent, reason = None, None, "CBT disabled" if mode == "native" else "No confirmed checkpoint"
     snapshots = handler.agent.resticapi.snapshots(tags=[f"job_uuid:{handler.job['uuid']},vmid:{vmid},backup_method:native"]) or []
@@ -142,7 +160,7 @@ def run_native(handler, report, guest, index):
     work.mkdir(mode=0o700)
     (work / "mount").mkdir()
     request = {"vmid": vmid, "work": str(work.resolve()), "target": "drastic-" + key[:24],
-               "fleecing_storage": handler.job["config"]["fleecing_storage"]}
+               "fleecing_storage": info["fleecing_storage"]}
     (work / "request.json").write_text(json.dumps(request))
     journal = {"host": Path("/etc/machine-id").read_text().strip(), "vmid": vmid, "work": str(work), "created_at": time.time()}
     proxmox_native_runs.insert({"key": operation, "data": journal})
@@ -200,7 +218,7 @@ def run_native(handler, report, guest, index):
         query = receive()
         if (query["event"] != "query" or query["info"]["sources"] != info["sources"]
                 or query["info"]["host"] != info["host"] or query["info"]["vm_identity"] != info["vm_identity"]
-                or query["info"]["pools"] != info["pools"]
+                or query["info"]["pools"] != info["pools"] or query["info"]["fleecing_storage"] != info["fleecing_storage"]
                 or info["session"] != "stopped" and query["info"]["session"] != info["session"]):
             raise ProxmoxError("Native source identity changed during setup")
         info = query["info"]

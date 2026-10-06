@@ -86,13 +86,12 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             if not guests:
                 raise ProxmoxError("No supported Proxmox guests matched this job configuration")
             # Preflight every selected guest before any snapshot or data transfer.
+            native_plans = {}
             for guest in guests:
                 if mode == "snapshot":
                     check_thin_pools(snapshot_info(guest["vmid"]), report=report)
                 else:
-                    if not config.get("fleecing_storage"):
-                        raise ProxmoxError("Native backup needs a temporary backup storage")
-                    preflight(guest["vmid"], config["fleecing_storage"])
+                    native_plans[guest["vmid"]] = preflight(guest["vmid"], config.get("fleecing_storage", ""))
             report.set_data("guests", [guest["vmid"] for guest in guests])
             report.set_data("backup_items_total", len(guests))
             completed, failed = [], []
@@ -102,7 +101,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                     if mode == "snapshot":
                         self._backup_qemu_guest(report, guest, index)
                     else:
-                        run_native(self, report, guest, index)
+                        run_native(self, report, guest, index, info=native_plans[guest["vmid"]])
                     completed.append(guest["vmid"])
                 except ResticCancelledError:
                     raise
@@ -202,6 +201,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
 def check_thin_pools(plan, report=None):
     reserve_gib = env_int("DRASTIC_PROXMOX_MIN_FREE_GIB", 20)
+    free_by_pool = {}
     for pool in {item["pool"] for item in plan["volumes"]}:
         output = run_process(["lvs", pool, "--reportformat", "json", "--units", "b", "--nosuffix",
                               "-o", "lv_size,data_percent,metadata_percent"], timeout=30)
@@ -221,3 +221,5 @@ def check_thin_pools(plan, report=None):
             raise ProxmoxError(f"{message} — metadata usage at or above limit")
         if report:
             report.log_message(message)
+        free_by_pool[pool] = free_gib
+    return free_by_pool

@@ -71,8 +71,6 @@ class AgentProxmoxBackupJobConfigSchema(Schema):
 
     @validates_schema
     def validate_guest_selection(self, data, **kwargs):
-        if data.get("backup_mode", "snapshot") != "snapshot" and not data.get("fleecing_storage"):
-            raise ValidationError({"fleecing_storage": ["Select a temporary backup storage for native backups."]})
         for field in ("guest_ids", "exclude_guest_ids"):
             guest_ids = data.get(field, [])
             if len(set(guest_ids)) != len(guest_ids):

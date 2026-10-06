@@ -141,6 +141,8 @@ def ensure_job_connection(agent, job_type, config=None):
     if job_type == "proxmox" and (config or {}).get("backup_mode", "snapshot") != "snapshot":
         if (agent.protocol_version or 0) < 8:
             raise ValueError("Update the agent to use native Proxmox backups (protocol 8 required)")
+        if not config.get("fleecing_storage") and (agent.protocol_version or 0) < 9:
+            raise ValueError("Update the agent to select temporary backup storage automatically (protocol 9 required)")
         error = ((agent.connections or {}).get("proxmox") or {}).get("native_backups_error")
         if error:
             raise ValueError(error)

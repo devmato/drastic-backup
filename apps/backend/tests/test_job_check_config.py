@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 import pytest
 from marshmallow import ValidationError
 
@@ -8,6 +10,7 @@ from drastic_server.schemas.repository import CheckInputSchema
 from drastic_server.services.job import (
     build_schedule_cron_string,
     create_job_instance,
+    ensure_job_connection,
     normalize_schedule_config,
     update_job_instance,
 )
@@ -78,14 +81,26 @@ def test_proxmox_exclusions_are_validated_on_create_and_update(ids):
 
 
 @pytest.mark.parametrize("mode", ["snapshot", "native", "native_cbt"])
-def test_proxmox_backup_modes_survive_serialization_and_validate_storage(mode):
-    config = {"backup_mode": mode, "fleecing_storage": "local-lvm"}
+@pytest.mark.parametrize("storage", [None, "", "local-lvm"])
+def test_proxmox_backup_modes_survive_serialization_and_validate_storage(mode, storage):
+    config = {"backup_mode": mode, **({"fleecing_storage": storage} if storage is not None else {})}
     data = JobCreateInputSchema().load({"agent_id": 1, "name": "VMs", "type": "proxmox", "config": config})
     job = create_job_instance(data, 1)
     assert AgentJobSchema().dump(job)["config"]["backup_mode"] == mode
-    if mode != "snapshot":
-        with pytest.raises(ValidationError, match="fleecing_storage"):
-            JobCreateInputSchema().load({"agent_id": 1, "name": "VMs", "type": "proxmox", "config": {"backup_mode": mode}})
+    assert AgentJobSchema().dump(job)["config"]["fleecing_storage"] == (storage or "")
+    with pytest.raises(ValidationError, match="fleecing_storage"):
+        JobCreateInputSchema().load({"agent_id": 1, "name": "VMs", "type": "proxmox",
+                                    "config": {"backup_mode": mode, "fleecing_storage": "../invalid"}})
+
+
+def test_automatic_proxmox_storage_requires_updated_agent():
+    agent = SimpleNamespace(protocol_version=8, connections={"proxmox": {"configured": True, "available": True}})
+    config = {"backup_mode": "native_cbt"}
+    with pytest.raises(ValueError, match="protocol 9"):
+        ensure_job_connection(agent, "proxmox", config)
+    ensure_job_connection(agent, "proxmox", {**config, "fleecing_storage": "local-lvm"})
+    agent.protocol_version = 9
+    ensure_job_connection(agent, "proxmox", config)
 
 
 def test_schedule_config_accepts_repository_check_read_data():

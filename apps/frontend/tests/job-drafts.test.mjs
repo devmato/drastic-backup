@@ -109,6 +109,10 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   assert.deepEqual(config.exclude_guest_ids, [101])
   assert.equal(saved.config.backup_mode, 'native_cbt')
   assert.equal(saved.config.fleecing_storage, 'local-lvm')
+  dialog.jobForm.config.fleecing_storage = ''
+  dialog.submitForm()
+  assert.equal(saved.config.fleecing_storage, '')
+  assert.equal(config.fleecing_storage, 'local-lvm')
 })
 
 test('job submission validates general fields even when another section is active', () => {

@@ -66,6 +66,10 @@ class AgentRequestService:
         if (self.agent.protocol_version or 0) < 8 and any(
                 job.type.name == "proxmox" and (job.config or {}).get("backup_mode", "snapshot") != "snapshot" for job in agent_jobs):
             raise AgentException("Update the agent before syncing native Proxmox jobs (protocol 8)")
+        if (self.agent.protocol_version or 0) < 9 and any(
+                job.type.name == "proxmox" and (job.config or {}).get("backup_mode", "snapshot") != "snapshot"
+                and not job.config.get("fleecing_storage") for job in agent_jobs):
+            raise AgentException("Update the agent before syncing automatic temporary storage selection (protocol 9)")
         if (self.agent.protocol_version or 0) < 3 and any(job.type.name == "truenas" for job in agent_jobs):
             raise AgentException("Update the agent before syncing TrueNAS jobs")
 
