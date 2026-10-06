@@ -5,18 +5,15 @@ import os
 import platform
 import re
 import shutil
-import tarfile
 import time
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 from uuid import UUID
 
-from drastic_agent.agent.report import AgentReport
-from drastic_agent.config import DefaultConfig, env_value
+from drastic_agent.config import DefaultConfig, env_int, env_value
 from drastic_agent.services.guest_backend import get_guest_file_backend
-from drastic_common.process import ProcessCancelledError, run_process
+from drastic_common.process import run_pipeline, run_process
 
 WORKSPACE_TTL = 3600
 
@@ -164,146 +161,23 @@ def validate_tar_archive(agent, snapshot):
     return files[0]
 
 
-def unpack_snapshot(archive_path, work, cancelled):
-    """Only known regular members are accepted; never extract links or arbitrary paths."""
-    sizes = {}
-    with tarfile.open(archive_path, mode="r|") as archive:
-        for member in archive:
-            name = member.name
-            disk = re.fullmatch(r"disks/disk-drive-((?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0)\.raw", name)
-            if (not member.isfile() or name in sizes or member.size < 0
-                    or (not disk and name not in {"manifest.json", "qemu-server.conf", "qemu-server.fw"})
-                    or (not disk and member.size > 65535) or len(sizes) >= 257):
-                raise ValueError("Unsafe or unsupported snapshot archive member")
-            if disk and (member.size == 0 or member.size % 512):
-                raise ValueError("Invalid snapshot disk size")
-            require_space(work, member.size)
-            target = work / name
-            target.parent.mkdir(exist_ok=True)
-            with archive.extractfile(member) as source, target.open("xb") as output:
-                while chunk := source.read(1024 * 1024):
-                    if cancelled():
-                        raise ProcessCancelledError("Restore cancelled")
-                    if disk and not any(chunk):
-                        output.seek(len(chunk), 1)
-                    else:
-                        output.write(chunk)
-                output.truncate(member.size)
-            sizes[name] = member.size
-    if not {"manifest.json", "qemu-server.conf"}.issubset(sizes):
-        raise ValueError("Snapshot archive lacks configuration or manifest")
-    manifest = json.loads((work / "manifest.json").read_text())
-    if not isinstance(manifest, dict) or manifest.get("version") != 1:
-        raise ValueError("Unsupported snapshot manifest")
-    if type(manifest.get("vmid")) is not int or archive_path.name != f"qemu-{manifest['vmid']}.tar":
-        raise ValueError("Snapshot manifest VM does not match archive")
-    volumes = manifest.get("volumes")
-    if not isinstance(volumes, list) or not volumes:
-        raise ValueError("Snapshot manifest has no disks")
-    expected = {}
-    for item in volumes:
-        if (not isinstance(item, dict) or not isinstance(item.get("disk"), str)
-                or not re.fullmatch(r"(?:ide|sata|scsi|virtio)\d+|efidisk0|tpmstate0", item["disk"])
-                or type(item.get("size")) is not int or item["size"] <= 0):
-            raise ValueError("Invalid snapshot disk manifest")
-        name = f"disks/disk-drive-{item['disk']}.raw"
-        if name in expected:
-            raise ValueError("Duplicate manifest disk")
-        expected[name] = item["size"]
-    if expected != {name: size for name, size in sizes.items() if name.startswith("disks/")}:
-        raise ValueError("Snapshot disks do not match manifest")
-    archive_path.unlink()
-    return sum(expected.values())
-
-
-def create_vma(work, cancelled):
-    disks = sorted((work / "disks").glob("disk-drive-*.raw"))
-    require_space(work, sum(path.stat().st_size for path in disks) + 16 * 1024 * 1024)
-    manifest = work / "manifest.json"
-    vmid = json.loads(manifest.read_text()).get("vmid", 100) if manifest.exists() else 100
-    archive = work / f"vzdump-qemu-{vmid}-{datetime.now(timezone.utc).strftime('%Y_%m_%d-%H_%M_%S')}.vma"
-    command = ["vma", "create", str(archive), "-c", str(work / "qemu-server.conf")]
+def vma_stream_command(work, disks):
+    # stdout is a pipe in run_pipeline; the VMA writer recognizes its FIFO fd.
+    command = ["vma", "create", "/proc/self/fd/1", "-c", str(work / "qemu-server.conf")]
     if (work / "qemu-server.fw").exists():
         command.extend(["-c", str(work / "qemu-server.fw")])
     config = work / "qemu-server.conf"
     text = "\n".join(line for line in config.read_text().splitlines() if not line.startswith("#qmdump#")) + "\n"
-    for path in disks:
-        device = path.name.removeprefix("disk-").removesuffix(".raw")
-        disk = device.removeprefix("drive-")
+    for disk in sorted(disks):
+        path = work / "disks" / f"disk-drive-{disk}.raw"
+        device = f"drive-{disk}"
         if device == "drive-tpmstate0":
             device += "-backup"
         # qmrestore requires these native device hints, including the TPM alias.
         text += f"#qmdump#map:{disk}:{device}::raw:\n"
         command.extend(["-d", f"format=raw:{device}={path}"])
     config.write_text(text)
-    run_process(command, cancelled=cancelled)
-    shutil.rmtree(work / "disks")
-    run_process(["vma", "verify", str(archive)], cancelled=cancelled)
-    return archive
-
-
-def require_space(path, size):
-    if shutil.disk_usage(path).free < size + 64 * 1024 * 1024:
-        raise ValueError(f"Insufficient workspace space: at least {size} bytes plus 64 MiB required")
-
-
-def restore_native_blocks(agent, report, snapshot, work, cancelled):
-    from drastic_agent.proxmox_blocks import (
-        BLOCK_SIZE,
-        block_path,
-        check_manifest_entry,
-        validate_manifest,
-    )
-    from drastic_agent.services.restore import RestoreService
-
-    target = work / "blocks"
-    check_manifest_entry(agent.resticapi, snapshot["id"])
-    agent.resticapi.restore(snapshot["id"], str(target), ["/manifest.json"])
-    path = target / "manifest.json"
-    RestoreService._reject_symlink_components(str(path))
-    if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
-        raise ValueError("Native manifest is missing or too large")
-    manifest = json.loads(path.read_text())
-    volumes = validate_manifest(manifest)
-    if f"vmid:{manifest['vmid']}" not in (snapshot.get("tags") or []):
-        raise ValueError("Native manifest does not match snapshot VM")
-    size = sum(volume["size"] for volume in volumes)
-    require_space(work, size)
-    agent.resticapi.restore(snapshot["id"], str(target), ["/disks", "/qemu-server.conf", "/qemu-server.fw"],
-        callback=AgentReport.process_restore_status, callback_args={"operation_uuid": report.uuid},
-        callback_pid=True, callback_throttle=500)
-    for name in ("qemu-server.conf", "qemu-server.fw"):
-        source = target / name
-        if source.exists():
-            RestoreService._reject_symlink_components(str(source))
-            if not source.is_file() or source.stat().st_size > 65535:
-                raise ValueError("Invalid native VM configuration")
-            source.rename(work / name)
-        elif name == "qemu-server.conf":
-            raise ValueError("Native backup has no VM configuration")
-    (work / "disks").mkdir()
-    for volume in volumes:
-        with (work / "disks" / f"disk-drive-{volume['disk']}.raw").open("xb") as output:
-            for index in range(len(volume["generations"])):
-                if cancelled():
-                    raise ProcessCancelledError("Restore cancelled")
-                source = target / block_path(volume["disk"], index)
-                RestoreService._reject_symlink_components(str(source))
-                expected = min(BLOCK_SIZE, volume["size"] - index * BLOCK_SIZE)
-                if not source.is_file() or source.stat().st_size != expected:
-                    raise ValueError("Native backup has a missing or invalid disk block")
-                data = source.read_bytes()
-                if not any(data):
-                    output.seek(len(data), 1)
-                else:
-                    output.write(data)
-                source.unlink()
-            output.truncate(volume["size"])
-    if any(path.is_file() or path.is_symlink() for path in (target / "disks").rglob("*")):
-        raise ValueError("Unexpected native backup blocks")
-    (target / "manifest.json").rename(work / "manifest.json")
-    shutil.rmtree(target)
-    return size
+    return command
 
 
 def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, storage=None,
@@ -356,52 +230,53 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
     else:
         raise ValueError("Unsupported Proxmox restore mode")
 
-    archive = None if native else validate_tar_archive(agent, snapshot)
+    descriptor = {"format": "native" if native else "tar", "snapshot_id": snapshot["id"]}
+    if native:
+        vmids = [tag.removeprefix("vmid:") for tag in tags if tag.startswith("vmid:")]
+        if len(vmids) != 1 or not vmids[0].isdigit():
+            raise ValueError("Native snapshot has no unique VM identity")
+        descriptor["vmid"] = int(vmids[0])
+    else:
+        descriptor["archive"] = validate_tar_archive(agent, snapshot)["path"].lstrip("/")
     keep_workspace = False
     with workspace(report.uuid, create=True) as work:
         try:
             if mode == "proxmox_prepare":
-                descriptor = {"format": "native" if native else "tar", "snapshot_id": snapshot["id"]}
-                if native:
-                    vmids = [tag.removeprefix("vmid:") for tag in snapshot.get("tags", []) if tag.startswith("vmid:")]
-                    if len(vmids) != 1 or not vmids[0].isdigit():
-                        raise ValueError("Native snapshot has no unique VM identity")
-                    descriptor["vmid"] = int(vmids[0])
-                else:
-                    descriptor["archive"] = archive["path"].lstrip("/")
                 (work / "remote.json").write_text(json.dumps(descriptor))
                 phase("Opening backup disks on demand")
                 prepare_browser(agent, report, work, identity)
                 keep_workspace = True
                 return
-            if native:
-                phase("Restoring native VM blocks")
-                disk_size = restore_native_blocks(agent, report, snapshot, work, cancelled)
-            else:
-                require_space(work, int(archive.get("size") or 0))
-                phase("Restoring VM archive")
-                status = agent.resticapi.restore(
-                    snapshot_id=snapshot["id"], target=str(work), include_paths=[archive["path"]],
-                    overwrite_policy="fail_if_exists", callback=AgentReport.process_restore_status,
-                    callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500)
-                AgentReport.process_restore_status(status, operation_uuid=report.uuid)
-                archive_path = work / archive["path"].lstrip("/")
-                phase("Extracting snapshot disks")
-                disk_size = unpack_snapshot(archive_path, work, cancelled)
-            phase("Preparing Proxmox import")
-            archive_path = create_vma(work, cancelled)
-            options = host_options(cancelled)
-            if vmid in options["used_vmids"]:
-                raise ValueError(f"VMID {vmid} already exists in the cluster")
-            available = next((s.get("avail", 0) for s in options["storages"] if s["storage"] == storage), 0)
-            if int(available) < disk_size:
-                raise ValueError("Target storage has insufficient free space for the restored disks")
-            phase(f"Importing VM {vmid} into {storage}")
-            report.set_data("destination_may_contain_restored_data", True)
-            report.set_data("target_vmid", vmid)
-            run_process(["qmrestore", str(archive_path), str(vmid), "--storage", storage,
-                         "--unique", "1" if unique else "0", "--start", "0", "--force", "0"],
-                        cancelled=cancelled)
+            phase("Opening backup disks on demand")
+            with get_guest_file_backend().disk_view(
+                agent.resticapi, descriptor, work, cancelled=cancelled,
+                timeout=env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400), import_metadata=True,
+            ) as disks:
+                disk_size = sum(disks.values())
+                options = host_options(cancelled)
+                if vmid in options["used_vmids"]:
+                    raise ValueError(f"VMID {vmid} already exists in the cluster")
+                available = next((s.get("avail", 0) for s in options["storages"] if s["storage"] == storage), 0)
+                if int(available) < disk_size:
+                    raise ValueError("Target storage has insufficient free space for the restored disks")
+                command = vma_stream_command(work, disks)
+                phase(f"Streaming VM {vmid} to {storage}")
+                report.set_data("restore_bytes_total", disk_size)
+                report.set_data("restore_bytes_restored", 0)
+                report.set_data("destination_may_contain_restored_data", True)
+                report.set_data("target_vmid", vmid)
+
+                def progress(line):
+                    if match := re.search(r"progress \d+% \(read (\d+) bytes", line):
+                        report.set_data("restore_bytes_restored", min(disk_size, int(match[1])))
+                    if line:
+                        report.log_message(line)
+
+                run_pipeline(command, ["qmrestore", "-", str(vmid), "--storage", storage,
+                             "--unique", "1" if unique else "0", "--start", "0", "--force", "0"],
+                             cancelled=cancelled, timeout=env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400),
+                             on_output=progress, operation_uuid=report.uuid)
+                report.set_data("restore_bytes_restored", disk_size)
             report.log_message(f"VM {vmid} restored on {options['node']}; VM is stopped")
         finally:
             if not keep_workspace:

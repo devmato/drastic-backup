@@ -1,8 +1,6 @@
-import io
 import json
 import os
-import shutil
-import tarfile
+from contextlib import contextmanager
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -10,7 +8,6 @@ from uuid import uuid4
 
 import pytest
 
-from drastic_agent.proxmox_snapshot import write_archive
 from drastic_agent.services import proxmox_restore as restore
 from drastic_common.process import ProcessCancelledError
 
@@ -33,7 +30,7 @@ class Report:
         self.logs.append(message)
 
 
-def setup_restore(monkeypatch, tmp_path, fail_at=None):
+def setup_restore(monkeypatch, tmp_path, fail_at=None, disks=None):
     monkeypatch.setenv("DRASTIC_RESTORE_WORK_DIR", str(tmp_path / "work"))
     monkeypatch.setattr(restore.shutil, "which", lambda _: "/usr/bin/tool")
     monkeypatch.setattr(restore, "guest_tools_available", lambda: None)
@@ -41,44 +38,48 @@ def setup_restore(monkeypatch, tmp_path, fail_at=None):
         "node": "pve", "used_vmids": [100], "storages": [{"storage": "local-lvm", "avail": 10**9}],
     })
     commands = []
-    raw = tmp_path / "source.raw"
-    raw.write_bytes(b"x" * 4096)
-    source = tmp_path / ARCHIVE
-    with source.open("wb") as output:
-        write_archive({"vmid": 101, "config": "memory: 512\n", "volumes": [
-            {"disk": "scsi0", "path": str(raw), "size": 4096}]}, output)
+    disks = disks or {"scsi0": 4096}
 
-    def run(command, **kwargs):
+    def stream(producer, consumer, **kwargs):
         if kwargs.get("cancelled", lambda: False)():
             raise ProcessCancelledError("cancelled")
-        commands.append(command)
-        if fail_at and fail_at in command:
+        commands.extend([producer, consumer])
+        if fail_at and (fail_at in producer or fail_at in consumer):
             raise RuntimeError("tool failed")
-        if command[:2] == ["vma", "create"]:
-            Path(command[2]).write_bytes(b"vma")
-        return ""
+        kwargs["on_output"](f"progress 50% (read {sum(disks.values()) // 2} bytes, duration 1 sec)")
 
-    def restic_restore(**kwargs):
-        commands.append(["restic", "restore"])
-        shutil.copyfile(source, Path(kwargs["target"]) / ARCHIVE)
+    @contextmanager
+    def disk_view(api, descriptor, work, **kwargs):
+        assert kwargs["import_metadata"]
+        commands.append(["disk-view", descriptor["format"]])
+        if kwargs["cancelled"]():
+            raise ProcessCancelledError("cancelled")
+        (work / "qemu-server.conf").write_text("bios: ovmf\n#qmdump#obsolete\n")
+        (work / "qemu-server.fw").write_text("[OPTIONS]\nenable: 1\n")
+        yield disks
 
-    monkeypatch.setattr(restore, "run_process", run)
+    backend = restore.get_guest_file_backend()
+    monkeypatch.setattr(backend, "disk_view", disk_view)
+    monkeypatch.setattr(restore, "get_guest_file_backend", lambda: backend)
+    monkeypatch.setattr(restore, "run_pipeline", stream)
     agent = SimpleNamespace(resticapi=SimpleNamespace(
-        ls=lambda **kw: [{"type": "file", "path": "/" + ARCHIVE, "size": source.stat().st_size}],
-        restore=restic_restore,
+        ls=lambda **kw: [{"type": "file", "path": "/" + ARCHIVE, "size": 10240}],
+        restore=lambda **kw: pytest.fail("Proxmox restore must not materialize backup data"),
     ))
     return agent, Report(), commands
 
 
-def test_vm_restore_verifies_archive_uses_safe_flags_and_cleans_work(monkeypatch, tmp_path):
+def test_vm_restore_streams_with_safe_flags_and_cleans_work(monkeypatch, tmp_path):
     agent, report, commands = setup_restore(monkeypatch, tmp_path)
     restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_vm", identity=IDENTITY,
                                vmid=101, storage="local-lvm", unique=True)
     command = commands[-1]
     assert command[0] == "qmrestore"
+    assert command[1] == "-"
     assert command[2:] == ["101", "--storage", "local-lvm", "--unique", "1", "--start", "0", "--force", "0"]
     assert commands[1][:2] == ["vma", "create"]
-    assert commands[-2][:2] == ["vma", "verify"]
+    assert commands[1][2] == "/proc/self/fd/1"
+    assert report.data["restore_bytes_restored"] == report.data["restore_bytes_total"] == 4096
     assert report.data["target_vmid"] == 101
     assert list(restore.workspace_root().iterdir()) == []
 
@@ -92,7 +93,7 @@ def test_invalid_vm_destination_never_downloads_or_imports(monkeypatch, tmp_path
     assert commands == []
 
 
-@pytest.mark.parametrize("failure", ["create", "verify", "qmrestore"])
+@pytest.mark.parametrize("failure", ["create", "qmrestore"])
 def test_tool_failure_cleans_workspace_without_deleting_vm(monkeypatch, tmp_path, failure):
     agent, report, commands = setup_restore(monkeypatch, tmp_path, fail_at=failure)
     with pytest.raises(RuntimeError, match="tool failed"):
@@ -101,7 +102,7 @@ def test_tool_failure_cleans_workspace_without_deleting_vm(monkeypatch, tmp_path
                                    vmid=101, storage="local-lvm")
     assert list(restore.workspace_root().iterdir()) == []
     assert not any("destroy" in command for command in commands)
-    assert bool(report.data.get("destination_may_contain_restored_data")) == (failure == "qmrestore")
+    assert report.data["destination_may_contain_restored_data"]
 
 
 def test_workspace_identity_expiry_and_active_lock(monkeypatch, tmp_path):
@@ -123,31 +124,42 @@ def test_workspace_identity_expiry_and_active_lock(monkeypatch, tmp_path):
     assert not work.exists()
 
 
-def test_bad_archive_or_insufficient_space_never_imports(monkeypatch, tmp_path):
+def test_bad_archive_or_insufficient_target_space_never_imports(monkeypatch, tmp_path):
     agent, report, commands = setup_restore(monkeypatch, tmp_path)
     with pytest.raises(ValueError, match="QEMU TAR"):
         restore.validate_tar_archive(agent, {**SNAPSHOT, "tags": [*SNAPSHOT["tags"], "kind:manifest"]})
-    monkeypatch.setattr(restore.shutil, "disk_usage", lambda _: SimpleNamespace(free=0))
+    monkeypatch.setattr(restore, "host_options", lambda *args: {
+        "node": "pve", "used_vmids": [], "storages": [{"storage": "local-lvm", "avail": 0}],
+    })
     with pytest.raises(ValueError, match="space"):
         restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_vm", identity=IDENTITY,
                                    vmid=101, storage="local-lvm")
-    assert commands == []
+    assert commands == [["disk-view", "tar"]]
     assert list(restore.workspace_root().iterdir()) == []
 
 
-def test_cancellation_between_download_and_import_cleans_workspace(monkeypatch, tmp_path):
+def test_cancellation_between_view_and_import_cleans_workspace(monkeypatch, tmp_path):
     agent, report, commands = setup_restore(monkeypatch, tmp_path)
-    original = agent.resticapi.restore
+    backend = restore.get_guest_file_backend()
+    original = backend.disk_view
 
-    def download(**kwargs):
-        original(**kwargs)
-        report.cancel_event.set()
+    @contextmanager
+    def cancel_view(*args, **kwargs):
+        with original(*args, **kwargs) as disks:
+            report.cancel_event.set()
+            yield disks
 
-    agent.resticapi.restore = download
+    def options(cancelled):
+        if cancelled():
+            raise ProcessCancelledError("cancelled")
+        return {"node": "pve", "used_vmids": [], "storages": [{"storage": "local-lvm", "avail": 10**9}]}
+
+    monkeypatch.setattr(restore, "host_options", options)
+    monkeypatch.setattr(backend, "disk_view", cancel_view)
     with pytest.raises(ProcessCancelledError):
         restore.run_proxmox_restore(agent, report, SNAPSHOT, mode="proxmox_vm", identity=IDENTITY,
                                    vmid=101, storage="local-lvm")
-    assert commands == [["restic", "restore"]]
+    assert commands == [["disk-view", "tar"]]
     assert list(restore.workspace_root().iterdir()) == []
 
 
@@ -184,74 +196,41 @@ def test_legacy_vma_is_rejected_before_tools_or_workspace_creation(monkeypatch, 
     assert not restore.workspace_root(create=False).exists()
 
 
-def test_snapshot_vm_restore_reuses_native_import(monkeypatch, tmp_path):
-    agent, report, commands = setup_restore(monkeypatch, tmp_path)
-    raw = tmp_path / "source.raw"
-    raw.write_bytes(b"x" * 4096)
-    plan = {"vmid": 101, "config": "bios: ovmf\nscsi0: local-lvm:vm-101-disk-0\n", "volumes": [
-        {"disk": disk, "path": str(raw), "size": 4096} for disk in ("scsi0", "efidisk0", "tpmstate0")
-    ]}
-    snapshot = {"id": "snapshot", "tags": ["source:proxmox", "guest_type:qemu", "backup_method:snapshot"]}
-    agent.resticapi.ls = lambda **kw: [{"type": "file", "path": "/qemu-101.tar", "size": 20480}]
+@pytest.mark.parametrize("method", ["snapshot", "native"])
+def test_vm_stream_maps_efi_tpm_firewall_with_small_workspace(monkeypatch, tmp_path, method):
+    size = 1024**4
+    disks = {"scsi0": size, "efidisk0": 4096, "tpmstate0": 4096}
+    agent, report, commands = setup_restore(monkeypatch, tmp_path, disks=disks)
+    snapshot = {"id": "snapshot", "tags": ["source:proxmox", "guest_type:qemu", f"backup_method:{method}", "vmid:101"]}
+    original = restore.run_pipeline
 
-    def download(**kwargs):
-        with (Path(kwargs["target"]) / "qemu-101.tar").open("wb") as output:
-            write_archive(plan, output)
+    def stream(producer, consumer, **kwargs):
+        work = Path(producer[producer.index("-c") + 1]).parent
+        assert producer[:3] == ["vma", "create", "/proc/self/fd/1"] and consumer[:2] == ["qmrestore", "-"]
+        assert {path.name for path in work.iterdir()} == {"lock", "qemu-server.conf", "qemu-server.fw"}
+        config = (work / "qemu-server.conf").read_text()
+        assert "bios: ovmf" in config and "#qmdump#obsolete" not in config
+        for disk in disks:
+            device = f"drive-{disk}" + ("-backup" if disk == "tpmstate0" else "")
+            path = work / "disks" / f"disk-drive-{disk}.raw"
+            assert f"#qmdump#map:{disk}:{device}::raw:" in config
+            assert f"format=raw:{device}={path}" in producer
+        assert str(work / "qemu-server.fw") in producer and producer.count("-c") == 2
+        assert (work / "qemu-server.fw").read_text() == "[OPTIONS]\nenable: 1\n"
+        assert sum(path.stat().st_size for path in work.iterdir()) < 4096
+        original(producer, consumer, **kwargs)
+        assert report.data["restore_bytes_restored"] == sum(disks.values()) // 2
 
-    agent.resticapi.restore = download
-    original = restore.run_process
-
-    def run(command, **kwargs):
-        if command[:2] == ["vma", "create"]:
-            config = Path(command[command.index("-c") + 1]).read_text()
-            assert "#qmdump#map:scsi0:drive-scsi0::raw:" in config
-            assert "#qmdump#map:tpmstate0:drive-tpmstate0-backup::raw:" in config
-            assert any(arg.startswith("format=raw:drive-tpmstate0-backup=") for arg in command)
-            assert all((Path(command[2]).parent / "disks" / f"disk-drive-{disk}.raw").read_bytes() == raw.read_bytes()
-                       for disk in ("scsi0", "efidisk0", "tpmstate0"))
-            Path(command[2]).write_bytes(b"vma")
-        return original(command, **kwargs)
-
-    monkeypatch.setattr(restore, "run_process", run)
-
+    monkeypatch.setattr(restore, "run_pipeline", stream)
+    monkeypatch.setattr(restore, "host_options", lambda *args: {
+        "node": "pve", "used_vmids": [], "storages": [{"storage": "local-lvm", "avail": size * 2}],
+    })
+    monkeypatch.setattr(restore.shutil, "disk_usage", lambda _: SimpleNamespace(free=1024 * 1024))
     restore.run_proxmox_restore(agent, report, snapshot, mode="proxmox_vm", identity=IDENTITY,
-                               vmid=102, storage="local-lvm")
-    assert commands[-1][0] == "qmrestore"
-    assert list(restore.workspace_root().iterdir()) == []
-
-
-@pytest.mark.parametrize("name,kind", [("../escape", tarfile.REGTYPE), ("qemu-server.conf", tarfile.SYMTYPE),
-                                      ("disks/disk-drive-scsi0.raw", tarfile.BLKTYPE)])
-def test_snapshot_tar_rejects_unsafe_members_before_extraction(tmp_path, name, kind):
-    path = tmp_path / "qemu-101.tar"
-    with tarfile.open(path, "w") as archive:
-        member = tarfile.TarInfo(name)
-        member.type = kind
-        member.linkname = "/etc/passwd"
-        archive.addfile(member)
-    with pytest.raises(ValueError, match="Unsafe"):
-        restore.unpack_snapshot(path, tmp_path, lambda: False)
-    assert not (tmp_path.parent / "escape").exists()
-
-
-def test_snapshot_tar_rejects_manifest_mismatch_and_cancellation(tmp_path):
-    raw = tmp_path / "source.raw"
-    raw.write_bytes(b"x" * 4096)
-    plan = {"vmid": 101, "config": "memory: 512\n", "volumes": [{"disk": "scsi0", "path": str(raw), "size": 4096}]}
-    path = tmp_path / "qemu-101.tar"
-    with path.open("wb") as output:
-        write_archive(plan, output)
-    with pytest.raises(ProcessCancelledError):
-        restore.unpack_snapshot(path, tmp_path, lambda: True)
-    (tmp_path / "disks/disk-drive-scsi0.raw").unlink()
-    with tarfile.open(path, "w") as archive:
-        for name, data in [("qemu-server.conf", b"memory: 512\n"),
-                           ("manifest.json", json.dumps({"version": 1, "vmid": 101, "volumes": [{"disk": "scsi0", "size": 4096}]}).encode())]:
-            info = tarfile.TarInfo(name)
-            info.size = len(data)
-            archive.addfile(info, io.BytesIO(data))
-    with pytest.raises(ValueError, match="do not match"):
-        restore.unpack_snapshot(path, tmp_path, lambda: False)
+                               vmid=101, storage="local-lvm")
+    assert commands[0] == ["disk-view", "tar" if method == "snapshot" else "native"]
+    assert report.data["restore_bytes_restored"] == report.data["restore_bytes_total"] == size + 8192
+    assert not list(restore.workspace_root().iterdir())
 
 
 def test_agent_status_reports_cached_guest_tools_error(monkeypatch):
@@ -289,11 +268,6 @@ def test_on_demand_prepare_browse_export_never_materializes_disks(monkeypatch, t
     configured, calls = [], []
     agent.configure_repository = configured.append
 
-    def no_materialization(*args, **kwargs):
-        pytest.fail("On-demand file restore must not download or check space for complete disks")
-
-    agent.resticapi.restore = no_materialization
-    monkeypatch.setattr(restore, "require_space", no_materialization)
     backend = restore.get_guest_file_backend()
 
     def request(api, descriptor, work, action, **kwargs):

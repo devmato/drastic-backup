@@ -2,6 +2,7 @@
 import hashlib
 import json
 import os
+import re
 import signal
 import subprocess
 import time
@@ -33,7 +34,8 @@ try:
     from drastic_agent.agent.report import AgentReport
     from drastic_agent.jobs.proxmox_backup import ProxmoxBackupJobHandler
     from drastic_agent.jobs.proxmox_native import run_native
-    from drastic_agent.services.proxmox_restore import restore_native_blocks, run_proxmox_restore
+    from drastic_agent.services.guest_linux import LinuxGuestFileBackend
+    from drastic_agent.services.proxmox_restore import run_proxmox_restore
     from drastic_common.restic.client import ResticApi
     from drastic_common.restic.repository import ResticRepository
     api=ResticApi(str(BASE/'restic'),repository=ResticRepository(location=str(ROOT/'repo'),password='isolated-native-evaluation'))
@@ -166,9 +168,12 @@ run_native(handler,report,{"vmid":990103,"name":"drastic-native-build-test"},1)
     snapshot=api.snapshots()[0]
     work=ROOT/'raw-roundtrip'
     work.mkdir()
-    report=AgentReport.command_report()
-    restore_native_blocks(agent,report,snapshot,work,lambda:False)
-    expected={path.name:hashlib.sha256(path.read_bytes()).hexdigest() for path in (work/'disks').glob('*.raw')}
+    with LinuxGuestFileBackend().disk_view(api, {'format':'native','vmid':VMID,'snapshot_id':snapshot_id}, work,
+                                          cancelled=lambda:False, timeout=120) as disks:
+        expected={}
+        for disk in disks:
+            with (work/'disks'/f'disk-drive-{disk}.raw').open('rb') as source:
+                expected[disk]=(disks[disk],hashlib.file_digest(source,'sha256').hexdigest())
     print(json.dumps({'latest_only_raw_restore_sha256':expected}),flush=True)
     os.environ['DRASTIC_RESTORE_WORK_DIR']=str(ROOT/'restore-work')
     report=AgentReport.command_report()
@@ -176,6 +181,16 @@ run_native(handler,report,{"vmid":990103,"name":"drastic-native-build-test"},1)
                         vmid=DESTINATION,storage='local-lvm',unique=True)
     print('PASS: native full/CBT + independent latest snapshot + real native VM import',flush=True)
     assert 'stopped' in run('qm','status',str(DESTINATION))
+    restored_config=run('qm','config',str(DESTINATION))
+    assert all(f'{disk}:' in restored_config for disk in expected), 'Missing restored disk/config mapping'
+    for disk,(size,checksum) in expected.items():
+        volid=re.search(rf'^{disk}: ([^,\n]+)', restored_config, re.MULTILINE)[1]
+        path=run('pvesm','path',volid).strip()
+        with open(path,'rb') as target:
+            restored=hashlib.sha256()
+            for offset in range(0,size,1024*1024):
+                restored.update(target.read(min(1024*1024,size-offset)))
+            assert restored.hexdigest()==checksum, f'Restored disk mismatch: {disk}'
     api.check(read_data=True)
 finally:
     for vmid in (DESTINATION,VMID):

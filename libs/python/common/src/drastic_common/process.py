@@ -65,6 +65,83 @@ def run_process(command, *, cancelled=lambda: False, timeout=86400, input_text=N
                 terminate_process(process)
 
 
+def run_pipeline(producer_command, consumer_command, *, cancelled=lambda: False, timeout=86400,
+                 on_output=None, operation_uuid=None):
+    """Stream binary data directly between tools; both exit codes determine success."""
+    from drastic_common import diagnostics
+
+    if cancelled():
+        raise ProcessCancelledError("Restore cancelled")
+    producer = consumer = None
+    started = time.monotonic()
+    with tempfile.TemporaryFile() as output, tempfile.TemporaryFile() as producer_errors, tempfile.TemporaryFile() as consumer_errors:
+        offset, pending = 0, b""
+
+        def progress():
+            nonlocal offset, pending
+            if on_output is None:
+                return
+            while data := os.pread(output.fileno(), 65536, offset):
+                if cancelled():
+                    raise ProcessCancelledError("Restore cancelled")
+                if time.monotonic() - started >= timeout:
+                    raise TimeoutError("Restore pipeline timed out")
+                offset += len(data)
+                lines = (pending + data).split(b"\n")
+                pending = lines.pop()[-8192:]
+                for line in lines:
+                    on_output(line[:8192].decode(errors="replace"))
+
+        def check_exit_codes():
+            failures = []
+            for process, command, errors in ((producer, producer_command, producer_errors),
+                                              (consumer, consumer_command, consumer_errors)):
+                if process.poll() not in (None, 0):
+                    errors.seek(0, 2)
+                    errors.seek(max(0, errors.tell() - 8192))
+                    failures.append(f"{command[0]} failed ({process.returncode}): {errors.read().decode(errors='replace')}")
+            if failures:
+                raise RuntimeError("; ".join(failures))
+
+        try:
+            producer = subprocess.Popen(producer_command, stdin=subprocess.DEVNULL,
+                                        stdout=subprocess.PIPE, stderr=producer_errors, start_new_session=True)
+            consumer = subprocess.Popen(consumer_command, stdin=producer.stdout,
+                                        stdout=output, stderr=consumer_errors, start_new_session=True)
+            producer.stdout.close()
+            diagnostics.record("process.started", {"program": consumer_command[0], "pid": consumer.pid,
+                               "producer": producer_command[0], "producer_pid": producer.pid}, operation_uuid=operation_uuid)
+            while producer.poll() is None or consumer.poll() is None:
+                if cancelled():
+                    raise ProcessCancelledError("Restore cancelled")
+                if time.monotonic() - started >= timeout:
+                    raise TimeoutError("Restore pipeline timed out")
+                progress()
+                check_exit_codes()
+                time.sleep(0.1)
+            if cancelled():
+                raise ProcessCancelledError("Restore cancelled")
+            progress()
+            check_exit_codes()
+        finally:
+            if producer is not None:
+                producer.stdout.close()
+            for process in (consumer, producer):
+                if process is not None:
+                    try:
+                        terminate_process(process)
+                    finally:
+                        # An exited leader can leave children holding the stream open.
+                        try:
+                            os.killpg(process.pid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+            if consumer is not None:
+                diagnostics.record("process.finished", {"program": consumer_command[0], "pid": consumer.pid,
+                                   "exit_code": consumer.poll(), "producer_exit_code": producer.poll(),
+                                   "duration_seconds": time.monotonic() - started}, operation_uuid=operation_uuid)
+
+
 def is_mounted(path):
     """Read Linux's mount table without touching a potentially blocked/disconnected FUSE server."""
     target = os.path.abspath(os.fsdecode(path))

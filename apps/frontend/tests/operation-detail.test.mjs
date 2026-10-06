@@ -131,6 +131,13 @@ test('background operation updates stay quiet and preserve data on failure', asy
   }
   assert.equal(page.progressValue.value, null)
   assert.equal(field(page.metricCards.value, 'Target VM'), 101)
+  page.operation.value.data = { restore_phase: 'Streaming VM 101 to local-lvm', restore_bytes_restored: 512,
+    restore_bytes_total: 1024, target_vmid: 101 }
+  assert.equal(page.progressValue.value, 0.5)
+  assert.equal(page.progressLabel.value, '50%')
+  assert.equal(page.progressBasis.value, 'Streaming VM 101 to local-lvm')
+  page.operation.value.data.restore_phase = 'Opening backup disks on demand'
+  assert.equal(page.progressValue.value, null)
 
   page.operation.value = {
     id: 1, type: 'backup', state: 'running',

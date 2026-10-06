@@ -371,7 +371,8 @@ const progressSource = computed(() => {
       return { value: 1 }
     }
 
-    if (operationData.value.restore_phase && operationData.value.restore_phase !== 'Restoring VM archive') {
+    if (operationData.value.restore_phase && operationData.value.restore_phase !== 'Restoring VM archive'
+      && !String(operationData.value.restore_phase).startsWith('Streaming VM ')) {
       return { value: null, basis: operationData.value.restore_phase }
     }
 

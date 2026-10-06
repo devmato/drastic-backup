@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drastic_agent.guest_disks import DirectorySnapshot, snapshot_disks
 from drastic_agent.proxmox_blocks import (
     BLOCK_SIZE,
     block_path,
@@ -15,7 +16,6 @@ from drastic_agent.proxmox_blocks import (
     validate_manifest,
     view_metadata,
 )
-from drastic_agent.services.proxmox_restore import restore_native_blocks
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
 
@@ -171,16 +171,18 @@ def test_native_layout_restores_latest_after_prune_and_rejects_missing_blocks(tm
     api.forget_snapshots([first["snapshot_id"]], prune=True)
     target = tmp_path / "restored"
     target.mkdir()
-    report = SimpleNamespace(uuid="test")
-    assert restore_native_blocks(SimpleNamespace(resticapi=api), report, api.snapshots()[0], target, lambda: False) == len(data)
-    assert (target / "disks/disk-drive-scsi0.raw").read_bytes() == data
+    api.restore(second["snapshot_id"], str(target), ["/"])
+    with snapshot_disks(DirectorySnapshot(target), {"format": "native", "vmid": 103}) as disks:
+        assert disks["scsi0"].size == len(data)
+        assert disks["scsi0"].read_at(0, len(data)) == data
     (source / block_path("scsi0", 1)).unlink()
     broken = api.backup(["."], cwd=str(source), tags=tags)
     target = tmp_path / "broken"
     target.mkdir()
-    snapshot = next(s for s in api.snapshots() if s["id"] == broken["snapshot_id"])
-    with pytest.raises(ValueError, match="missing or invalid disk block"):
-        restore_native_blocks(SimpleNamespace(resticapi=api), report, snapshot, target, lambda: False)
+    api.restore(broken["snapshot_id"], str(target), ["/"])
+    with snapshot_disks(DirectorySnapshot(target), {"format": "native", "vmid": 103}) as disks:
+        with pytest.raises(FileNotFoundError, match="Missing"):
+            disks["scsi0"].read_at(0, len(data))
 
 
 @pytest.mark.skipif(os.environ.get("DRASTIC_TEST_NATIVE_ROUNDTRIP") != "1", reason="Explicit Proxmox test-host opt-in required")

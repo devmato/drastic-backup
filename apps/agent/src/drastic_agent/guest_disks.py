@@ -40,8 +40,10 @@ class DirectorySnapshot:
             current = current / part
             if current.is_symlink():
                 raise ValueError("Snapshot file contains a symbolic link")
+        if not current.exists():
+            raise FileNotFoundError(f"Missing snapshot file: {path}")
         if not current.is_file():
-            raise ValueError(f"Missing snapshot file: {path}")
+            raise ValueError(f"Snapshot file is not a regular file: {path}")
         return current.open("rb")
 
 
@@ -97,7 +99,7 @@ class NativeDisk:
 
 
 @contextmanager
-def snapshot_disks(files: SnapshotFiles, descriptor) -> Iterator[dict[str, DiskReader]]:
+def snapshot_disks(files: SnapshotFiles, descriptor, *, metadata=None) -> Iterator[dict[str, DiskReader]]:
     """Validate and expose disks for one request, closing shared archive handles on exit."""
     if descriptor["format"] == "native":
         with files.open("manifest.json") as source:
@@ -108,6 +110,18 @@ def snapshot_disks(files: SnapshotFiles, descriptor) -> Iterator[dict[str, DiskR
         volumes = validate_manifest(manifest)
         if manifest["vmid"] != descriptor["vmid"]:
             raise ValueError("Native manifest does not match snapshot VM")
+        if metadata is not None:
+            for name in ("qemu-server.conf", "qemu-server.fw"):
+                try:
+                    with files.open(name) as source:
+                        data = source.read(65536)
+                except FileNotFoundError:
+                    if name == "qemu-server.fw":
+                        continue
+                    raise ValueError("Native backup has no VM configuration") from None
+                if len(data) > 65535:
+                    raise ValueError("Native VM configuration is too large")
+                metadata[name] = data
         yield {v["disk"]: NativeDisk(files, v["disk"], v["size"]) for v in volumes}
         return
     if descriptor["format"] != "tar":
@@ -135,8 +149,11 @@ def snapshot_disks(files: SnapshotFiles, descriptor) -> Iterator[dict[str, DiskR
                         raise ValueError("Invalid snapshot disk size")
                     disks[disk[1]] = ArchiveDisk(source, member.offset_data, member.size, lock)
                 elif name == "manifest.json":
-                    with archive.extractfile(member) as metadata:
-                        manifest = json.load(metadata)
+                    with archive.extractfile(member) as config_source:
+                        manifest = json.load(config_source)
+                elif metadata is not None:
+                    with archive.extractfile(member) as config_source:
+                        metadata[name] = config_source.read()
         if not {"manifest.json", "qemu-server.conf"}.issubset(sizes):
             raise ValueError("Snapshot archive lacks configuration or manifest")
         if (not isinstance(manifest, dict) or manifest.get("version") != 1

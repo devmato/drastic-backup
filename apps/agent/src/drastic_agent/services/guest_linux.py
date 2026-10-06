@@ -8,6 +8,7 @@ import shutil
 import stat
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 # Executed by system Python for its FUSE binding, outside the agent virtualenv.
@@ -29,23 +30,41 @@ class LinuxGuestFileBackend:
         for name in ("disks", "repository"):
             unmount(path / name)
 
-    def check_available(self):
+    def check_disk_tools(self):
         from drastic_common.process import run_process
 
         if not shutil.which("fusermount3") or not Path("/dev/fuse").exists():
-            raise ValueError("Guest file restore requires FUSE and fusermount3 on the Linux agent host")
+            raise ValueError("On-demand restore requires FUSE and fusermount3 on the Linux agent host")
         try:
-            run_process(["/usr/bin/python3", "-c", "import guestfs, fuse"], timeout=15)
+            run_process(["/usr/bin/python3", "-c", "import fuse"], timeout=15)
+        except (OSError, RuntimeError, TimeoutError) as exc:
+            raise ValueError("On-demand restore requires python3-fuse on the agent host") from exc
+
+    def check_available(self):
+        from drastic_common.process import run_process
+
+        self.check_disk_tools()
+        try:
+            run_process(["/usr/bin/python3", "-c", "import guestfs"], timeout=15)
         except (OSError, RuntimeError, TimeoutError) as exc:
             raise ValueError("Guest file restore requires python3-guestfs, libguestfs-tools and python3-fuse on the agent host") from exc
 
     def request(self, resticapi, descriptor, work, action, *, cancelled, **kwargs):
         from drastic_agent.config import env_int
-        from drastic_common.process import is_mounted, mounted_process
 
         # Browsing is a synchronous command with a 120-second backend response budget.
         deadline = time.monotonic() + (110 if action == "entries" else env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", 86400))
-        self.check_available()
+        with self.disk_view(resticapi, descriptor, work, cancelled=cancelled,
+                            timeout=max(0, deadline - time.monotonic())):
+            return self.local_request(work, action, cancelled=cancelled,
+                                      timeout=max(0, deadline - time.monotonic()), **kwargs)
+
+    @contextmanager
+    def disk_view(self, resticapi, descriptor, work, *, cancelled, timeout, import_metadata=False):
+        from drastic_common.process import is_mounted, mounted_process
+
+        deadline = time.monotonic() + timeout
+        self.check_disk_tools()
 
         def remaining():
             value = deadline - time.monotonic()
@@ -56,16 +75,19 @@ class LinuxGuestFileBackend:
         helper = Path(__file__)
         mountpoint = work / "disks"
         plan = work / "disk-view.json"
+        info = work / "disk-info.json"
         try:
             with resticapi.mount(descriptor["snapshot_id"], work / "repository", cancelled=cancelled,
                                  timeout=min(120, remaining())) as root:
-                plan.write_text(json.dumps({"root": str(root), "descriptor": descriptor}))
+                plan.write_text(json.dumps({"root": str(root), "descriptor": descriptor,
+                                            "work": str(work), "import_metadata": import_metadata}))
                 mountpoint.mkdir(mode=0o700)
                 with mounted_process(["/usr/bin/python3", str(helper), str(plan), str(mountpoint)],
                                      mountpoint, cancelled=cancelled, timeout=min(120, remaining())):
-                    return self.local_request(work, action, cancelled=cancelled, timeout=remaining(), **kwargs)
+                    yield json.loads(info.read_text())
         finally:
             plan.unlink(missing_ok=True)
+            info.unlink(missing_ok=True)
             if not is_mounted(mountpoint) and mountpoint.exists():
                 mountpoint.rmdir()
 
@@ -84,7 +106,12 @@ class LinuxGuestFileBackend:
 
 
 def mount_disks(plan, mountpoint):
-    with snapshot_disks(DirectorySnapshot(Path(plan["root"])), plan["descriptor"]) as disks:
+    metadata = {} if plan.get("import_metadata") else None
+    with snapshot_disks(DirectorySnapshot(Path(plan["root"])), plan["descriptor"], metadata=metadata) as disks:
+        work = Path(plan["work"])
+        for name, data in (metadata or {}).items():
+            (work / name).write_bytes(data)
+        (work / "disk-info.json").write_text(json.dumps({disk: reader.size for disk, reader in disks.items()}))
         serve_disks(disks, mountpoint)
 
 
@@ -92,8 +119,7 @@ def serve_disks(disks, mountpoint):
     import fuse
 
     fuse.fuse_python_api = (0, 2)
-    readers = {f"/disk-drive-{disk}.raw": reader for disk, reader in disks.items()
-               if re.fullmatch(r"(?:ide|sata|scsi|virtio)\d+", disk)}
+    readers = {f"/disk-drive-{disk}.raw": reader for disk, reader in disks.items()}
 
     class View(fuse.Fuse):
         def getattr(self, path):

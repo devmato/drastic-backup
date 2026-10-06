@@ -112,7 +112,7 @@ def test_native_cross_block_reads_and_inaccessible_data_fail_closed(tmp_path):
         with pytest.raises(OSError, match="invalid disk block"):
             disk.read_at(BLOCK_SIZE, 1)
         second.unlink()
-        with pytest.raises(ValueError, match="Missing"):
+        with pytest.raises(FileNotFoundError, match="Missing"):
             disk.read_at(BLOCK_SIZE, 1)
         second.symlink_to(tmp_path / "manifest.json")
         with pytest.raises(ValueError, match="symbolic link"):
@@ -143,4 +143,24 @@ def test_tar_manifest_must_match_disks(tmp_path):
             info.size = len(data)
             archive.addfile(info, io.BytesIO(data))
     with pytest.raises(ValueError, match="do not match"), snapshot_disks(DirectorySnapshot(tmp_path), {"format": "tar", "archive": path.name}):
+        pass
+
+
+def test_native_import_metadata_is_bounded_optional_firewall_and_not_symlinks(tmp_path):
+    manifest = {"version": 2, "vmid": 101, "metadata_generation": 1, "block_size": BLOCK_SIZE,
+                "volumes": [{"disk": "scsi0", "size": 512, "generations": [1]}]}
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    files = DirectorySnapshot(tmp_path)
+    descriptor = {"format": "native", "vmid": 101}
+    with pytest.raises(ValueError, match="no VM configuration"), snapshot_disks(files, descriptor, metadata={}):
+        pass
+    (tmp_path / "qemu-server.conf").write_bytes(b"x" * 65536)
+    with pytest.raises(ValueError, match="too large"), snapshot_disks(files, descriptor, metadata={}):
+        pass
+    (tmp_path / "qemu-server.conf").write_text("memory: 512\n")
+    metadata = {}
+    with snapshot_disks(files, descriptor, metadata=metadata):
+        assert metadata == {"qemu-server.conf": b"memory: 512\n"}
+    (tmp_path / "qemu-server.fw").symlink_to(tmp_path / "qemu-server.conf")
+    with pytest.raises(ValueError, match="symbolic link"), snapshot_disks(files, descriptor, metadata={}):
         pass

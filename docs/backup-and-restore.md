@@ -293,7 +293,8 @@ failed multi-VM operation remain usable.
 
 Legacy `vzdump`/VMA backups are no longer supported by the Proxmox VM or guest-file
 restore paths. **Archive files** can still recover their original files through
-ordinary Restic restore. VMA remains an internal import format for whole-VM restore.
+ordinary Restic restore. VMA remains an internal streaming format for whole-VM restore;
+no intermediate VMA archive is stored locally.
 
 The target agent must be online and assigned the source repository. Protocol 10
 enables on-demand TAR/native guest file restore; older agents require protocol 8
@@ -302,7 +303,8 @@ disks locally. Whole-VM restore requires an agent
 running directly on the Proxmox node with root privileges. Guest file restore
 uses the Linux/FUSE/libguestfs backend and does not require Proxmox host tools.
 Another agent can be selected; the original backup agent need not be online.
-Local `pvesh`, `vma`, and `qmrestore` perform VM host operations, so restoring
+Whole-VM restore needs FUSE, `python3-fuse`, and local `pvesh`, `vma`, and `qmrestore`.
+It does not need libguestfs. These tools perform VM host operations, so restoring
 does not require the original node's API credentials.
 
 **Whole VM**
@@ -312,8 +314,15 @@ does not require the original node's API credentials.
    original VMID can be reused only when it is free, including across the cluster.
 3. Keep **Generate new MAC addresses** enabled for a separate recovered VM, or
    disable it when deliberately preserving the original network identity.
-4. Start the restore. TAR snapshots are validated and extracted; native block backups are validated and assembled into RAW disks. Both use native `vma create` to prepare an importable archive. It then verifies the VMA and runs
-   `qmrestore` without force/overwrite and without starting the VM.
+4. Start the restore. Metadata is validated and the backed-up disks, including
+   EFI and TPM state, are exposed as read-only virtual RAW files. `vma create`
+   reads these files and streams directly into `qmrestore -`; disk contents are
+   read from Restic on demand and written directly to the destination storage.
+   No complete local TAR, block staging directory, RAW images or VMA archive are
+   created. `qmrestore` handles target allocation, configuration and stream
+   validation, without force/overwrite and without starting the VM.
+   Both producer and consumer must finish successfully; a failed source read,
+   early EOF, timeout or cancellation fails the restore and stops the pipeline.
 5. Check the operation result and the restored VM configuration in Proxmox before
    starting it. Referenced bridges, ISO images and other host resources must be
    available on the destination node.
@@ -393,10 +402,16 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
 
 - Temporary data uses `$DRASTIC_AGENT_DATA_DIR/restore-work`. Set
   `DRASTIC_RESTORE_WORK_DIR` in the agent's environment to a dedicated absolute
-  directory on a sufficiently large filesystem. Restart the agent after changing
+  directory with space for metadata and working data. Restart the agent after changing
   it. The directory is private to the agent and must not be shared by multiple
   agent instances.
-- Whole-VM restore needs workspace for downloaded TAR/native data and reconstructed disks, then for disks plus the rebuilt VMA, as well as destination storage for the imported VM. On-demand TAR/native file browsing needs workspace for metadata and appliance working data, Restic's repository metadata cache, and space for the exported files, not full guest disk images.
+- Both restore modes use small workspace files and bounded streaming buffers,
+  rather than full local disk/archive copies. Restic's repository index/cache
+  and the guestfs appliance (file restore only) also need resources. Whole-VM
+  restore still needs destination storage for the recovered disks; the capacity
+  check conservatively uses logical disk sizes. File export needs space for the
+  selected files. A separate restored VM needs its own destination disks in
+  addition to any existing VM, but no extra full-size restore staging copy.
 - On-demand mounts and helpers live only for a single request and are closed on
   success, failure or cancellation. A repository read lock is held while mounted,
   so prune may be blocked during active requests, not during idle sessions.
@@ -406,7 +421,10 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
   are removed after export (including failed/cancelled exports), when closing the dialog, on periodic
   expiry, and on agent restart. Active requests lock their workspace against
   cleanup. **Prepare again** recreates an expired workspace.
-- The existing operation page shows phases, archive download progress and logs.
+- The existing operation page shows phases, restored disk bytes and logs. Whole-VM
+  progress comes from `qmrestore`'s logical disk-byte count, including zero ranges;
+  it is not packed repository bytes or temporary archive size. Data progress at
+  100% does not imply completion until both pipeline processes and cleanup finish.
   **Cancel restore** stops active work and also applies between subprocesses.
 - Failed/cancelled imports can leave a partial VM and allocated volumes; failed
   exports can leave files, including temporary `.drastic-*` files. The report
@@ -418,7 +436,9 @@ Linux ownership/xattr, or full filesystem metadata reconstruction.
 The ordinary tests mock Proxmox tools and cover collision checks, command flags,
 workspace ownership/expiry, failure cleanup, cancellation and symlink-safe file
 export. The disk-reader tests index a sparse 1-TiB TAR disk with bounded reads and
-exercise cross-block native reads and malformed/missing data. The real
+exercise cross-block native reads and malformed/missing data. Pipeline tests
+check binary transfer, both exit codes, spawn failure, timeout, cancellation and
+children left by an exited producer. The real
 Restic/FUSE checks run without Proxmox or guestfs when Linux, `/dev/fuse`,
 `fusermount3`, Restic and system `python3-fuse` are available:
 
@@ -426,6 +446,12 @@ Restic/FUSE checks run without Proxmox or guestfs when Linux, `/dev/fuse`,
 cd apps/agent
 .venv/bin/python -m pytest tests/test_guest_disks.py tests/test_guest_linux.py -v
 ```
+
+Those checks also expose EFI/TPM and import metadata and pipe all disk contents
+into a checksum-verified target with less than 64 KiB allocated workspace files.
+They use Python producer/consumer tools, not a real Proxmox VM import. The VM
+restore unit tests additionally cover a 1-TiB logical source with only small
+workspace metadata and target capacity/collision checks.
 
 For a real guest filesystem round trip, run the opt-in agent integration test on a test
 Proxmox node with `restic`, `vma`, `qmrestore` and the guestfs dependencies installed:
@@ -461,7 +487,7 @@ DRASTIC_TEST_NATIVE_ROUNDTRIP=1 .venv/bin/python -m pytest \
   --basetemp=/var/tmp/drastic-native-test -s
 ```
 
-It tests automatic temporary storage selection, initial/full and CBT runs, a changed block, upload failure, lost bitmap, SIGKILL of the backup controller and Perl provider helper, pre-setup failure after a different completed target, checkpoint invalidation/recovery, pruning older backups and real VM import with EFI/TPM. Recovery checks that QEMU remains running with the same process ID and releases the owned backup lock. It never selects VM 103 or another existing VM for writes, crash tests or restore. A real Windows boot/application recovery check is still required before relying on the new mode for production recovery.
+It tests automatic temporary storage selection, initial/full and CBT runs, a changed block, upload failure, lost bitmap, SIGKILL of the backup controller and Perl provider helper, pre-setup failure after a different completed target, checkpoint invalidation/recovery, pruning older backups and real streaming VM import with EFI/TPM. Source and restored disk data are compared by SHA-256, allowing target allocation padding. Recovery checks that QEMU remains running with the same process ID and releases the owned backup lock. It never selects VM 103 or another existing VM for writes, crash tests or restore. A real Windows boot/application recovery check is still required before relying on the new mode for production recovery.
 
 ## Create a User Recovery Export
 

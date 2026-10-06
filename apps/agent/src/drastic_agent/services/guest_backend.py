@@ -1,13 +1,15 @@
 """Guest-file platform boundary; Linux dependencies are loaded only by the Linux backend."""
 
 import sys
-from typing import Protocol
+from typing import ContextManager, Protocol
 
 
 class GuestFileBackend(Protocol):
     def check_available(self) -> None: ...
 
     def request(self, resticapi, descriptor, work, action, *, cancelled, **kwargs) -> dict: ...
+
+    def disk_view(self, resticapi, descriptor, work, *, cancelled, timeout, import_metadata=False) -> ContextManager[dict[str, int]]: ...
 
     def lock_workspace(self, fd: int) -> None: ...
 

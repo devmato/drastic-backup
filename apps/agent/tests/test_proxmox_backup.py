@@ -13,10 +13,10 @@ import pytest
 import drastic_agent.jobs.base as base
 import drastic_agent.jobs.proxmox_backup as backup
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.guest_disks import DirectorySnapshot, snapshot_disks
 from drastic_agent.proxmox import ProxmoxError, QemuVolumeGuestDriver
 from drastic_agent.proxmox_blocks import make_manifest, view_metadata
 from drastic_agent.proxmox_snapshot import write_archive
-from drastic_agent.services.proxmox_restore import unpack_snapshot
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError, ResticFailedError
 from drastic_common.restic.repository import ResticRepository
@@ -420,6 +420,7 @@ def test_real_restic_deduplicates_snapshot_stream_and_restores_exact_disks(tmp_p
     assert 0 < changed["data_added"] < 8 * 1024 * 1024
     restored = tmp_path / "restored"
     api.restore(changed["snapshot_id"], str(restored), ["/qemu-101.tar"])
-    assert unpack_snapshot(restored / "qemu-101.tar", restored, lambda: False) == len(data)
-    assert (restored / "disks/disk-drive-scsi0.raw").read_bytes() == disk.read_bytes()
+    with snapshot_disks(DirectorySnapshot(restored), {"format": "tar", "archive": "qemu-101.tar"}) as disks:
+        assert disks["scsi0"].size == len(data)
+        assert disks["scsi0"].read_at(0, len(data)) == disk.read_bytes()
     api.check(read_data=True)

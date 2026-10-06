@@ -1,3 +1,4 @@
+import hashlib
 import io
 import os
 import sys
@@ -11,6 +12,7 @@ from drastic_common.process import (
     ProcessCancelledError,
     is_mounted,
     mounted_process,
+    run_pipeline,
     run_process,
     unmount,
 )
@@ -125,3 +127,68 @@ def test_disconnected_mount_is_detected_without_stat_and_lazy_unmounted(monkeypa
     assert not is_mounted(path + "-other")
     unmount(path)
     assert commands == [["fusermount3", "-u", path], ["fusermount3", "-uz", path]]
+
+
+def test_pipeline_streams_binary_data_and_preserves_split_progress_lines():
+    producer = [sys.executable, "-c", "import sys; sys.stdout.buffer.write(bytes(range(256))*32768)"]
+    consumer = [sys.executable, "-c", (
+        "import hashlib,sys,time\n"
+        "h=hashlib.sha256()\n"
+        "while data:=sys.stdin.buffer.read(65536): h.update(data)\n"
+        "sys.stdout.write('progress 100% (read ');sys.stdout.flush();time.sleep(.15)\n"
+        "print('8388608 bytes)');print(h.hexdigest())\n"
+    )]
+    output = []
+    run_pipeline(producer, consumer, on_output=output.append, timeout=10)
+    assert output == ["progress 100% (read 8388608 bytes)", hashlib.sha256(bytes(range(256))*32768).hexdigest()]
+
+
+@pytest.mark.parametrize("failure", ["producer", "consumer", "spawn", "timeout", "cancel"])
+def test_pipeline_failure_stops_both_processes(tmp_path, monkeypatch, failure):
+    import subprocess
+
+    marker = tmp_path / "started"
+    processes = []
+    original = subprocess.Popen
+
+    def spawn(*args, **kwargs):
+        process = original(*args, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", spawn)
+    fail = "import sys;sys.stderr.write('injected failure');sys.exit(3)"
+    producer = [sys.executable, "-c", fail if failure == "producer" else
+                f"import time;from pathlib import Path;Path({str(marker)!r}).touch();time.sleep(60)"]
+    consumer = [sys.executable, "-c", fail if failure == "consumer" else "import sys;sys.stdin.buffer.read()"]
+    if failure == "spawn":
+        consumer = [str(tmp_path / "missing-consumer")]
+    error = {"spawn": FileNotFoundError, "timeout": TimeoutError, "cancel": ProcessCancelledError}.get(failure, RuntimeError)
+    with pytest.raises(error):
+        run_pipeline(producer, consumer, timeout=0.3,
+                     cancelled=lambda: failure == "cancel" and marker.exists())
+    assert processes and all(process.poll() is not None for process in processes)
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX process groups")
+def test_pipeline_cleans_children_after_producer_leader_exits(tmp_path):
+    marker = tmp_path / "child-pid"
+    producer = [sys.executable, "-c", (
+        "import os,signal,time\n"
+        "if os.fork()==0:\n"
+        " signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+        f" open({str(marker)!r},'w').write(str(os.getpid()))\n"
+        " time.sleep(60)\n"
+    )]
+    consumer = [sys.executable, "-c", "import sys;sys.stdin.buffer.read()"]
+    with pytest.raises(TimeoutError):
+        run_pipeline(producer, consumer, timeout=0.3)
+    pid = int(marker.read_text())
+    status = Path(f"/proc/{pid}/stat")
+    for _ in range(50):
+        if not status.exists() or status.read_text().split()[2] == "Z":
+            break
+        time.sleep(0.02)
+    else:
+        os.kill(pid, 9)
+        pytest.fail("Pipeline child survived after its producer leader exited")
