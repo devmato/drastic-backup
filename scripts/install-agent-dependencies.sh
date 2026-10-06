@@ -12,17 +12,17 @@ if [ "${DRASTIC_AGENT_DEPLOYMENT:-}" = docker ]; then
 fi
 
 command -v pveversion >/dev/null 2>&1 || exit 0
-PACKAGES=(python3-guestfs libguestfs-tools)
+PACKAGES=(python3-guestfs libguestfs-tools python3-fuse python3-libnbd libnbd-bin)
 MISSING=false
 for package in "${PACKAGES[@]}"; do
     [ "$(dpkg-query -W -f='${Status}' "$package" 2>/dev/null)" = 'install ok installed' ] || MISSING=true
 done
-if [ "$MISSING" = false ] && /usr/bin/python3 -c 'import guestfs' >/dev/null 2>&1; then
+if [ "$MISSING" = false ] && /usr/bin/python3 -c 'import guestfs, fuse, nbd' >/dev/null 2>&1; then
     exit 0
 fi
 
 skip() {
-    printf '%s\n' "Optional GuestFS dependencies unavailable: $*. Continuing without Proxmox file restore; retry an agent update as root." >&2
+    printf '%s\n' "Optional Proxmox dependencies unavailable: $*. Retry an agent update as root for native backups and file restore." >&2
     exit 0
 }
 
@@ -35,9 +35,9 @@ if [ "$(id -u)" -ne 0 ]; then
     PREFIX=(sudo -n)
 fi
 
-printf '%s\n' 'Installing optional Proxmox file restore dependencies...'
+printf '%s\n' 'Installing optional Proxmox native backup and file restore dependencies...'
 "${PREFIX[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 update &&
     "${PREFIX[@]}" env DEBIAN_FRONTEND=noninteractive apt-get -o DPkg::Lock::Timeout=60 install \
         -y --no-remove --no-install-recommends "${PACKAGES[@]}" || skip 'package installation failed'
-/usr/bin/python3 -c 'import guestfs' >/dev/null 2>&1 || skip 'the system Python cannot import guestfs'
-printf '%s\n' 'Proxmox file restore dependencies are available.'
+/usr/bin/python3 -c 'import guestfs, fuse, nbd' >/dev/null 2>&1 || skip 'the system Python cannot import guestfs, fuse or nbd'
+printf '%s\n' 'Proxmox native backup and file restore dependencies are available.'

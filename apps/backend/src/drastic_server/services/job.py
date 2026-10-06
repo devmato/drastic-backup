@@ -137,7 +137,13 @@ def _get_job_type(job_type):
         raise ValueError("Invalid job type") from exc
 
 
-def ensure_job_connection(agent, job_type):
+def ensure_job_connection(agent, job_type, config=None):
+    if job_type == "proxmox" and (config or {}).get("backup_mode", "snapshot") != "snapshot":
+        if (agent.protocol_version or 0) < 8:
+            raise ValueError("Update the agent to use native Proxmox backups (protocol 8 required)")
+        error = ((agent.connections or {}).get("proxmox") or {}).get("native_backups_error")
+        if error:
+            raise ValueError(error)
     if job_type not in {"proxmox", "truenas"}:
         return
     if (agent.protocol_version or 0) < 3:

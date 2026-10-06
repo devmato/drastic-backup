@@ -89,7 +89,7 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
 test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const config = { selection_mode: 'all', guest_ids: [], exclude_guest_ids: [101] }
+  const config = { selection_mode: 'all', guest_ids: [], exclude_guest_ids: [101], backup_mode: 'native_cbt', fleecing_storage: 'local-lvm' }
   const props = { editingJob: { name: 'VMs', type: 'proxmox', config, actions: [], schedules: [] } }
   let saved
   const dialog = runInNewContext(`${source}\n;({ resetForm, submitForm, jobForm })`, {
@@ -107,6 +107,8 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   dialog.submitForm()
   assert.equal(JSON.stringify(saved.config.exclude_guest_ids), '[101,102]')
   assert.deepEqual(config.exclude_guest_ids, [101])
+  assert.equal(saved.config.backup_mode, 'native_cbt')
+  assert.equal(saved.config.fleecing_storage, 'local-lvm')
 })
 
 test('job submission validates general fields even when another section is active', () => {

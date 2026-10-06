@@ -1,5 +1,21 @@
 <template>
   <div class="q-mt-md">
+    <div class="row q-col-gutter-sm q-mb-md">
+      <div class="col-12 col-lg-6">
+        <q-select outlined dense :model-value="configModel.backup_mode" :options="backupModeOptions"
+          label="Backup Mode" emit-value map-options
+          @update:model-value="value => updateConfig({ backup_mode: value })" />
+      </div>
+      <div v-if="configModel.backup_mode !== 'snapshot'" class="col-12 col-lg-6">
+        <q-input outlined dense :model-value="configModel.fleecing_storage" label="Temporary backup storage"
+          hint="Local LVM-thin storage ID, e.g. local-lvm. Native backups use fleecing here."
+          :rules="[value => /^[A-Za-z][A-Za-z0-9_.-]*$/.test(value || '') || 'Enter a storage ID']"
+          @update:model-value="value => updateConfig({ fleecing_storage: value })" />
+      </div>
+    </div>
+    <q-banner v-if="configModel.backup_mode !== 'snapshot' && nativeError" class="bg-negative text-white q-mb-md">
+      {{ nativeError }}
+    </q-banner>
     <div class="row items-center q-mb-sm">
       <div class="text-subtitle1">Guest Selection</div>
       <q-space />
@@ -120,12 +136,18 @@ const guests = ref([])
 const loadingGuests = ref(false)
 const loadError = ref('')
 const selectedAgent = computed(() => agentStore.agents.find(agent => String(agent.id) === String(props.agentId)))
+const nativeError = computed(() => selectedAgent.value?.connections?.proxmox?.native_backups_error || '')
 let loadVersion = 0
 
 const selectionModeOptions = [
   { label: 'All guests', value: 'all' },
   { label: 'Specific guests', value: 'include' },
 ]
+const backupModeOptions = computed(() => [
+  { label: 'Snapshot — existing method', value: 'snapshot' },
+  { label: 'Native — read all disks', value: 'native', disable: (selectedAgent.value?.protocol_version || 0) < 8 || !!nativeError.value },
+  { label: 'Native — with CBT', value: 'native_cbt', disable: (selectedAgent.value?.protocol_version || 0) < 8 || !!nativeError.value },
+])
 
 const configModel = computed(() => createConfig(props.modelValue))
 const includeMode = computed(() => configModel.value.selection_mode === 'include')
@@ -146,6 +168,8 @@ function createConfig(config = {}) {
     selection_mode: config.selection_mode || 'all',
     guest_ids: [...(config.guest_ids || [])],
     exclude_guest_ids: [...(config.exclude_guest_ids || [])],
+    backup_mode: config.backup_mode || 'snapshot',
+    fleecing_storage: config.fleecing_storage || '',
   }
 }
 

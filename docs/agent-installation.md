@@ -189,4 +189,4 @@ Existing agent environment configuration remains supported until settings are sa
 - `DRASTIC_PROXMOX_NODE`
 - `DRASTIC_PROXMOX_VERIFY_TLS`
 
-The agent must run as root directly on the configured Proxmox node. New backups require LVM-thin disks and use temporary disk snapshots without RAM state or a full local copy. Update backend and agents together: protocol 7 adds disk-snapshot backup restore. A remote API URL does not enable remote backup execution.
+The agent must run as root directly on the configured Proxmox node. Snapshot mode requires LVM-thin disks and uses temporary disk snapshots without RAM state or a full local copy. Native modes require the Proxmox Backup Access API and a selected local LVM-thin fleecing storage. Native installers/updaters also attempt to install `python3-fuse`, `python3-libnbd` and `libnbd-bin`; missing dependencies disable native choices and produce a specific agent status error. Update backend and agents together: protocol 8 adds native modes and block-layout restore (protocol 7 added TAR snapshot restore). A remote API URL does not enable remote backup execution.

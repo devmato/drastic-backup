@@ -51,7 +51,7 @@ def test_proxmox_job_updates_config_envelope():
         },
     )
 
-    assert job.config == {"selection_mode": "include", "guest_ids": [101, 102], "exclude_guest_ids": []}
+    assert job.config == {"selection_mode": "include", "guest_ids": [101, 102], "exclude_guest_ids": [], "backup_mode": "snapshot", "fleecing_storage": ""}
     assert job.config_envelope == {"data": job.config}
 
 
@@ -61,9 +61,9 @@ def test_proxmox_exclusions_survive_create_update_and_agent_serialization():
         "config": {"exclude_guest_ids": [103, 101]},
     })
     job = create_job_instance(data=data, agent_id=1)
-    assert job.config == {"selection_mode": "all", "guest_ids": [], "exclude_guest_ids": [101, 103]}
+    assert job.config == {"selection_mode": "all", "guest_ids": [], "exclude_guest_ids": [101, 103], "backup_mode": "snapshot", "fleecing_storage": ""}
     update_job_instance(job, {"config": {"selection_mode": "all", "exclude_guest_ids": [104, 102]}})
-    assert job.config == {"selection_mode": "all", "guest_ids": [], "exclude_guest_ids": [102, 104]}
+    assert job.config == {"selection_mode": "all", "guest_ids": [], "exclude_guest_ids": [102, 104], "backup_mode": "snapshot", "fleecing_storage": ""}
     assert AgentJobSchema().dump(job)["config"] == job.config
 
 
@@ -75,6 +75,17 @@ def test_proxmox_exclusions_are_validated_on_create_and_update(ids):
     job = Job(name="VMs", agent_id=1, type=JobType.proxmox, config={})
     with pytest.raises(ValueError, match="exclude_guest_ids"):
         update_job_instance(job, {"config": config})
+
+
+@pytest.mark.parametrize("mode", ["snapshot", "native", "native_cbt"])
+def test_proxmox_backup_modes_survive_serialization_and_validate_storage(mode):
+    config = {"backup_mode": mode, "fleecing_storage": "local-lvm"}
+    data = JobCreateInputSchema().load({"agent_id": 1, "name": "VMs", "type": "proxmox", "config": config})
+    job = create_job_instance(data, 1)
+    assert AgentJobSchema().dump(job)["config"]["backup_mode"] == mode
+    if mode != "snapshot":
+        with pytest.raises(ValidationError, match="fleecing_storage"):
+            JobCreateInputSchema().load({"agent_id": 1, "name": "VMs", "type": "proxmox", "config": {"backup_mode": mode}})
 
 
 def test_schedule_config_accepts_repository_check_read_data():

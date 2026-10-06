@@ -92,18 +92,21 @@
         </q-card-section>
       </q-card>
 
-      <q-card v-if="datasetArtifacts.length > 0" flat bordered>
+      <q-card v-if="jobArtifacts.length > 0" flat bordered>
         <q-expansion-item
           label="Job details" :caption="jobDetailsCaption" switch-toggle-side
           header-class="q-pa-md text-subtitle1 text-weight-medium"
         >
           <q-separator />
-          <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">Dataset backups</h2></q-card-section>
+          <q-card-section><h2 class="text-subtitle1 text-weight-medium q-my-none">{{ datasetArtifacts.length ? 'Dataset backups' : 'VM backups' }}</h2></q-card-section>
           <q-list separator>
-            <q-item v-for="artifact in datasetArtifacts" :key="artifact.uuid">
+            <q-item v-for="artifact in jobArtifacts" :key="artifact.uuid">
               <q-item-section>
-                <q-item-label class="db-break-word">{{ artifact.data.dataset }}</q-item-label>
+                <q-item-label class="db-break-word">{{ artifact.data.dataset || `VM ${artifact.data.vmid}${artifact.data.guest_name ? ` (${artifact.data.guest_name})` : ''}` }}</q-item-label>
                 <q-item-label caption class="db-break-word">{{ artifact.snapshot_id || 'No completed Restic snapshot' }}</q-item-label>
+                <q-item-label v-for="field in nativeArtifactDetails(artifact)" :key="field.label" caption class="db-break-word">
+                  {{ field.label }}: {{ field.value }}
+                </q-item-label>
               </q-item-section>
               <q-item-section side><q-badge :color="stateColor(artifact.state)" text-color="grey-10" :label="artifact.state" /></q-item-section>
             </q-item>
@@ -249,12 +252,29 @@ const logColumns = [
 
 const operationData = computed(() => operation.value?.data || {})
 const datasetArtifacts = computed(() => (operation.value?.artifacts || []).filter(artifact => artifact.data?.dataset))
+const jobArtifacts = computed(() => (operation.value?.artifacts || []).filter(artifact => artifact.data?.dataset
+  || artifact.data?.vmid && !artifact.artifact_key?.endsWith(':manifest')))
+const backupModeLabels = { snapshot: 'Snapshot', native: 'Native — full read', native_cbt: 'Native — CBT' }
+function nativeArtifactDetails(artifact) {
+  const data = artifact.data || {}
+  if (data.backup_method !== 'native') return []
+  return [
+    { label: 'Requested', value: backupModeLabels[data.requested_mode] || data.requested_mode },
+    { label: 'Used', value: backupModeLabels[data.effective_mode] || data.effective_mode },
+    ...(data.fallback_reason ? [{ label: 'Full-read reason', value: data.fallback_reason }] : []),
+    ...(data.bytes_read != null ? [{ label: 'Disk data read', value: formatBytes(data.bytes_read) }] : []),
+    ...(data.bytes_reused != null ? [{ label: 'Disk data reused', value: formatBytes(data.bytes_reused) }] : []),
+    ...(data.data_added_packed != null ? [{ label: 'Newly stored', value: formatBytes(data.data_added_packed) }] : []),
+    ...(data.cleanup ? [{ label: 'Cleanup', value: data.cleanup }] : []),
+  ]
+}
 const jobDetailsCaption = computed(() => {
   const counts = backupStates.map(state => ({
     label: state.label.toLowerCase(),
-    count: datasetArtifacts.value.filter(artifact => artifact.state === state.value).length,
+    count: jobArtifacts.value.filter(artifact => artifact.state === state.value).length,
   })).filter(state => state.count > 0)
-  return [`${datasetArtifacts.value.length} ${datasetArtifacts.value.length === 1 ? 'dataset' : 'datasets'}`,
+  const unit = datasetArtifacts.value.length ? 'dataset' : 'VM'
+  return [`${jobArtifacts.value.length} ${unit}${jobArtifacts.value.length === 1 ? '' : 's'}`,
     ...counts.map(state => `${state.count} ${state.label}`)].join(' · ')
 })
 const proxmoxProgress = computed(() => operationData.value.proxmox_progress)
@@ -381,7 +401,7 @@ const metricCards = computed(() => {
     return [
       ...(bytesProcessed.value !== null ? [{ label: 'Data processed (job)', value: formatBytes(bytesProcessed.value) }] : []),
       ...(progress.bytes_processed != null ? [{ label: 'VM data processed', value: formatBytes(progress.bytes_processed) }] : []),
-      ...(progress.bytes_total > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.bytes_total) }] : []),
+      ...((progress.disk_bytes || progress.bytes_total) > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.disk_bytes || progress.bytes_total) }] : []),
       ...(progress.archive_bytes != null ? [{ label: 'VM archive size', value: formatBytes(progress.archive_bytes) }] : []),
     ]
   }

@@ -4,13 +4,18 @@ import os
 
 
 def backup(output):
+    last = None
     for line in reversed(output):
         line = line.strip()
         if not line:
             continue
-        return json.loads(line)
+        message = json.loads(line)
+        if last is None:
+            last = message
+        if isinstance(message, dict) and message.get("message_type") == "summary":
+            return message
 
-    return {}
+    return last or {}
 
 
 def default(output):

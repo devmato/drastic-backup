@@ -33,6 +33,8 @@ agent_operation_queue = db["agent_operation_queue"]
 agent_schema = db["agent_schema"]
 truenas_snapshots = db["truenas_snapshots"]
 proxmox_snapshots = db["proxmox_snapshots"]
+proxmox_checkpoints = db["proxmox_checkpoints"]
+proxmox_native_runs = db["proxmox_native_runs"]
 
 
 def initialize_schema():
@@ -160,6 +162,12 @@ def initialize_schema():
             db["proxmox_snapshots"].create_column(name, kind)
         agent_schema.upsert({"name": "agent", "version": 4}, ["name"])
 
+    if current < 5:
+        for table in ("proxmox_checkpoints", "proxmox_native_runs"):
+            db[table].create_column("key", db.types.text)
+            db[table].create_column("data", db.types.json)
+            db[table].create_index(["key"], unique=True)
+        agent_schema.upsert({"name": "agent", "version": 5}, ["name"])
 
 initialize_schema()
 

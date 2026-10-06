@@ -88,7 +88,15 @@ node_modules
 
 ### Proxmox Backup
 
-Proxmox backup jobs stream RAW disks from temporary QEMU VM snapshots into restic. No PBS or intermediate disk/archive copy is required during backup.
+Proxmox backup jobs support three job-level modes. Existing jobs default to **Snapshot**:
+
+| Mode | Behavior |
+| --- | --- |
+| Snapshot | Existing LVM-thin snapshot → complete RAW/TAR stream into Restic. |
+| Native — read all disks | Proxmox Backup Access with fleecing → read-only virtual 4-MiB block files → Restic. Always reads the complete disks. |
+| Native — with CBT | The same native path; reuses unchanged disk blocks when the checkpoint and QEMU bitmap are valid. |
+
+PBS is not required. Both native settings use one implementation and one backup layout. A missing tracking checkpoint causes a complete native read with a visible reason; missing native capabilities produce an error, not a silent switch to the Snapshot mode.
 
 Use this type when the agent runs directly on a Proxmox node and should back up VMs without writing intermediate archive files.
 
@@ -96,7 +104,8 @@ Required agent prerequisites:
 
 - The agent must run on the Proxmox host.
 - The agent must run as root, with local `qm`, `perl`, `blockdev`, `lvs` and the installed Proxmox Perl modules available.
-- Backup disks must use LVM-thin storage. Other storage types fail preflight; there is no VMA backup fallback.
+- Snapshot mode requires LVM-thin source disks. Native modes require protocol 8, the installed Proxmox external Backup Access API, `/dev/fuse`, `fusermount3`, `python3-fuse`, `python3-libnbd` and `libnbd-bin`. Native prerequisites are checked at runtime and reported by the agent. This integration is tested on PVE 9.2/QEMU 11 with LVM-thin disks.
+- For native modes, enter **Temporary backup storage**: a local LVM-thin storage ID such as `local-lvm`. It holds old blocks overwritten during backup (fleecing), not a preallocated full VM copy. Its growth still requires free data and metadata capacity.
 - Proxmox API credentials must be configured on the agent.
 - The configured API token must be able to list nodes, list QEMU guests and read QEMU configs. Snapshot operations use the local root agent, not the API token.
 
@@ -112,6 +121,8 @@ Agent environment variables remain a fallback when no configuration has been sav
 
 Configuration:
 
+- `backup_mode` -- `snapshot` (default), `native` or `native_cbt`.
+- `fleecing_storage` -- Required for native modes; local LVM-thin storage ID. Hidden in the form for Snapshot mode.
 - `selection_mode` -- Guest selection strategy. Supported values are `all` and `include`.
 - `guest_ids` -- List of selected VMIDs. Required only when `selection_mode` is `include`.
 
@@ -134,7 +145,7 @@ Supported guests and disks:
 - Disks with `backup=0` are skipped.
 - Path-based disk values without a Proxmox volume ID are skipped.
 
-Runtime behavior:
+Runtime behavior for Snapshot mode:
 
 - The agent discovers supported guests through the Proxmox API.
 - Each VM gets one temporary Proxmox snapshot without RAM state. Proxmox coordinates the disks and uses the configured guest-agent freeze/thaw behavior.
@@ -147,6 +158,18 @@ Runtime behavior:
 - After successful guest backups, optional repository checks, retention, and repository statistics are run.
 
 Only a small metadata plan and bounded streaming buffers are staged on the source node. Restic's repository index also consumes memory. Jobs are serialized on that node. Native repository traffic still uses the existing authenticated backend proxy; custom repositories remain directly reachable from the agent.
+
+**Native runtime and tracking**
+
+- The installed Proxmox backup lifecycle manages VM locks, EFI/TPM preparation, configured guest freeze/thaw, fleecing, NBD snapshot access and teardown. A process-local adapter registers no permanent Proxmox storage or plugin.
+- Each VM creates one complete Restic snapshot with a versioned manifest, configuration and all block files. Unchanged data is referenced by Restic; restore does not require older backup runs. Normal operation-based retention remains applicable.
+- Disks use stable block names, inodes and generation timestamps. The parent is selected explicitly from the confirmed checkpoint for this job/repository/VM. Changed blocks are read directly from the native NBD snapshot; fully consumed blocks are discarded in the temporary snapshot export to release fleecing capacity.
+- EFI and TPM are read completely every run. CBT applies to large guest disks. A fresh job, missing parent, invalid bitmap, changed disk size/identity, changed QEMU session/host or unconfirmed interrupted run causes full reading/reinitialization. Migration or VM restart is handled conservatively by this fallback.
+- Checkpoint reuse is invalidated before setup and confirmed only after successful Restic backup and native teardown. Failed uploads, partial Restic exit code 3, cancellation and crash windows cannot silently advance tracking. A completed backup with unconfirmed cleanup remains usable with a warning; its checkpoint remains invalid.
+- A small durable agent-local journal tracks owned workspaces and helper processes. Startup and subsequent Proxmox jobs retry cleanup. Uncertain/foreign ownership remains pending instead of deleting unrelated VM resources.
+- Recovery records setup intent and exact export/node ownership. It stops owned NBD exports and waits for their removal before tearing down Backup Access, so exported bitmaps are no longer busy. A pre-setup failure skips teardown when QEMU has no active backup access, even if a previous target ID remains cached. Foreign resources or failed NBD shutdown leave cleanup pending.
+- Pool checks run through the existing process monitor at five-second intervals even when progress output stalls. Reserve exhaustion aborts through native failure cleanup. Fleecing is not a fixed-space guarantee.
+- **Job details** shows requested/effective mode, full-read reason, actual disk bytes read, disk bytes reused, newly stored packed bytes and cleanup status. Disk I/O avoided and Restic deduplication are separate metrics.
 
 ## TrueNAS Backups
 
@@ -265,7 +288,7 @@ VMID, guest name when available, and timestamp. VM modes exclude manifest snapsh
 and archives known to have failed. Successfully backed-up VMs from a partially
 failed multi-VM operation remain usable.
 
-The target agent must be online, updated to agent protocol 7 for disk-snapshot backups (protocol 2 for legacy VMA), running
+The target agent must be online, updated to agent protocol 8 for native block backups (protocol 7 for TAR snapshots, protocol 2 for legacy VMA), running
 directly on the Proxmox node with root privileges, and assigned the source
 repository. Another node can be selected; the original backup agent need not be
 online. Local `pvesh`, `vma`, and `qmrestore` perform host operations, so restoring
@@ -278,7 +301,7 @@ does not require the original node's API credentials.
    original VMID can be reused only when it is free, including across the cluster.
 3. Keep **Generate new MAC addresses** enabled for a separate recovered VM, or
    disable it when deliberately preserving the original network identity.
-4. Start the restore. For new backups, the agent downloads and validates the TAR and manifest, extracts the RAW disks, and uses native `vma create` to prepare an importable archive. Legacy VMA backups are still accepted. It then verifies the VMA and runs
+4. Start the restore. TAR snapshots are validated and extracted; native block backups are validated and assembled into RAW disks. Both use native `vma create` to prepare an importable archive. Legacy VMA backups are still accepted. It then verifies the VMA and runs
    `qmrestore` without force/overwrite and without starting the VM.
 5. Check the operation result and the restored VM configuration in Proxmox before
    starting it. Referenced bridges, ISO images and other host resources must be
@@ -381,6 +404,18 @@ known file, for example `/Users/Test/Documents/restore-check.txt`, using its
 volume device and a different free VMID. Use `--basetemp` on a sufficiently large
 filesystem if the system temporary directory is too small. The test VMs are left
 stopped for manual boot verification and subsequent removal in Proxmox.
+
+Native modes have a separate, destructive-to-test-data-only opt-in check on a Proxmox test host:
+
+```bash
+# Requires root, local-lvm, Restic and native FUSE/libnbd dependencies.
+# VMIDs 990103 and 990104 must be FREE. Only these newly created test VMs are removed.
+DRASTIC_TEST_NATIVE_ROUNDTRIP=1 .venv/bin/python -m pytest \
+  tests/test_proxmox_native.py::test_real_native_proxmox_roundtrip \
+  --basetemp=/var/tmp/drastic-native-test -s
+```
+
+It tests initial/full and CBT runs, a changed block, upload failure, lost bitmap, SIGKILL of the backup controller and Perl provider helper, pre-setup failure after a different completed target, checkpoint invalidation/recovery, pruning older backups and real VM import with EFI/TPM. Recovery checks that QEMU remains running with the same process ID and releases the owned backup lock. It never selects VM 103 or another existing VM for writes, crash tests or restore. A real Windows boot/application recovery check is still required before relying on the new mode for production recovery.
 
 ## Create a User Recovery Export
 

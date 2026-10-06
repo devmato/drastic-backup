@@ -9,6 +9,7 @@ import shutil
 import tarfile
 import time
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 from uuid import UUID
@@ -219,7 +220,9 @@ def unpack_snapshot(archive_path, work, cancelled):
 def create_vma(work, cancelled):
     disks = sorted((work / "disks").glob("disk-drive-*.raw"))
     require_space(work, sum(path.stat().st_size for path in disks) + 16 * 1024 * 1024)
-    archive = work / "restored.vma"
+    manifest = work / "manifest.json"
+    vmid = json.loads(manifest.read_text()).get("vmid", 100) if manifest.exists() else 100
+    archive = work / f"vzdump-qemu-{vmid}-{datetime.now(timezone.utc).strftime('%Y_%m_%d-%H_%M_%S')}.vma"
     command = ["vma", "create", str(archive), "-c", str(work / "qemu-server.conf")]
     if (work / "qemu-server.fw").exists():
         command.extend(["-c", str(work / "qemu-server.fw")])
@@ -256,6 +259,65 @@ def require_space(path, size):
         raise ValueError(f"Insufficient workspace space: at least {size} bytes plus 64 MiB required")
 
 
+def restore_native_blocks(agent, report, snapshot, work, cancelled):
+    from drastic_agent.proxmox_blocks import (
+        BLOCK_SIZE,
+        block_path,
+        check_manifest_entry,
+        validate_manifest,
+    )
+    from drastic_agent.services.restore import RestoreService
+
+    target = work / "blocks"
+    check_manifest_entry(agent.resticapi, snapshot["id"])
+    agent.resticapi.restore(snapshot["id"], str(target), ["/manifest.json"])
+    path = target / "manifest.json"
+    RestoreService._reject_symlink_components(str(path))
+    if not path.is_file() or path.stat().st_size > 16 * 1024 * 1024:
+        raise ValueError("Native manifest is missing or too large")
+    manifest = json.loads(path.read_text())
+    volumes = validate_manifest(manifest)
+    if f"vmid:{manifest['vmid']}" not in (snapshot.get("tags") or []):
+        raise ValueError("Native manifest does not match snapshot VM")
+    size = sum(volume["size"] for volume in volumes)
+    require_space(work, size)
+    agent.resticapi.restore(snapshot["id"], str(target), ["/disks", "/qemu-server.conf", "/qemu-server.fw"],
+        callback=AgentReport.process_restore_status, callback_args={"operation_uuid": report.uuid},
+        callback_pid=True, callback_throttle=500)
+    for name in ("qemu-server.conf", "qemu-server.fw"):
+        source = target / name
+        if source.exists():
+            RestoreService._reject_symlink_components(str(source))
+            if not source.is_file() or source.stat().st_size > 65535:
+                raise ValueError("Invalid native VM configuration")
+            source.rename(work / name)
+        elif name == "qemu-server.conf":
+            raise ValueError("Native backup has no VM configuration")
+    (work / "disks").mkdir()
+    for volume in volumes:
+        with (work / "disks" / f"disk-drive-{volume['disk']}.raw").open("xb") as output:
+            for index in range(len(volume["generations"])):
+                if cancelled():
+                    raise ProcessCancelledError("Restore cancelled")
+                source = target / block_path(volume["disk"], index)
+                RestoreService._reject_symlink_components(str(source))
+                expected = min(BLOCK_SIZE, volume["size"] - index * BLOCK_SIZE)
+                if not source.is_file() or source.stat().st_size != expected:
+                    raise ValueError("Native backup has a missing or invalid disk block")
+                data = source.read_bytes()
+                if not any(data):
+                    output.seek(len(data), 1)
+                else:
+                    output.write(data)
+                source.unlink()
+            output.truncate(volume["size"])
+    if any(path.is_file() or path.is_symlink() for path in (target / "disks").rglob("*")):
+        raise ValueError("Unexpected native backup blocks")
+    (target / "manifest.json").rename(work / "manifest.json")
+    shutil.rmtree(target)
+    return size
+
+
 def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, storage=None,
                         unique=True, session_id=None, volume=None, include_paths=(),
                         restore_location=None, overwrite_policy="fail_if_exists"):
@@ -286,7 +348,7 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
 
     if mode == "proxmox_prepare":
         guest_tools_available()
-        if "backup_method:snapshot" not in (snapshot.get("tags") or []) and not shutil.which("vma"):
+        if not any(tag in (snapshot.get("tags") or []) for tag in ("backup_method:snapshot", "backup_method:native")) and not shutil.which("vma"):
             raise ValueError("vma is missing on the restore agent")
     elif mode == "proxmox_vm":
         if not isinstance(unique, bool):
@@ -303,31 +365,37 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
     else:
         raise ValueError("Unsupported Proxmox restore mode")
 
-    archive = validate_archive(agent, snapshot)
+    native = "backup_method:native" in (snapshot.get("tags") or [])
+    archive = None if native else validate_archive(agent, snapshot)
     keep_workspace = False
     with workspace(report.uuid, create=True) as work:
         try:
-            require_space(work, int(archive.get("size") or 0))
             snapshot_archive = "backup_method:snapshot" in (snapshot.get("tags") or [])
-            phase("Restoring VM archive" if snapshot_archive else "Restoring VMA archive")
-            status = agent.resticapi.restore(
-                snapshot_id=snapshot["id"], target=str(work), include_paths=[archive["path"]],
-                overwrite_policy="fail_if_exists", callback=AgentReport.process_restore_status,
-                callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500)
-            AgentReport.process_restore_status(status, operation_uuid=report.uuid)
-            archive_path = work / archive["path"].lstrip("/")
+            if native:
+                phase("Restoring native VM blocks")
+                disk_size = restore_native_blocks(agent, report, snapshot, work, cancelled)
+                archive_path = None
+            else:
+                require_space(work, int(archive.get("size") or 0))
+                phase("Restoring VM archive" if snapshot_archive else "Restoring VMA archive")
+                status = agent.resticapi.restore(
+                    snapshot_id=snapshot["id"], target=str(work), include_paths=[archive["path"]],
+                    overwrite_policy="fail_if_exists", callback=AgentReport.process_restore_status,
+                    callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500)
+                AgentReport.process_restore_status(status, operation_uuid=report.uuid)
+                archive_path = work / archive["path"].lstrip("/")
             if snapshot_archive:
                 phase("Extracting snapshot disks")
                 disk_size = unpack_snapshot(archive_path, work, cancelled)
-                if mode == "proxmox_vm":
-                    phase("Preparing Proxmox import")
-                    archive_path = create_vma(work, cancelled)
-            else:
+            elif not native:
                 phase("Verifying VMA archive")
                 run_process(["vma", "verify", str(archive_path)], cancelled=cancelled)
                 listing = run_process(["vma", "list", str(archive_path)], cancelled=cancelled)
                 disk_size = archive_devices(listing)
             if mode == "proxmox_vm":
+                if native or snapshot_archive:
+                    phase("Preparing Proxmox import")
+                    archive_path = create_vma(work, cancelled)
                 options = host_options(cancelled)
                 if vmid in options["used_vmids"]:
                     raise ValueError(f"VMID {vmid} already exists in the cluster")
@@ -342,7 +410,7 @@ def run_proxmox_restore(agent, report, snapshot, *, mode, identity, vmid=None, s
                             cancelled=cancelled)
                 report.log_message(f"VM {vmid} restored on {options['node']}; VM is stopped")
             else:
-                if not snapshot_archive:
+                if not snapshot_archive and not native:
                     require_space(work, disk_size)
                     phase("Extracting guest disks")
                     run_process(["vma", "extract", str(archive_path), str(work / "disks")], cancelled=cancelled)

@@ -224,6 +224,8 @@ function cloneProxmoxConfig(config = {}) {
     selection_mode: config.selection_mode || 'all',
     guest_ids: [...(config.guest_ids || [])],
     exclude_guest_ids: [...(config.exclude_guest_ids || [])],
+    backup_mode: config.backup_mode || 'snapshot',
+    fleecing_storage: config.fleecing_storage || '',
   }
 }
 
@@ -338,6 +340,13 @@ function submitForm() {
 
   if (jobForm.type === 'proxmox' && jobForm.config?.selection_mode === 'include' && (jobForm.config?.guest_ids || []).length === 0) {
     $q.notify({ message: 'Select at least one Proxmox guest', color: 'red', position: 'top' })
+    return
+  }
+
+  if (jobForm.type === 'proxmox' && (jobForm.config?.backup_mode || 'snapshot') !== 'snapshot'
+    && !/^[A-Za-z][A-Za-z0-9_.-]*$/.test(jobForm.config?.fleecing_storage || '')) {
+    activeSection.value = 'entries'
+    $q.notify({ message: 'Enter a temporary backup storage ID for native backups', color: 'negative' })
     return
   }
 

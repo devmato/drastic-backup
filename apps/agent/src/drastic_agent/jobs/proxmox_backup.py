@@ -9,7 +9,7 @@ from threading import Lock
 from time import monotonic, time
 from uuid import UUID
 
-from drastic_agent.agent.database import proxmox_snapshots
+from drastic_agent.agent.database import proxmox_native_runs, proxmox_snapshots
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.config import env_int
 from drastic_agent.jobs.base import BackupJobHandler
@@ -48,6 +48,9 @@ def cleanup_snapshots(report=None):
 def recover_snapshots():
     with PROXMOX_LOCK:
         cleanup_snapshots()
+        from drastic_agent.jobs.proxmox_native import recover_runs
+
+        recover_runs()
 
 
 class ProxmoxBackupJobHandler(BackupJobHandler):
@@ -62,9 +65,17 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             raise ProxmoxError("Another Proxmox snapshot backup is in progress")
         try:
             cleanup_snapshots(report)
+            from drastic_agent.jobs.proxmox_native import preflight, recover_runs, run_native
+
+            recover_runs(report)
             if proxmox_snapshots.count():
                 raise ProxmoxError("Clean up pending Proxmox snapshots before another backup")
+            if proxmox_native_runs.count():
+                raise ProxmoxError("Clean up pending native backup resources before another Proxmox backup")
             config = self.job.get("config") or {}
+            mode = config.get("backup_mode", "snapshot")
+            if mode not in ("snapshot", "native", "native_cbt"):
+                raise ProxmoxError("Unsupported Proxmox backup mode")
             guests = QemuVolumeGuestDriver().list_supported_guests(api)
             if config.get("selection_mode") == "include":
                 selected = {int(value) for value in config.get("guest_ids", [])}
@@ -76,21 +87,29 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 raise ProxmoxError("No supported Proxmox guests matched this job configuration")
             # Preflight every selected guest before any snapshot or data transfer.
             for guest in guests:
-                check_thin_pools(snapshot_info(guest["vmid"]), report=report)
+                if mode == "snapshot":
+                    check_thin_pools(snapshot_info(guest["vmid"]), report=report)
+                else:
+                    if not config.get("fleecing_storage"):
+                        raise ProxmoxError("Native backup needs a temporary backup storage")
+                    preflight(guest["vmid"], config["fleecing_storage"])
             report.set_data("guests", [guest["vmid"] for guest in guests])
             report.set_data("backup_items_total", len(guests))
             completed, failed = [], []
             for index, guest in enumerate(guests, 1):
                 self._check_cancelled(report)
                 try:
-                    self._backup_qemu_guest(report, guest, index)
+                    if mode == "snapshot":
+                        self._backup_qemu_guest(report, guest, index)
+                    else:
+                        run_native(self, report, guest, index)
                     completed.append(guest["vmid"])
                 except ResticCancelledError:
                     raise
                 except Exception as exc:
                     failed.append({"vmid": guest["vmid"], "error": str(exc)})
                     report.log_message(f"VM {guest['vmid']} backup failed: {exc}")
-                if proxmox_snapshots.count():
+                if proxmox_snapshots.count() or proxmox_native_runs.count():
                     failed.extend({"vmid": item["vmid"], "error": "Previous VM snapshot cleanup pending"}
                                   for item in guests[index:])
                     break

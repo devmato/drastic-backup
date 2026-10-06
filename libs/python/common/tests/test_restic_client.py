@@ -156,6 +156,15 @@ def test_backup_delivers_scan_and_summary_despite_throttle(monkeypatch):
     assert result == summary
 
 
+def test_partial_backup_keeps_snapshot_identity_without_reporting_success(monkeypatch):
+    process = _FakeResticProcess(["restic"], return_code=3)
+    process.stdout._lines.append('{"message_type":"exit_error","code":3}\n')
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: process)
+    with pytest.raises(ResticFailedError) as failure:
+        ResticApi("restic").backup(["/data"])
+    assert failure.value.snapshot_id == "snap-1"
+
+
 def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
     def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
         if cmd[0] == "vzdump":

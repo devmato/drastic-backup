@@ -202,7 +202,7 @@ class ResticApi:
                 deadlines.append(float(self.deadline))
         return min(deadlines) if deadlines else None
 
-    def __monitor_output(self, process, callback, callback_args, callback_pid, callback_throttle, deadline):
+    def __monitor_output(self, process, callback, callback_args, callback_pid, callback_throttle, deadline, monitor_callback=None):
         output = []
         output_queue = Queue()
 
@@ -220,7 +220,11 @@ class ResticApi:
         stdout_thread.start()
         last_callback_invoked = None
         stream_closed = False
+        last_monitor = 0
         while not (stream_closed and process.poll() is not None):
+            if monitor_callback is not None and time.monotonic() - last_monitor >= 5:
+                monitor_callback()
+                last_monitor = time.monotonic()
             if self._cancelled():
                 raise ResticCancelledError("Restic operation was cancelled")
             if deadline is not None and time.monotonic() >= deadline:
@@ -278,6 +282,7 @@ class ResticApi:
         callback_throttle=None,
         parser=parsers.default,
         cwd=None,
+        monitor_callback=None,
     ):
         started = time.monotonic()
         operation_uuid = (callback_args or {}).get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None)
@@ -331,7 +336,7 @@ class ResticApi:
             )
             stderr_thread.start()
             output = self.__monitor_output(
-                process, callback, callback_args, callback_pid, callback_throttle, deadline
+                process, callback, callback_args, callback_pid, callback_throttle, deadline, monitor_callback
             )
 
             return_code = process.wait()
@@ -339,8 +344,10 @@ class ResticApi:
             stderr_output = self.__join_stream_chunks(stderr_chunks)
 
             if return_code != 0:
+                status = parsers.backup(output) if return_code == 3 else {}
                 raise ResticFailedError(
-                    f"Restic failed with exit code {return_code}: {stderr_output}"
+                    f"Restic failed with exit code {return_code}: {stderr_output}",
+                    snapshot_id=status.get("snapshot_id") if isinstance(status, dict) else None,
                 )
 
         except FileNotFoundError as err:
@@ -378,8 +385,10 @@ class ResticApi:
         callback_throttle=None,
         cwd=None,
         parent=None,
+        monitor_callback=None,
+        force=False,
     ):
-        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent, verbose=True)
+        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent, verbose=True, force=force)
 
         return self.__execute_command(
             cmd,
@@ -389,6 +398,7 @@ class ResticApi:
             callback_throttle=callback_throttle,
             parser=parsers.backup,
             cwd=cwd,
+            monitor_callback=monitor_callback,
         )
 
     def backup_stdin(

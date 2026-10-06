@@ -1932,6 +1932,9 @@ class Agent:
                 from drastic_agent.services.proxmox_restore import guest_tools_error
 
                 result[kind]["guest_files_error"] = guest_tools_error()
+                from drastic_agent.jobs.proxmox_native import dependency_error
+
+                result[kind]["native_backups_error"] = dependency_error()
         return result
 
     def get_truenas_client(self):

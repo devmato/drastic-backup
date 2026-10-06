@@ -66,9 +66,13 @@ class AgentProxmoxBackupJobConfigSchema(Schema):
     )
     guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
     exclude_guest_ids = fields.List(fields.Integer(validate=validate.Range(min=100)), load_default=list)
+    backup_mode = fields.String(load_default="snapshot", validate=validate.OneOf(("snapshot", "native", "native_cbt")))
+    fleecing_storage = fields.String(load_default="", validate=validate.Regexp(r"^(?:[A-Za-z][A-Za-z0-9_.-]*)?$"))
 
     @validates_schema
     def validate_guest_selection(self, data, **kwargs):
+        if data.get("backup_mode", "snapshot") != "snapshot" and not data.get("fleecing_storage"):
+            raise ValidationError({"fleecing_storage": ["Select a temporary backup storage for native backups."]})
         for field in ("guest_ids", "exclude_guest_ids"):
             guest_ids = data.get(field, [])
             if len(set(guest_ids)) != len(guest_ids):

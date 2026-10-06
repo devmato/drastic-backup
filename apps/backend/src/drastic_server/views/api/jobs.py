@@ -111,7 +111,7 @@ class JobList(MethodView):
             abort(400, message="Agent is offline")
 
         try:
-            ensure_job_connection(agent, data["type"])
+            ensure_job_connection(agent, data["type"], data.get("config"))
             job = create_job_instance(data=data, agent_id=agent.id)
         except ValueError as exc:
             abort(400, message=str(exc))
@@ -159,7 +159,7 @@ class JobDetail(MethodView):
             abort(400, message="Agent is offline")
 
         try:
-            ensure_job_connection(agent, job.type.name)
+            ensure_job_connection(agent, job.type.name, data.get("config", job.config))
             update_job_instance(job=job, data=data)
         except ValueError as exc:
             abort(400, message=str(exc))
@@ -207,7 +207,7 @@ class JobOperationRun(MethodView):
             abort(400, message="Agent is offline")
 
         try:
-            ensure_job_connection(job.agent, job.type.name)
+            ensure_job_connection(job.agent, job.type.name, job.config)
         except ValueError as exc:
             abort(400, message=str(exc))
 

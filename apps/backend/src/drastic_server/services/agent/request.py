@@ -63,6 +63,9 @@ class AgentRequestService:
         from drastic_server.schemas.sync import SyncSchema
 
         agent_jobs = Job.query.filter(Job.agent_id == self.agent.id).all()
+        if (self.agent.protocol_version or 0) < 8 and any(
+                job.type.name == "proxmox" and (job.config or {}).get("backup_mode", "snapshot") != "snapshot" for job in agent_jobs):
+            raise AgentException("Update the agent before syncing native Proxmox jobs (protocol 8)")
         if (self.agent.protocol_version or 0) < 3 and any(job.type.name == "truenas" for job in agent_jobs):
             raise AgentException("Update the agent before syncing TrueNAS jobs")
 
