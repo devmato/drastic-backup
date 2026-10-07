@@ -382,6 +382,10 @@ def test_stream_failure_or_cancellation_removes_snapshot_and_marks_artifact_fail
     assert report.artifacts[0]["state"] == "failed"
     assert report.artifacts[0]["snapshot_id"] == getattr(error, "snapshot_id", None)
     assert report.data["backup_data_complete"] is False
+    errors = [log for log in report.logs if log["level"].name == "error"]
+    assert [log["message"] for log in errors] == (
+        [] if isinstance(error, ResticCancelledError) else [f"VM 101 backup failed: {error}"]
+    )
     assert not snapshots and not backup.proxmox_snapshots.count()
     assert commands[-1][1] == "delsnapshot"
 

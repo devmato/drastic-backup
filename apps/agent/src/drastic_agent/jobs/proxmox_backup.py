@@ -112,7 +112,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                     raise
                 except Exception as exc:
                     failed.append({"vmid": guest["vmid"], "error": str(exc)})
-                    report.log_message(f"VM {guest['vmid']} backup failed: {exc}")
+                    report.log_message(f"VM {guest['vmid']} backup failed: {exc}", final_state=AgentOperationState.failed)
                 if proxmox_snapshots.count() or proxmox_native_runs.count():
                     failed.extend({"vmid": item["vmid"], "error": "Previous VM snapshot cleanup pending"}
                                   for item in guests[index:])

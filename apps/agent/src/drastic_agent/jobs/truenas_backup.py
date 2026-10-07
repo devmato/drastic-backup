@@ -130,7 +130,7 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                     if isinstance(exc, ResticCancelledError):
                         raise
                     failed.append(dataset["id"])
-                    report.log_message(f"Dataset {dataset['id']} failed: {exc}")
+                    report.log_message(f"Dataset {dataset['id']} failed: {exc}", final_state=AgentOperationState.failed)
             if failed:
                 report.set_data("partial_failure", len(failed) < len(paths))
                 raise TrueNASError(f"Backup failed for dataset(s): {', '.join(failed)}")

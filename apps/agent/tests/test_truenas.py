@@ -212,6 +212,9 @@ def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapsh
     report = AgentReport.command_report()
     with pytest.raises(TrueNASError, match="tank/data"):
         handler.run_backup(report)
+    errors = [log for log in report.logs if log["level"].name == "error"]
+    assert [log["message"] for log in errors] == ["Dataset tank/data failed: injected read failure"]
+    assert report.final_state == AgentOperationState.failed
     assert report.data["partial_failure"] is True
     assert artifacts[0]["state"] == AgentOperationState.failed
     assert artifacts[1]["snapshot_id"] == "successful-dataset"
