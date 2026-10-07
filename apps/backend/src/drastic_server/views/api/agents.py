@@ -143,6 +143,14 @@ class AgentDetail(MethodView):
         user_id = get_jwt_identity()
         agent = Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
 
+        from drastic_server.services.chains import require_unused_chain_reference
+
+        try:
+            for job in agent.jobs:
+                require_unused_chain_reference(user_id, "job_id", job.id)
+        except ValueError as exc:
+            abort(409, message=str(exc))
+
         for operation in agent.operations:
             db.session.delete(operation)
 
@@ -449,6 +457,11 @@ class AgentOperationDetail(MethodView):
             .first_or_404()
         )
 
+        from drastic_server.models.chain import BackupChainRun
+
+        for run in BackupChainRun.query.filter_by(state="running"):
+            if any(step.get("operation_uuid") == operation.uuid for step in run.steps):
+                abort(409, message="Operation is still used by an active backup chain")
         db.session.delete(operation)
         db.session.commit()
 

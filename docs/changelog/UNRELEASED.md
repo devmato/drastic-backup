@@ -1,5 +1,17 @@
 # Unreleased
 
+- Restricted agent admission locking so slow browsing and process cancellation do not block unrelated control requests. Recovery HTML now includes backup chains, their schedules and ordered step settings. Retention retries stop when a policy disappears; already pending prune is retained as prune-only work and survives restarts.
+
+- Fixed retention safety after failed data checks: only a successful full-data check now clears the cleanup block, including previously stored sample-check failures. Policy updates/deletions synchronize all owned online agents, including chain-only and pending-cleanup agents.
+- Chain scheduling now admits due slots independently of bounded background agent requests. Saving a job skips unchanged schedules, allowing ordinary edits on older agents; unsupported schedule changes are rejected before saving the job.
+
+- Shared job/chain schedules now support hourly (optional weekdays/hour window), daily, weekly, monthly, yearly, one-time and periodic schedules with a next-execution preview. Existing cron times are preserved. Calendar schedules and compatible intervals reuse `croniter`; arbitrary intervals retain their spacing across restarts. Typed job schedules and agent-local previews require protocol 12. Repository and retention fields now align consistently in the forms.
+
+- Backup chains support multiple independently enabled UTC schedules, using the same schedule dialog and list as jobs. Existing start times and activation are migrated to the first schedule entry. Overlapping triggers in the same minute start one chain run.
+
+- Added centrally scheduled backup chains under **Jobs > Backup Chains**, with ordered jobs across agents, per-step repository/retention/check settings, persistent run history, cancellation, bounded start waits, restart recovery and duplicate-start protection. Chain times use UTC and participating agents require protocol 11. Jobs show their chain membership. Failed retention is retried independently on the agent, with repository checks before cleanup.
+- Fixed post-backup retention counting the completed current snapshot, so `keep_last` no longer retains an extra previous backup.
+
 ## Release Notes
 
 - Fixed rejected progress and diagnostic reports containing JSON `null` values, such as an unknown backup size. Debug MCP now supports a direct agent read for runtime state, bounded local logs and thread stacks, independently of report delivery. Update the backend first, then agents for protocol 6 live diagnostics; the progress-schema fix also benefits existing agents.

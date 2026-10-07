@@ -9,7 +9,9 @@ from drastic_common.agent.schemas import (
     UTCDateTime,
 )
 from drastic_common.truenas import TrueNASBackupConfigSchema
+from drastic_server.extensions import db
 from drastic_server.models.job import JobActionModuleEnum, JobType
+from drastic_server.schemas.scheduling import ScheduleTriggerSchema
 
 _JOB_TYPE_NAMES = tuple(JobType.__members__)
 _ACTION_MODULE_NAMES = tuple(JobActionModuleEnum.__members__)
@@ -42,6 +44,7 @@ class JobScheduleResponseSchema(Schema):
     enabled = fields.Boolean(required=True)
     cron_string = fields.String(required=True)
     cron_description = fields.String(attribute="cron_description", required=True)
+    timing = fields.Dict(attribute="timing")
     repository_id = fields.Integer(required=True)
     retention_id = fields.Integer(allow_none=True)
     config = fields.Method("get_config")
@@ -99,6 +102,7 @@ class JobResponseSchema(Schema):
     type_text = fields.String(attribute="type_text", allow_none=True)
     config = fields.Method("get_config")
     schedules = fields.List(fields.Nested(JobScheduleResponseSchema), required=True)
+    chains = fields.Method("get_chains")
     actions = fields.List(fields.Nested(JobActionResponseSchema), required=True)
     last_operation = fields.Nested(JobLastOperationSchema, allow_none=True)
     created = fields.DateTime(allow_none=True)
@@ -127,6 +131,24 @@ class JobResponseSchema(Schema):
 
     def get_config(self, obj):
         return obj.config
+
+    def get_chains(self, obj):
+        from drastic_server.models.chain import BackupChain
+        from drastic_server.models.job import Job
+        from drastic_server.services.chains import describe_schedules
+
+        memberships = []
+        for chain in BackupChain.query.filter_by(user_id=obj.agent.user_id).order_by(BackupChain.name):
+            for index, step in enumerate(chain.steps):
+                if step["job_id"] == obj.id:
+                    previous = chain.steps[index - 1] if index else None
+                    previous_job = db.session.get(Job, previous["job_id"]) if previous else None
+                    memberships.append({"id": chain.id, "name": chain.name, "enabled": chain.enabled,
+                                        "position": index + 1, "step_count": len(chain.steps),
+                                        "schedules": describe_schedules(chain.schedules),
+                                        "previous_job_name": previous_job.name if previous_job else None,
+                                        "repository_id": step["repository_id"], "retention_id": step.get("retention_id")})
+        return memberships
 
 
 class AgentJobsResponseSchema(Schema):
@@ -197,33 +219,11 @@ class JobOperationRunInputSchema(Schema):
             raise ValidationError({"options": exc.messages}) from exc
 
 
-class ScheduleCreateInputSchema(Schema):
-    class Meta:
-        unknown = EXCLUDE
-
-    minute = fields.String(required=True, validate=validate.Regexp(r"^(?:[0-5]?\d)$"))
-    hour = fields.String(required=True, validate=validate.Regexp(r"^(?:[01]?\d|2[0-3])$"))
-    day_of_week = fields.List(
-        fields.Integer(validate=validate.Range(min=0, max=6)),
-        required=True,
-        validate=validate.Length(min=1, max=7),
-    )
-    enabled = fields.Boolean(required=True)
+class ScheduleCreateInputSchema(ScheduleTriggerSchema):
     repository_id = fields.Integer(required=True)
     retention_id = fields.Integer(allow_none=True, load_default=None)
     recovery_key = fields.String(load_default=None, allow_none=True)
-    config = fields.Dict(load_default=dict)
-
-    @validates_schema
-    def validate_day_of_week(self, data, **kwargs):
-        day_of_week = data["day_of_week"]
-        if len(set(day_of_week)) != len(day_of_week):
-            raise ValidationError({"day_of_week": ["Duplicate weekdays are not allowed."]})
-
-        try:
-            data["config"] = ScheduleConfigSchema().load(data.get("config") or {})
-        except ValidationError as exc:
-            raise ValidationError({"config": exc.messages}) from exc
+    config = fields.Nested(ScheduleConfigSchema, load_default=lambda: ScheduleConfigSchema().load({}))
 
 
 class ScheduleUpdateInputSchema(ScheduleCreateInputSchema):

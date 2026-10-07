@@ -80,6 +80,9 @@ def create_app(config_object=None):
 
     app.register_blueprint(debug_blp)
     install_maintenance(app)
+    from drastic_server.services.chains import install_dispatcher
+
+    install_dispatcher(app)
     # Register API blueprints via flask-smorest
     for blp in api_blueprints:
         smorest_api.register_blueprint(blp)

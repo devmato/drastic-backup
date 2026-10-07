@@ -72,6 +72,9 @@ class AgentRequestService:
             raise AgentException("Update the agent before syncing automatic temporary storage selection (protocol 9)")
         if (self.agent.protocol_version or 0) < 3 and any(job.type.name == "truenas" for job in agent_jobs):
             raise AgentException("Update the agent before syncing TrueNAS jobs")
+        agent_schedules = JobSchedule.query.join(Job).filter(Job.agent_id == self.agent.id, JobSchedule.enabled).all()
+        if (self.agent.protocol_version or 0) < 12 and any(schedule.config.get("timing") for schedule in agent_schedules):
+            raise AgentException("Update the agent before syncing schedule types (protocol 12)")
 
         return SyncSchema().dump(
             {
@@ -79,14 +82,9 @@ class AgentRequestService:
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),
                 "jobs": agent_jobs,
-                "retentions": Retention.query.join(JobSchedule)
-                .join(Job, JobSchedule.job_id == Job.id)
-                .filter(Job.agent_id == self.agent.id)
-                .distinct()
-                .all(),
-                "schedules": JobSchedule.query.join(Job)
-                .filter(Job.agent_id == self.agent.id, JobSchedule.enabled)
-                .all(),
+                # Policies can also be used by chain-only jobs and pending cleanup.
+                "retentions": Retention.query.filter(Retention.user_id == self.agent.user_id).all(),
+                "schedules": agent_schedules,
                 "actions": JobAction.query.join(Job).filter(Job.agent_id == self.agent.id).all(),
             }
         )

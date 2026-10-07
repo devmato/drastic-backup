@@ -10,6 +10,7 @@ from flask import current_app
 
 from drastic_common.secret_envelope import decrypt_with_password
 from drastic_server.models.agent import Agent
+from drastic_server.models.chain import BackupChain
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
@@ -118,6 +119,12 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
             ],
             "jobs": [
                 _job_payload(job, repository_names, retention_names) for job in jobs
+            ],
+            "backup_chains": [
+                {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
+                  "schedules": chain.schedules, "timezone": "UTC",
+                 "start_timeout_minutes": chain.start_timeout_minutes, "steps": chain.steps}
+                for chain in BackupChain.query.filter_by(user_id=user.id).order_by(BackupChain.id)
             ],
         }
     )

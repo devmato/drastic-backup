@@ -1,4 +1,6 @@
+import json
 from datetime import datetime, timezone
+from time import time
 
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
@@ -34,6 +36,17 @@ def _retention_bucket(run, bucket):
 
 
 class RetentionService:
+    @staticmethod
+    def pending_tasks(settings_table):
+        tasks = []
+        for row in settings_table.all():
+            if not str(row.get("name", "")).startswith("retention_task:"):
+                continue
+            payload = json.loads(row["settings"])
+            if payload.get("retry_at", 0) <= time():
+                tasks.append(payload["args"])
+        return tasks
+
     @classmethod
     def run(
         cls,
@@ -48,7 +61,16 @@ class RetentionService:
         operations_table,
         operation_artifacts_table,
         settings_table,
+        retry=False,
     ):
+        task_key = f"retention_task:{repository_id}:{job_id}"
+        prune_key = f"retention_prune:{repository_id}"
+        prune_only = retry and retention_id is None
+        task = {"args": {"repository_id": repository_id, "retention_id": retention_id,
+                         "job_id": job_id, "current_operation_uuid": current_operation_uuid},
+                "retry_at": time() + 900}
+        # Keep intent before any deletion, including across agent restarts.
+        settings_table.upsert({"name": task_key, "settings": json.dumps(task)}, ["name"])
         report = AgentReport(
             type=AgentOperationType.retention,
             repository_id=repository_id,
@@ -58,7 +80,7 @@ class RetentionService:
             source=AgentOperationSource.triggered if current_operation_uuid else AgentOperationSource.manual,
         )
         try:
-            retention = retentions_table.find_one(id=retention_id)
+            retention = None if prune_only else retentions_table.find_one(id=retention_id)
         except Exception as exc:
             report.log_message(
                 f"Could not load retention policy {retention_id}: {exc}",
@@ -66,15 +88,44 @@ class RetentionService:
             )
             return report.finish()
 
-        if not retention:
+        if not retention and not prune_only:
+            prune_pending = bool(settings_table.find_one(name=prune_key))
+            if prune_pending:
+                # Forget may already have succeeded. Keep only repository cleanup,
+                # never select more snapshots using the deleted policy.
+                task["args"]["retention_id"] = None
+                settings_table.upsert({"name": task_key, "settings": json.dumps(task)}, ["name"])
+            else:
+                settings_table.delete(name=task_key)
+            report.retention_id = None  # The removed policy cannot be referenced by the backend.
+            report.data = {"retired_policy_id": retention_id, "cleanup_pending": prune_pending}
             report.log_message(
-                f"Retention policy with id {retention_id} not found",
-                final_state=AgentOperationState.failed,
+                f"Retention policy with id {retention_id} no longer available; policy retry retired"
+                + ("; pending prune retained" if prune_pending else ""),
+                final_state=AgentOperationState.warning,
             )
             return report.finish()
 
         try:
+            if prune_only and not settings_table.find_one(name=prune_key):
+                settings_table.delete(name=task_key)
+                report.log_message("Pending prune already completed")
+                return report.finish()
             repository = set_repository(repository_id)
+            blocked_check = settings_table.find_one(name=f"retention_check_failed:{repository_id}")
+            if retry or blocked_check:
+                report.log_message("Retrying pending retention; checking repository before deletion")
+                if blocked_check and blocked_check.get("settings"):
+                    resticapi.check(read_data=True, read_data_subset=None)
+                else:
+                    resticapi.check()
+                settings_table.delete(name=f"retention_check_failed:{repository_id}")
+            if prune_only:
+                report.log_message("Pruning repository after policy removal; no snapshots will be forgotten")
+                report.data["prune"] = resticapi.prune()
+                settings_table.delete(name=prune_key)
+                settings_table.delete(name=task_key)
+                return report.finish()
             report.log_message(
                 f"Running retention policy: {retention['name']} on repository {repository['location']}"
             )
@@ -88,6 +139,15 @@ class RetentionService:
                 for operation in backup_operations
                 if operation.get("state") in {AgentOperationState.success.name, AgentOperationState.warning.name}
             ]
+            current = next((operation for operation in backup_operations
+                            if operation.get("uuid") == current_operation_uuid
+                            and operation.get("state") == AgentOperationState.running.name), None)
+            if current and not (current.get("data") or {}).get("partial_failure"):
+                artifacts = list(operation_artifacts_table.find(operation_id=current["id"]))
+                if artifacts and all(artifact.get("state") == AgentOperationState.success.name
+                                     and artifact.get("snapshot_id") for artifact in artifacts):
+                    # The snapshot is complete, but the parent finishes only after retention/hooks.
+                    successful_operations.append({**current, "ended": datetime.now(timezone.utc).isoformat()})
             partial_operations = [
                 operation
                 for operation in backup_operations
@@ -166,7 +226,6 @@ class RetentionService:
 
             # Repository admission serializes retention on this agent. Keep the intent
             # outside synced repository data, and commit it before forget can succeed.
-            prune_key = f"retention_prune:{repository_id}"
             if snapshot_ids or missing_artifacts:
                 settings_table.upsert({"name": prune_key, "settings": "pending"}, ["name"])
 
@@ -202,6 +261,8 @@ class RetentionService:
         except Exception as exc:
             report.log_message(f"Error during retention: {exc}", final_state=AgentOperationState.failed)
 
+        if report.final_state == AgentOperationState.success:
+            settings_table.delete(name=task_key)
         return report.finish()
 
     @staticmethod

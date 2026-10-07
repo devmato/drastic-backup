@@ -8,6 +8,7 @@ from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.ext.mutable import MutableDict
 
 from drastic_common.agent.enums import AgentJobActionModule, AgentJobType
+from drastic_common.scheduling import describe, timing_from_cron
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
@@ -130,4 +131,10 @@ class JobSchedule(IdMixin, TimeMixin, db.Model):
 
     @property
     def cron_description(self):
+        if self.config.get("timing"):
+            return describe(self.config["timing"])
         return get_description(self.cron_string)
+
+    @property
+    def timing(self):
+        return self.config.get("timing") or timing_from_cron(self.cron_string)

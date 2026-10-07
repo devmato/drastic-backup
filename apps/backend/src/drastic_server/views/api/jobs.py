@@ -1,3 +1,4 @@
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask.views import MethodView
@@ -6,6 +7,8 @@ from flask_smorest import Blueprint, abort
 from marshmallow import ValidationError
 from sqlalchemy.orm import selectinload
 
+from drastic_common.agent.commands import AgentCommandName
+from drastic_common.scheduling import preview
 from drastic_server.extensions import db
 from drastic_server.models.agent import (
     Agent,
@@ -39,6 +42,7 @@ from drastic_server.schemas.job import (
     ScheduleCreateInputSchema,
     ScheduleUpdateInputSchema,
 )
+from drastic_server.schemas.scheduling import SchedulePreviewSchema
 from drastic_server.services.agent import (
     AgentService,
     is_agent_conflict_response,
@@ -63,6 +67,22 @@ from drastic_server.services.repository import RepositorySecretError
 from drastic_server.utils.realtime import emit_job_state, emit_jobs_update
 
 blp = Blueprint("jobs", __name__, url_prefix="/api/jobs", description="Job operations")
+
+
+@blp.route("/schedules/preview")
+class SchedulePreview(MethodView):
+    @jwt_required()
+    @blp.arguments(SchedulePreviewSchema)
+    def post(self, data):
+        if data["agent_id"] is None:
+            return preview(data["timing"], datetime.now(timezone.utc))
+        agent = Agent.query.filter_by(id=data["agent_id"], user_id=get_jwt_identity()).first_or_404()
+        if not agent.online:
+            abort(409, message="Next execution is available when the agent is online (agent local time)")
+        response = AgentService.send_command(agent, AgentCommandName.preview_schedule, timing=data["timing"], timeout=5)
+        if response.get("state") != AgentOperationState.success:
+            _abort_agent_command_failure(response)
+        return response.get("data", {})
 
 
 def _abort_recovery_key_error(exc):
@@ -179,6 +199,12 @@ class JobDetail(MethodView):
         )
         agent = job.agent
 
+        from drastic_server.services.chains import require_unused_chain_reference
+
+        try:
+            require_unused_chain_reference(user_id, "job_id", job.id)
+        except ValueError as exc:
+            abort(409, message=str(exc))
         JobSchedule.query.filter(JobSchedule.job_id == job.id).delete()
         JobAction.query.filter(JobAction.job_id == job.id).delete()
 

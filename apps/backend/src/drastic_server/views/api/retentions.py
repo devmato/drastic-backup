@@ -5,7 +5,6 @@ from marshmallow import ValidationError
 
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent
-from drastic_server.models.job import Job, JobSchedule
 from drastic_server.models.retention import Retention
 from drastic_server.schemas.common import MessageIdSchema, MessageSchema
 from drastic_server.schemas.retention import (
@@ -36,6 +35,14 @@ def _apply_retention_payload(retention, data):
     retention.keep_weekly = data["keep_weekly"]
     retention.keep_monthly = data["keep_monthly"]
     retention.keep_yearly = data["keep_yearly"]
+
+
+def _sync_retention_agents(user_id):
+    # Sync payloads include all owned policies; chain-only jobs and pending
+    # cleanup need updates even when there is no longer a JobSchedule reference.
+    for agent in Agent.query.filter_by(user_id=user_id):
+        if agent.online:
+            AgentService.sync(agent)
 
 
 @blp.route("/")
@@ -97,16 +104,7 @@ class RetentionDetail(MethodView):
 
         db.session.commit()
 
-        agents = (
-            Agent.query.join(Job)
-            .join(JobSchedule)
-            .filter(JobSchedule.retention_id == retention.id)
-            .distinct()
-            .all()
-        )
-        for agent in agents:
-            if agent.online:
-                AgentService.sync(agent)
+        _sync_retention_agents(user_id)
 
         return {"msg": "Retention updated"}
 
@@ -118,7 +116,15 @@ class RetentionDetail(MethodView):
             Retention.id == retention_id, Retention.user_id == user_id
         ).first_or_404()
 
+        from drastic_server.services.chains import require_unused_chain_reference
+
+        try:
+            require_unused_chain_reference(user_id, "retention_id", retention.id)
+        except ValueError as exc:
+            abort(409, message=str(exc))
+
         db.session.delete(retention)
         db.session.commit()
+        _sync_retention_agents(user_id)
 
         return {"msg": "Retention deleted"}

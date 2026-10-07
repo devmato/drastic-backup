@@ -159,9 +159,14 @@ function confirmDeleteOperation(operation) {
     message: 'Delete this operation?',
     cancel: true,
   }).onOk(async () => {
-    await agentStore.deleteOperation(operation.id)
-    await loadOperations()
-    $q.notify({ message: 'Operation deleted', color: 'green', position: 'top' })
+    try {
+      await agentStore.deleteOperation(operation.id)
+      await loadOperations()
+      $q.notify({ message: 'Operation deleted', color: 'green', position: 'top' })
+    } catch (error) {
+      if (shouldIgnoreApiError(error)) return
+      $q.notify({ message: getApiErrorMessage(error), color: 'negative', position: 'top' })
+    }
   })
 }
 

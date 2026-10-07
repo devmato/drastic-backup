@@ -1,3 +1,5 @@
+import json
+import re
 from io import BytesIO
 from zipfile import ZipFile
 
@@ -14,6 +16,7 @@ from drastic_server import models as _models  # noqa: F401
 from drastic_server.app import create_app
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentOperation, AgentOperationLog
+from drastic_server.models.chain import BackupChain
 from drastic_server.models.job import Job, JobAction, JobSchedule
 from drastic_server.models.notification import NotificationConfig
 from drastic_server.models.repository import Repository
@@ -128,12 +131,28 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         db.session.add_all(
             [agent, retention, job, action, schedule, notification, operation, operation_log]
         )
+        second_job = Job(agent=agent, name="Second backup", type=AgentJobType.file, config={})
+        db.session.add(second_job)
+        db.session.flush()
+        chain_schedules = [
+            {"enabled": True, "timing": {"type": "periodic", "interval": 90, "offset": 5}, "cron_string": ""},
+            {"enabled": False, "cron_string": "0 4 * * 0,6"},
+        ]
+        chain_steps = [
+            {"job_id": second_job.id, "repository_id": repository.id, "retention_id": retention.id,
+             "config": {"repository_check": {"enabled": True, "read_data": "5%"}}},
+            {"job_id": job.id, "repository_id": repository.id, "retention_id": None, "config": {}},
+        ]
+        db.session.add(BackupChain(user_id=user.id, name="Chain <script>alert(2)</script>",
+                                   schedules=chain_schedules, steps=chain_steps, start_timeout_minutes=47))
 
         other_user = User(name="other-user", email="other-user-DO-NOT-EXPORT@example.test")
         other_user.set_initial_password("other-password", recovery_key="other-recovery-key")
         db.session.add(other_user)
         db.session.flush()
         _create_repository(other_user, name="other-repository-DO-NOT-EXPORT")
+        db.session.add(BackupChain(user_id=other_user.id, name="other-chain-DO-NOT-EXPORT",
+                                   schedules=[], steps=[], start_timeout_minutes=60))
         db.session.commit()
 
         client = app.test_client()
@@ -160,6 +179,14 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         assert "ssh-ed25519 included-public-key" in html
         assert "Files &lt;nightly&gt;" in html
         assert "15 2 * * 1" in html
+        chains_html = html.split("<h2>Backup chains</h2>", 1)[1]
+        assert "Chain &lt;script&gt;alert(2)&lt;/script&gt;" in chains_html
+        assert "47 minutes" in chains_html and "UTC" in chains_html
+        schedules_json, steps_json = re.findall(r"<pre>(.*?)</pre>", chains_html, re.DOTALL)
+        assert json.loads(schedules_json) == chain_schedules
+        assert json.loads(steps_json) == chain_steps
+        assert "<script>alert(2)</script>" not in html
+        assert "other-chain-DO-NOT-EXPORT" not in html
         assert "Daily" in html
         assert "SSH/SFTP target access and private agent SSH material are not included" in html
         assert "Proxmox credentials and host prerequisites are not included" in html

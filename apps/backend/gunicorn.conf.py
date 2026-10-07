@@ -15,3 +15,10 @@ keepalive = env_int("DRASTIC_GUNICORN_KEEPALIVE", DefaultConfig.GUNICORN_KEEPALI
 accesslog = "-"
 errorlog = "-"
 loglevel = os.environ.get("DRASTIC_GUNICORN_LOG_LEVEL", DefaultConfig.GUNICORN_LOG_LEVEL)
+
+
+def post_worker_init(worker):
+    # Migrations run before Gunicorn. Start scheduling without needing a web visit.
+    from run import app
+
+    app.extensions["backup_chain_dispatcher"]()

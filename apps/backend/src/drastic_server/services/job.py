@@ -2,6 +2,7 @@ from croniter import croniter
 from marshmallow import ValidationError
 
 from drastic_common.agent.schemas import AgentProxmoxBackupJobConfigSchema
+from drastic_common.scheduling import as_cron
 from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.extensions import db
 from drastic_server.models.job import Job, JobSchedule, JobType
@@ -87,16 +88,28 @@ def build_schedule_cron_string(minute, hour, day_of_week):
     return cron_string
 
 
+def schedule_trigger(data):
+    if "timing" in data:
+        return {"enabled": data["enabled"], "timing": data["timing"], "cron_string": as_cron(data["timing"])}
+    return {"enabled": data["enabled"], "cron_string": build_schedule_cron_string(data["minute"], data["hour"], data["day_of_week"])}
+
+
+def job_schedule_config(agent, data):
+    config = normalize_schedule_config(data.get("config") or {})
+    if "timing" in data:
+        if (agent.protocol_version or 0) < 12:
+            raise ValueError("Update the agent to use schedule types (protocol 12 required)")
+        config["timing"] = data["timing"]
+    return config
+
+
 def create_job_schedule(user_id, job, data):
+    config = job_schedule_config(job.agent, data)
     repository_id = data["repository_id"]
     retention_id = data["retention_id"]
     assign_agent_repository(user_id, job.agent, repository_id, data.get("recovery_key"))
     retention = validate_retention(user_id, retention_id)
-    cron_string = build_schedule_cron_string(
-        minute=data["minute"],
-        hour=data["hour"],
-        day_of_week=data["day_of_week"],
-    )
+    cron_string = schedule_trigger(data)["cron_string"]
 
     schedule = JobSchedule(
         job_id=job.id,
@@ -105,28 +118,25 @@ def create_job_schedule(user_id, job, data):
         advanced=False,
         repository_id=repository_id,
         retention_id=retention.id if retention else None,
-        config=normalize_schedule_config(data.get("config") or {}),
+        config=config,
     )
     db.session.add(schedule)
     return schedule
 
 
 def update_job_schedule(user_id, schedule, data):
+    config = job_schedule_config(schedule.job.agent, data)
     repository_id = data["repository_id"]
     retention_id = data["retention_id"]
     assign_agent_repository(user_id, schedule.job.agent, repository_id, data.get("recovery_key"))
     retention = validate_retention(user_id, retention_id)
-    cron_string = build_schedule_cron_string(
-        minute=data["minute"],
-        hour=data["hour"],
-        day_of_week=data["day_of_week"],
-    )
+    cron_string = schedule_trigger(data)["cron_string"]
 
     schedule.cron_string = cron_string
     schedule.enabled = data["enabled"]
     schedule.repository_id = repository_id
     schedule.retention_id = retention.id if retention else None
-    schedule.config = normalize_schedule_config(data.get("config") or {})
+    schedule.config = config
     return schedule
 
 

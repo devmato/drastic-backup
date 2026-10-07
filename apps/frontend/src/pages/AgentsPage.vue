@@ -77,8 +77,13 @@ function confirmDelete(agent) {
     cancel: true,
     persistent: true,
   }).onOk(async () => {
-    await agentStore.deleteAgent(agent.id)
-    $q.notify({ message: 'Agent deleted', color: 'green', position: 'top' })
+    try {
+      await agentStore.deleteAgent(agent.id)
+      $q.notify({ message: 'Agent deleted', color: 'green', position: 'top' })
+    } catch (error) {
+      if (shouldIgnoreApiError(error)) return
+      $q.notify({ message: getApiErrorMessage(error), color: 'negative', position: 'top' })
+    }
   })
 }
 

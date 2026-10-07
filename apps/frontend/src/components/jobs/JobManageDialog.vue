@@ -54,11 +54,14 @@
                 </q-tab-panel>
 
                 <q-tab-panel name="schedules" class="q-pa-none">
-                  <JobSchedulesPanel
+                  <SchedulesPanel
                     v-model="draftSchedules"
                     :repositories="dialogRepositories"
                     :all-repositories="allRepositories"
                     :disabled="!entriesConfigured"
+                    :agent-id="agentId"
+                    :chains="editingJob?.chains || []"
+                    @open-chain="emit('open-chain', $event)"
                   />
                 </q-tab-panel>
               </q-tab-panels>
@@ -85,7 +88,8 @@ import TrueNASBackupJobForm from 'components/jobs/forms/TrueNASBackupJobForm.vue
 import { useAgentStore } from 'stores/agent'
 import { supportsJob } from 'src/utils/agent-connections'
 import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
-import JobSchedulesPanel from 'components/jobs/panels/JobSchedulesPanel.vue'
+import SchedulesPanel from 'components/SchedulesPanel.vue'
+import { scheduleTiming } from 'src/utils/schedule'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
@@ -99,7 +103,7 @@ const props = defineProps({
   submitting: { type: Boolean, default: false },
 })
 
-const emit = defineEmits(['save'])
+const emit = defineEmits(['save', 'open-chain'])
 
 const sections = [
   { name: 'general', label: 'General', icon: 'settings' },
@@ -237,16 +241,11 @@ function cloneAction(action) {
 }
 
 function cloneSchedule(schedule) {
-  const dayOfWeek = schedule.day_of_week || parseDayOfWeek(schedule.cron_string)
-  const cronParts = schedule.cron_string?.split(' ') || []
-
   return {
     ...schedule,
+    timing: scheduleTiming(schedule),
     repository_id: schedule.repository_id,
     retention_id: schedule.retention_id || null,
-    hour: schedule.hour || cronParts[1] || '0',
-    minute: schedule.minute || cronParts[0] || '0',
-    day_of_week: [...dayOfWeek],
     config: cloneScheduleConfig(schedule.config),
   }
 }
@@ -258,11 +257,6 @@ function cloneScheduleConfig(config = {}) {
       read_data: config.repository_check?.read_data || null,
     },
   }
-}
-
-function parseDayOfWeek(cronString) {
-  const dowPart = cronString?.split(' ')[4]
-  return dowPart === '*' || !dowPart ? [0, 1, 2, 3, 4, 5, 6] : dowPart.split(',').map(Number)
 }
 
 function cloneConfig(type, config = {}) {
@@ -360,9 +354,7 @@ function submitForm() {
       data: { ...(action.data || {}) },
     })),
     schedules: draftSchedules.value.map(schedule => ({
-      hour: schedule.hour,
-      minute: schedule.minute,
-      day_of_week: [...(schedule.day_of_week || [])],
+      timing: schedule.timing,
       repository_id: normalizeScheduleRepositoryId(schedule),
       retention_id: schedule.retention_id || null,
       enabled: schedule.enabled,

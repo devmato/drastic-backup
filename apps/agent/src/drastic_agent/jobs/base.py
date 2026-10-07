@@ -5,6 +5,7 @@ from drastic_agent.agent.database import (
     agent_operation_artifacts,
     retentions,
 )
+from drastic_agent.agent.database import agent as agent_settings
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
 from drastic_agent.agent.report import AgentReport
 from drastic_common import diagnostics
@@ -41,13 +42,17 @@ class BackupJobHandler:
             schedule_id=self.run_options.get("schedule_id"),
             retention_id=self.retention_id,
             source=(
-                AgentOperationSource.schedule
+                AgentOperationSource.triggered
+                if self.run_options.get("chain_run_id")
+                else AgentOperationSource.schedule
                 if self.run_options.get("schedule_id")
                 else AgentOperationSource.manual
             ),
         )
         self.operation = report.history_operation
         self.report = report
+        if self.run_options.get("chain_run_id"):
+            report.set_data("chain_run_id", self.run_options["chain_run_id"])
         report.set_data("backup_phase", "preparing")
         self._sync_operation(report)
 
@@ -118,6 +123,8 @@ class BackupJobHandler:
                     final_state=AgentOperationState.failed,
                 )
 
+            if report.cancel_event.is_set():
+                report.final_state = AgentOperationState.cancelled
             if report.final_state == AgentOperationState.success:
                 self._ensure_repository_initialized(report)
 
@@ -170,6 +177,9 @@ class BackupJobHandler:
         return report.finish()
 
     def _run_post_backup(self, report, success_actions):
+        if report.cancel_event.is_set():
+            report.final_state = AgentOperationState.cancelled
+            return
         check_succeeded = self._run_post_backup_check(report)
 
         if check_succeeded:
@@ -184,6 +194,8 @@ class BackupJobHandler:
                         current_operation_uuid=self.operation["uuid"],
                     )
                     report.append_logs(retention_report.log_list)
+                    report.set_data("retention_state", retention_report.state.name)
+                    report.set_data("cleanup_pending", retention_report.state != AgentOperationState.success)
                     if retention_report.state != AgentOperationState.success:
                         report.final_state = AgentOperationState.warning
             except Exception as exc:
@@ -191,6 +203,8 @@ class BackupJobHandler:
                     f"Retention failed after backup: {exc}",
                     final_state=AgentOperationState.warning,
                 )
+                report.set_data("retention_state", "failed")
+                report.set_data("cleanup_pending", True)
 
         try:
             report.set_data("backup_phase", "statistics")
@@ -361,9 +375,18 @@ class BackupJobHandler:
                 f"Repository check failed after backup: {exc}",
                 final_state=AgentOperationState.warning,
             )
+            check_key = f"retention_check_failed:{self.repository_id}"
+            previous = agent_settings.find_one(name=check_key)
+            # A new sample can miss the damaged packs. Any failed data check
+            # requires a full read, including legacy partial-check blocks.
+            required = "100%" if read_data or (previous and previous.get("settings")) else ""
+            agent_settings.upsert({"name": check_key, "settings": required}, ["name"])
             return False
 
         report.log_message("Repository check finished successfully")
+        blocked_check = agent_settings.find_one(name=f"retention_check_failed:{self.repository_id}")
+        if blocked_check and (read_data == "100%" or not blocked_check.get("settings")):
+            agent_settings.delete(name=f"retention_check_failed:{self.repository_id}")
         return True
 
     def run_backup(self, report):

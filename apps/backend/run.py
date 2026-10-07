@@ -36,6 +36,9 @@ if __name__ == "__main__":
         "on",
     }
 
+    if not debug or os.environ.get("WERKZEUG_RUN_MAIN") == "true":
+        app.extensions["backup_chain_dispatcher"]()
+
     socketio.run(
         app,
         debug=debug,

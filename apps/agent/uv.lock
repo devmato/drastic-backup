@@ -239,12 +239,14 @@ name = "drastic-common"
 version = "0.1.0"
 source = { editable = "../../libs/python/common" }
 dependencies = [
+    { name = "croniter" },
     { name = "marshmallow" },
     { name = "pycryptodome" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "croniter", specifier = ">=6.0.0" },
     { name = "marshmallow", specifier = ">=3.26.1" },
     { name = "pycryptodome", specifier = ">=3.23.0" },
 ]

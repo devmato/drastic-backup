@@ -155,6 +155,22 @@
     {% else %}<p>No jobs.</p>{% endfor %}
   </section>
 
+  <section>
+    <h2>Backup chains</h2>
+    {% for chain in export.backup_chains %}
+      <div class="item">
+        <h3>{{ chain.name }} <small>(ID {{ chain.id }})</small></h3>
+        <table>
+          <tr><th>Scheduled / timezone</th><td>{{ chain.enabled }} / {{ chain.timezone }}</td></tr>
+          <tr><th>Maximum start wait per step</th><td>{{ chain.start_timeout_minutes }} minutes</td></tr>
+          <tr><th>Schedules</th><td><pre>{{ chain.schedules | tojson(indent=2) }}</pre></td></tr>
+          <tr><th>Steps in execution order</th><td><pre>{{ chain.steps | tojson(indent=2) }}</pre></td></tr>
+        </table>
+        <p>Job, repository and retention IDs refer to the entries above.</p>
+      </div>
+    {% else %}<p>No backup chains.</p>{% endfor %}
+  </section>
+
   <footer class="note">
     Agent secrets and encryption keys, private SSH keys, operation history, logs, artifacts,
     notification settings/secrets, and application master secrets are intentionally excluded.

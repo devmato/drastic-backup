@@ -4,6 +4,7 @@ import shutil
 from concurrent.futures import Future
 from datetime import datetime, timezone
 
+import dataset
 import pytest
 
 import drastic_agent.agent.agent as agent_module
@@ -23,6 +24,7 @@ from drastic_agent.agent.database import (
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.file_backup import FileBackupJobHandler
+from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
 
@@ -125,6 +127,45 @@ def test_real_file_backup_finishes_in_durable_outbox(
     assert restored.uuid == report.uuid
     assert restored.artifacts == report.artifacts
     assert restored.final_state == AgentOperationState.success
+
+
+def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(tmp_path, restic_binary, clean_agent_state):
+    source = tmp_path / "source"
+    source.mkdir()
+    repository = ResticRepository(location=str(tmp_path / "repository"), password="test-password")
+    resticapi = ResticApi(binary_path=restic_binary, repository=repository, timeout=10)
+    resticapi.init()
+    retentions.insert({"id": 73, "name": "Latest only", "keep_last": 1})
+    settings_db = dataset.connect(f"sqlite:///{tmp_path}/settings.db")
+    settings = settings_db["agent"]
+    settings.create_column("name", settings_db.types.text)
+    settings.create_column("settings", settings_db.types.text)
+
+    class RetentionAgent(_OfflineAgent):
+        def cmd_run_retention(self, **kwargs):
+            return RetentionService.run(**kwargs, set_repository=self.set_repository,
+                                        resticapi=self.resticapi, retentions_table=retentions,
+                                        operations_table=agent_operations,
+                                        operation_artifacts_table=agent_operation_artifacts,
+                                        settings_table=settings)
+
+    agent = RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location})
+    latest = []
+    try:
+        for cycle in range(2):
+            latest = []
+            for job_id in (83, 84):
+                (source / "payload.txt").write_text(f"job {job_id}, cycle {cycle}", encoding="utf-8")
+                report = FileBackupJobHandler(agent=agent, job={"id": job_id, "uuid": f"job-{job_id}",
+                    "type": "file", "config": {"paths": [{"path": str(source)}], "exclude_patterns": []}},
+                    repository_id=73, retention_id=73, operation_uuid=f"chain-{cycle}-{job_id}").run()
+                assert report.final_state == AgentOperationState.success
+                latest.append(report.artifacts[0]["snapshot_id"])
+        assert {snapshot["id"] for snapshot in resticapi.snapshots()} == set(latest)
+        assert not list(settings.all())
+        resticapi.check()
+    finally:
+        settings_db.engine.dispose()
 
 
 class _SynchronousExecution:

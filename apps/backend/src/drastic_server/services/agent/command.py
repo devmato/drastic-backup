@@ -145,7 +145,7 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.delete_connection, **kwargs)
 
     @classmethod
-    def run_job(cls, agent, job_id, repository_id, operation_uuid=None, run_options=None):
+    def run_job(cls, agent, job_id, repository_id, operation_uuid=None, run_options=None, retention_id=None):
         return cls.send_command(
             agent,
             AgentCommandName.run_job,
@@ -153,6 +153,7 @@ class AgentService:
             repository_id=repository_id,
             operation_uuid=operation_uuid,
             run_options=run_options or {},
+            **({"retention_id": retention_id} if retention_id is not None else {}),
             timeout=5,
         )
 
@@ -169,9 +170,10 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.delete_job, job_id=job_id)
 
     @classmethod
-    def cancel_job(cls, agent, job_id, operation_uuid=None):
+    def cancel_job(cls, agent, job_id, operation_uuid=None, cancel_if_missing=False):
         return cls.send_command(
-            agent, AgentCommandName.cancel_job, job_id=job_id, operation_uuid=operation_uuid
+            agent, AgentCommandName.cancel_job, job_id=job_id, operation_uuid=operation_uuid,
+            **({"cancel_if_missing": True} if cancel_if_missing else {}),
         )
 
     @classmethod

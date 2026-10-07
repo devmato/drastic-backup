@@ -207,6 +207,13 @@ class RepositoryDetail(MethodView):
             Repository.id == repository_id, Repository.user_id == user_id
         ).first_or_404()
 
+        from drastic_server.services.chains import require_unused_chain_reference
+
+        try:
+            require_unused_chain_reference(user_id, "repository_id", repository.id)
+        except ValueError as exc:
+            abort(409, message=str(exc))
+
         if repository.schedules:
             abort(
                 400,

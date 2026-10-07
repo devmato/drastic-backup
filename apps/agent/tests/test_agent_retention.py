@@ -1,7 +1,11 @@
+import json
+from types import SimpleNamespace
+
 import dataset
 import pytest
 
 import drastic_agent.agent.agent as agent_module
+import drastic_agent.jobs.base as base_module
 from drastic_agent.agent.agent import Agent
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
@@ -142,6 +146,167 @@ def test_cmd_run_retention_prunes_old_operation_artifacts(monkeypatch):
     report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
     assert report.final_state == AgentReportState.success
     assert resticapi.calls == []
+
+
+def test_pending_retention_recovers_after_forget_before_local_commit(tmp_path, monkeypatch):
+    from drastic_agent.services import retention as retention_module
+
+    database = dataset.connect(f"sqlite:///{tmp_path}/cleanup.db")
+    settings = database["agent"]
+    settings.create_column("name", database.types.text)
+    settings.create_column("settings", database.types.text)
+    resticapi = FakeResticApi()
+    artifact_table = FakeArtifactsTable()
+    snapshots = resticapi.snapshots()
+    calls = []
+
+    def forget(snapshot_ids, prune=False):
+        calls.append(list(snapshot_ids))
+        snapshots[:] = [item for item in snapshots if item["id"] not in snapshot_ids]
+
+    resticapi.forget_snapshots = forget
+    resticapi.snapshots = lambda: snapshots
+    resticapi.check = lambda: calls.append("check")
+    artifact_table.update = lambda *args: (_ for _ in ()).throw(RuntimeError("agent stopped after forget"))
+    args = dict(repository_id=1, retention_id=2, job_id=7, current_operation_uuid="operation-new",
+                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
+                retentions_table=FakeTable({"id": 2, "name": "Keep one", "keep_last": 1}),
+                operations_table=FakeRunsTable(), operation_artifacts_table=artifact_table, settings_table=settings)
+    monkeypatch.setattr(retention_module, "time", lambda: 1000)
+    first = RetentionService.run(**args)
+    assert first.final_state == AgentReportState.failed
+    assert settings.find_one(name="retention_task:1:7")
+    database.engine.dispose()
+    reopened = dataset.connect(f"sqlite:///{tmp_path}/cleanup.db")
+    args["settings_table"] = reopened["agent"]
+    artifact_table = FakeArtifactsTable()  # Reload the pre-crash local artifact history.
+    args["operation_artifacts_table"] = artifact_table
+    monkeypatch.setattr(retention_module, "time", lambda: 2000)
+    assert RetentionService.pending_tasks(reopened["agent"])[0]["current_operation_uuid"] == "operation-new"
+    second = RetentionService.run(**args, retry=True)
+    assert second.final_state == AgentReportState.success
+    assert calls == [["snap-old"], "check"]
+    assert artifact_table.rows[1]["forgotten_at"] is not None
+    assert resticapi.calls == [{"prune": True}]
+    assert not list(reopened["agent"].all())
+    reopened.engine.dispose()
+
+
+@pytest.mark.parametrize("failed_check", ["100%", "5%", "1/10"])
+def test_failed_data_check_blocks_cleanup_until_full_recheck_passes(retention_settings, failed_check):
+    retention_settings.upsert({"name": "retention_check_failed:1", "settings": failed_check}, ["name"])
+    resticapi = FakeResticApi()
+    checked = []
+    failing = True
+
+    def check(**kwargs):
+        checked.append(kwargs)
+        if failing:
+            raise ResticError("repository data damaged")
+
+    resticapi.check = check
+    args = dict(repository_id=1, retention_id=2, job_id=7,
+                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
+                retentions_table=FakeTable({"id": 2, "name": "Keep one", "keep_last": 1}),
+                operations_table=FakeRunsTable(), operation_artifacts_table=FakeArtifactsTable(),
+                settings_table=retention_settings)
+    assert RetentionService.run(**args).final_state == AgentReportState.failed
+    assert resticapi.calls == []
+    assert retention_settings.find_one(name="retention_task:1:7")
+    failing = False
+    assert RetentionService.run(**args, retry=True).final_state == AgentReportState.success
+    assert checked == [{"read_data": True, "read_data_subset": None}] * 2
+    assert not retention_settings.find_one(name="retention_check_failed:1")
+    assert not retention_settings.find_one(name="retention_task:1:7")
+
+
+def test_successful_sample_cannot_clear_failed_data_check_block(monkeypatch, retention_settings):
+    monkeypatch.setattr(base_module, "agent_settings", retention_settings)
+    failing = True
+
+    def check(**kwargs):
+        if failing:
+            raise ResticError("damaged pack found in sample")
+
+    handler = base_module.BackupJobHandler(
+        agent=SimpleNamespace(resticapi=SimpleNamespace(check=check)), job={"id": 7}, repository_id=1,
+        run_options={"repository_check": {"enabled": True, "read_data": "5%"}},
+    )
+    assert handler._run_post_backup_check(AgentReport.command_report()) is False
+    assert retention_settings.find_one(name="retention_check_failed:1")["settings"] == "100%"
+    failing = False
+    for stored in ("100%", "5%", "1/10"):
+        retention_settings.upsert({"name": "retention_check_failed:1", "settings": stored}, ["name"])
+        assert handler._run_post_backup_check(AgentReport.command_report()) is True
+        assert retention_settings.find_one(name="retention_check_failed:1"), "new sample must not unblock retention"
+    handler.run_options["repository_check"]["read_data"] = "100%"
+    assert handler._run_post_backup_check(AgentReport.command_report()) is True
+    assert retention_settings.find_one(name="retention_check_failed:1") is None
+
+
+@pytest.mark.parametrize("prune_pending", [False, True])
+def test_deleted_policy_retires_retry_but_preserves_prune_across_restart(monkeypatch, retention_settings, prune_pending):
+    from drastic_agent.services import retention as retention_module
+
+    monkeypatch.setattr(retention_module, "time", lambda: 1000)
+    policy = FakeTable({"id": 2, "name": "Keep one", "keep_last": 1})
+    resticapi = FakeResticApi()
+    if prune_pending:
+        resticapi.prune_error = ResticError("prune interrupted")
+    else:
+        resticapi.snapshots = lambda: (_ for _ in ()).throw(ResticError("repository offline"))
+    args = dict(repository_id=1, retention_id=2, job_id=7, current_operation_uuid="operation-new",
+                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
+                retentions_table=policy, operations_table=FakeRunsTable(),
+                operation_artifacts_table=FakeArtifactsTable(), settings_table=retention_settings)
+    assert RetentionService.run(**args).final_state == AgentReportState.failed
+    policy.row = None  # Successful synchronization removed the deleted policy.
+    resticapi.calls.clear()
+    retired = RetentionService.run(**args, retry=True)
+    assert retired.final_state == AgentReportState.warning
+    assert retired.retention_id is None
+    assert retired.data == {"retired_policy_id": 2, "cleanup_pending": prune_pending}
+    assert resticapi.calls == [], "policy retirement must not delete anything"
+
+    reopened = dataset.connect(str(retention_settings.db.engine.url))
+    try:
+        monkeypatch.setattr(retention_module, "time", lambda: 2000)
+        tasks = RetentionService.pending_tasks(reopened["agent"])
+        if not prune_pending:
+            assert tasks == []
+            return
+        assert tasks == [{"repository_id": 1, "retention_id": None, "job_id": 7, "current_operation_uuid": "operation-new"}]
+        assert reopened["agent"].find_one(name="retention_prune:1")
+        resticapi.check = lambda: resticapi.calls.append({"check": True})
+        resticapi.snapshots = lambda: pytest.fail("prune-only retry must not select snapshots")
+        policy.find_one = lambda **kwargs: pytest.fail("deleted policy must not be retried")
+        prune_args = {**args, **tasks[0], "settings_table": reopened["agent"], "retry": True}
+        resticapi.prune_error = ResticError("repository locked")
+        assert RetentionService.run(**prune_args).final_state == AgentReportState.failed
+        assert json.loads(reopened["agent"].find_one(name="retention_task:1:7")["settings"])["args"]["retention_id"] is None
+        assert reopened["agent"].find_one(name="retention_prune:1")
+        assert RetentionService.run(**prune_args).final_state == AgentReportState.success
+        assert resticapi.calls == [{"check": True}, {"prune": True}] * 2
+        assert not list(reopened["agent"].all())
+    finally:
+        reopened.engine.dispose()
+
+
+def test_retention_database_error_keeps_policy_retry(retention_settings):
+    def unavailable(**kwargs):
+        raise RuntimeError("database temporarily unavailable")
+
+    report = RetentionService.run(
+        repository_id=1, retention_id=2, job_id=7, retry=True,
+        set_repository=lambda repository_id: pytest.fail("policy lookup failed"),
+        resticapi=FakeResticApi(), retentions_table=SimpleNamespace(find_one=unavailable),
+        operations_table=FakeRunsTable(), operation_artifacts_table=FakeArtifactsTable(),
+        settings_table=retention_settings,
+    )
+    assert report.final_state == AgentReportState.failed
+    assert report.retention_id == 2
+    pending = json.loads(retention_settings.find_one(name="retention_task:1:7")["settings"])
+    assert pending["args"]["retention_id"] == 2
 
 
 @pytest.mark.parametrize("month, utc_hour", [(7, 2), (1, 3)])

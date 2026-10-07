@@ -15,14 +15,13 @@ from concurrent.futures import CancelledError
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from threading import Event
+from threading import Event, RLock
 from time import monotonic, sleep
 from urllib.parse import urlparse, urlunparse
 from zipfile import ZipFile
 
 import requests
 import socketio
-from croniter import croniter
 from docker import DockerClient
 from docker.errors import DockerException
 from marshmallow import ValidationError
@@ -77,6 +76,7 @@ from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token
 from drastic_common.restic import RESTIC_VERSION, ResticApi
 from drastic_common.restic.exceptions import ResticError
 from drastic_common.restic.repository import ResticRepository
+from drastic_common.scheduling import TimingSchema, matches, preview, slot_key, timing_from_cron
 from drastic_common.secret_envelope import (
     SecretEnvelopeError,
     decrypt_with_private_key,
@@ -89,6 +89,7 @@ from drastic_common.truenas import TrueNASSettingsSchema, validate_api_key
 AGENT_INSTALL_ROOT = Path("/opt/drastic-agent")
 AGENT_COMMAND = AGENT_INSTALL_ROOT / "bin/drastic-agent"
 AGENT_UPDATE_UNIT = "drastic-agent-update.service"
+_COMMAND_ADMISSION_LOCK = RLock()
 
 
 def _agent_data_dir() -> str:
@@ -469,6 +470,9 @@ class Agent:
             if not self.__check_update():
                 self._debug_scheduler["phase"] = "schedules"
                 self.__run_due_schedules(now)
+                if monotonic() >= getattr(self, "_next_retention_retry", 0):
+                    self._next_retention_retry = monotonic() + 60
+                    self.__retry_retention()
 
             # Process tasks that require server connection
             if self.connected:
@@ -570,17 +574,24 @@ class Agent:
     def __run_due_schedules(self, now):
         utc_slot = now.astimezone(timezone.utc).replace(second=0, microsecond=0)
         planned_slot = utc_slot.isoformat()
+        once_slot = "once:" + now.replace(second=0, microsecond=0, tzinfo=None).isoformat()
         run_slots = getattr(self, "_Agent__schedule_run_slots", {})
         self.__schedule_run_slots = {
-            schedule_id: slot for schedule_id, slot in run_slots.items() if slot == planned_slot
+            schedule_id: slot for schedule_id, slot in run_slots.items() if slot in {planned_slot, once_slot}
         }
 
         # Process job schedules (Works without server connection as long as job data is synced)
         for job in jobs:
             for schedule in schedules.find(job_id=job["id"]):
                 cron_string = schedule.get("cron_string")
-                if not cron_string or not croniter.match(cron_string, now):
+                timing = (schedule.get("config") or {}).get("timing")
+                if not timing and not cron_string:
                     continue
+                timing = timing or timing_from_cron(cron_string)
+                if not matches(timing, now):
+                    continue
+
+                planned_slot = slot_key(timing, now)
 
                 schedule_id = schedule.get("id")
                 if schedule_id is None:
@@ -683,6 +694,8 @@ class Agent:
         cutoff = (now or datetime.now(timezone.utc)) - timedelta(days=90)
         for status in ("finished", "failed", "skipped"):
             for run in list(schedule_runs.find(status=status)):
+                if str(run.get("planned_slot", "")).startswith("once:"):
+                    continue  # One-shot claims remain durable even after history cleanup.
                 try:
                     updated_at = datetime.fromisoformat(str(run["updated_at"]).replace("Z", "+00:00"))
                 except (KeyError, TypeError, ValueError):
@@ -1302,6 +1315,17 @@ class Agent:
     def __validate_run_job_admission(self, command_args):
         job_id = command_args.get("job_id")
         repository_id = command_args.get("repository_id")
+        options = command_args.get("run_options") or {}
+        if options.get("chain_run_id"):
+            try:
+                deadline = datetime.fromisoformat(options["start_deadline"])
+                if deadline.tzinfo is None or deadline <= datetime.now(timezone.utc):
+                    return "Chain step start deadline expired"
+            except (KeyError, TypeError, ValueError):
+                return "Invalid chain step start deadline"
+            retention_id = command_args.get("retention_id")
+            if retention_id is not None and not retentions.find_one(id=retention_id):
+                return f"Retention policy {retention_id} is not available in local sync data"
         try:
             job = jobs.find_one(id=job_id)
             repository = repositories.find_one(id=repository_id)
@@ -1329,6 +1353,15 @@ class Agent:
             )
             return report.finish()
 
+        command = command_request["command"]
+        if command in ASYNC_AGENT_COMMANDS or command == AgentCommandName.get_operation_status:
+            # Only short admission/status paths share the cancellation fence.
+            # Synchronous reads, sync and process termination must never hold it.
+            with _COMMAND_ADMISSION_LOCK:
+                return self.__execute_command(command_request)
+        return self.__execute_command(command_request)
+
+    def __execute_command(self, command_request):
         command = command_request["command"]
         command_name = command.value
         command_args = dict(command_request.get("args") or {})
@@ -1376,6 +1409,17 @@ class Agent:
                     f"Could not start {command_name}: operation_uuid is required",
                     final_state=AgentReportState.failed,
                 )
+                return report.finish()
+            existing = agent_operations.find_one(uuid=operation_uuid)
+            if existing:
+                if (existing.get("type") != self.__operation_type_for_command(command_name).name
+                        or existing.get("job_id") != command_args.get("job_id")
+                        or existing.get("repository_id") != command_args.get("repository_id")):
+                    report = AgentReport.command_report()
+                    report.log_message("Operation UUID belongs to another request", final_state=AgentReportState.failed)
+                    return report.finish()
+                report = AgentReport.command_report(data={"known": True, "operation_state": existing.get("state")})
+                report.log_message(f"Operation {operation_uuid} already admitted; not executing twice")
                 return report.finish()
             if command == AgentCommandName.run_job:
                 rejection_reason = self.__validate_run_job_admission(command_args)
@@ -2184,6 +2228,17 @@ class Agent:
         operation_uuid=None,
         run_options=None,
     ):
+        if (run_options or {}).get("chain_run_id"):
+            reason = self.__validate_run_job_admission({"job_id": job_id, "repository_id": repository_id,
+                                                       "retention_id": retention_id, "run_options": run_options})
+            if reason:
+                report = AgentReport.backup_operation(job_id=job_id, repository_id=repository_id,
+                                                      retention_id=retention_id, operation_uuid=operation_uuid)
+                report.set_data("chain_run_id", run_options["chain_run_id"])
+                report.set_data("start_skipped", True)
+                report.set_data("start_skip_reason", reason)
+                report.log_message(reason, final_state=AgentReportState.failed)
+                return report.finish()
         job = jobs.find_one(id=job_id)
         repository = repositories.find_one(id=repository_id)
 
@@ -2218,23 +2273,56 @@ class Agent:
 
         return handler.run()
 
+    def cmd_get_operation_status(self, operation_uuid):
+        operation = agent_operations.find_one(uuid=operation_uuid)
+        return AgentReport.command_report(data={
+            "known": bool(operation),
+            "operation_state": operation.get("state") if operation else None,
+        }).finish()
+
+    def cmd_preview_schedule(self, timing):
+        report = AgentReport.command_report()
+        try:
+            report.data = preview(TimingSchema().load(timing), datetime.now())
+        except ValidationError as exc:
+            report.log_message(str(exc), final_state=AgentReportState.failed)
+        return report.finish()
+
+    def __retry_retention(self):
+        try:
+            for task in RetentionService.pending_tasks(agent_settings):
+                self.__execution_manager().submit(
+                    self.cmd_run_retention, **task, retry=True,
+                    resources={("job", task["job_id"]), ("repository", task["repository_id"])},
+                )
+        except Exception:
+            logging.exception("Could not retry pending retention")
+
     """ Cancel running backup job """
 
-    def cmd_cancel_job(self, job_id, operation_uuid=None):
+    def cmd_cancel_job(self, job_id, operation_uuid=None, cancel_if_missing=False):
         report = AgentReport.command_report()
-        if operation_uuid and self.__execution_manager().cancel(operation_uuid):
-            job_report = AgentReport.backup_operation(
-                job_id=job_id,
-                repository_id=None,
-                operation_uuid=operation_uuid,
-            )
-            job_report.log_message(
-                f"Canceled queued job {job_id} by user request",
-                final_state=AgentReportState.cancelled,
-            )
-            job_report.finish()
-            report.log_message(f"Canceled queued job {job_id}")
-            return report.finish()
+        with _COMMAND_ADMISSION_LOCK:
+            if cancel_if_missing and operation_uuid and not agent_operations.find_one(uuid=operation_uuid):
+                cancelled = AgentReport.backup_operation(job_id=job_id, repository_id=None, operation_uuid=operation_uuid)
+                cancelled.log_message("Chain cancelled before job admission", final_state=AgentReportState.cancelled)
+                cancelled.finish()
+                report.set_data("not_admitted", True)
+                report.log_message("Pending chain job cancelled")
+                return report.finish()
+            if operation_uuid and self.__execution_manager().cancel(operation_uuid):
+                job_report = AgentReport.backup_operation(
+                    job_id=job_id,
+                    repository_id=None,
+                    operation_uuid=operation_uuid,
+                )
+                job_report.log_message(
+                    f"Canceled queued job {job_id} by user request",
+                    final_state=AgentReportState.cancelled,
+                )
+                job_report.finish()
+                report.log_message(f"Canceled queued job {job_id}")
+                return report.finish()
 
         job_report = (
             AgentReport.get_report(uuid=operation_uuid)
@@ -2244,6 +2332,15 @@ class Agent:
 
         if job_report:
             job_report.log_message(f"Canceling job {job_id} by user request")
+
+            if cancel_if_missing:
+                job_report.cancel_event.set()
+                job_report.final_state = AgentReportState.cancelled
+                pid = job_report.data.get("pid")
+                if pid:
+                    self.__resticapi.cancel_process(pid)
+                report.log_message("Chain job cancellation requested")
+                return report.finish()
 
             job = jobs.find_one(id=job_id)
             if job and job.get("type") == "truenas":
@@ -2288,7 +2385,7 @@ class Agent:
 
     """ Run restore point retention """
 
-    def cmd_run_retention(self, repository_id, retention_id, job_id, current_operation_uuid=None):
+    def cmd_run_retention(self, repository_id, retention_id, job_id, current_operation_uuid=None, retry=False):
         return RetentionService.run(
             repository_id=repository_id,
             retention_id=retention_id,
@@ -2300,6 +2397,7 @@ class Agent:
             operations_table=agent_operations,
             operation_artifacts_table=agent_operation_artifacts,
             settings_table=agent_settings,
+            retry=retry,
         )
 
     """ Unlock repository """
@@ -2383,19 +2481,20 @@ class Agent:
     def cmd_cancel_restore(self, operation_uuid=None, report_uuid=None):
         operation_uuid = operation_uuid or report_uuid
         report = AgentReport.command_report()
-        if operation_uuid and self.__execution_manager().cancel(operation_uuid):
-            restore_report = AgentReport.restore_operation(
-                operation_uuid=operation_uuid,
-                job_id=None,
-                repository_id=None,
-            )
-            restore_report.log_message(
-                f"Canceled queued restore {operation_uuid} by user request",
-                final_state=AgentReportState.cancelled,
-            )
-            restore_report.finish()
-            report.log_message(f"Canceled queued restore {operation_uuid}")
-            return report.finish()
+        with _COMMAND_ADMISSION_LOCK:
+            if operation_uuid and self.__execution_manager().cancel(operation_uuid):
+                restore_report = AgentReport.restore_operation(
+                    operation_uuid=operation_uuid,
+                    job_id=None,
+                    repository_id=None,
+                )
+                restore_report.log_message(
+                    f"Canceled queued restore {operation_uuid} by user request",
+                    final_state=AgentReportState.cancelled,
+                )
+                restore_report.finish()
+                report.log_message(f"Canceled queued restore {operation_uuid}")
+                return report.finish()
 
         restore_report = AgentReport.get_report(uuid=operation_uuid)
 

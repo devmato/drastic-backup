@@ -2,6 +2,14 @@
   <q-page class="q-pa-md">
     <PageHeader title="Backup Jobs" description="Configure, run and monitor backups for each agent." />
 
+    <q-tabs v-model="activeTab" align="left" active-color="primary" indicator-color="primary" no-caps class="q-mb-md">
+      <q-tab name="jobs" label="Jobs" icon="backup" />
+      <q-tab name="chains" label="Backup Chains" icon="playlist_play" />
+    </q-tabs>
+    <BackupChainsPanel v-if="activeTab === 'chains'" :agent-jobs="jobStore.agentJobs" :agents="agentStore.agents" :repositories="repositoryStore.repositories" @changed="jobStore.loadJobs()" />
+
+    <template v-if="activeTab === 'jobs'">
+
     <div class="row items-center q-col-gutter-sm q-mb-md">
       <div class="col-12 col-sm-6 col-md-3">
         <q-select v-model="lastState" :options="stateOptions" label="Latest backup status" outlined :dense="!$q.platform.has.touch" clearable emit-value map-options />
@@ -57,6 +65,14 @@
           :rows-per-page-options="[0]"
           hide-bottom
         >
+          <template v-slot:body-cell-name="props">
+            <q-td :props="props">
+              <div>{{ props.row.name }}</div>
+              <div v-for="chain in props.row.chains || []" :key="chain.id">
+                <q-btn flat dense no-caps size="sm" color="primary" icon="playlist_play" :label="`${chain.name} · ${chain.position}/${chain.step_count}`" @click="openChain(chain.id)" />
+              </div>
+            </q-td>
+          </template>
           <template v-slot:body-cell-type="props">
             <q-td :props="props">
               <q-badge color="primary" :label="props.row.type_text || props.row.type" />
@@ -94,6 +110,8 @@
       </q-card>
     </div>
 
+    </template>
+
     <JobManageDialog
       v-model="showJobDialog"
       :editing-job="editingJob"
@@ -103,6 +121,7 @@
       :all-repositories="repositoryStore.repositories"
       :submitting="jobDialogSubmitting"
       @save="onJobSubmit"
+      @open-chain="openChain"
     />
 
     <RestoreDialog
@@ -146,8 +165,10 @@ import { useRepositoryStore } from 'stores/repository'
 import { useUserStore } from 'stores/user'
 import { useOperationStore } from 'stores/operation'
 import JobManageDialog from 'components/jobs/JobManageDialog.vue'
+import BackupChainsPanel from 'components/jobs/BackupChainsPanel.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { sameSchedule } from 'src/utils/schedule'
 import { backupStates, filterAgentJobs, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const router = useRouter()
@@ -158,6 +179,15 @@ const agentStore = useAgentStore()
 const repositoryStore = useRepositoryStore()
 const userStore = useUserStore()
 const operationStore = useOperationStore()
+const activeTab = computed({
+  get: () => route.query.tab === 'chains' ? 'chains' : 'jobs',
+  set: tab => router.push({ query: { ...route.query, tab: tab === 'chains' ? 'chains' : undefined, chain_id: undefined } }),
+})
+
+function openChain(id) {
+  showJobDialog.value = false
+  router.push({ query: { ...route.query, tab: 'chains', chain_id: String(id) } })
+}
 
 const stateOptions = [...backupStates, { value: 'attention', label: 'Warnings / failures' }]
 const lastState = computed({
@@ -227,7 +257,7 @@ function getAgentRepositories(agentData) {
 
 function getJobTargetRepositories(job) {
   const byId = new Map(repositoryStore.repositories.map(repository => [repository.id, repository]))
-  const targetIds = [...new Set((job.schedules || []).map(schedule => schedule.repository_id).filter(Boolean))]
+  const targetIds = [...new Set([...(job.schedules || []), ...(job.chains || [])].map(schedule => schedule.repository_id).filter(Boolean))]
   return targetIds.map(repositoryId => byId.get(repositoryId)).filter(Boolean)
 }
 
@@ -237,6 +267,12 @@ async function onJobSubmit(data) {
     const relatedConfig = {
       actions: data.actions || [],
       schedules: data.schedules || [],
+    }
+    const originalSchedules = new Map((editingJob.value?.schedules || []).map(schedule => [schedule.id, schedule]))
+    const changedTypedSchedule = relatedConfig.schedules.some(schedule => schedule.timing && !sameSchedule(schedule, originalSchedules.get(schedule.id)))
+    const agent = agentStore.agents.find(item => String(item.id) === String(currentAgentId.value))
+    if (changedTypedSchedule && (agent?.protocol_version || 0) < 12) {
+      throw new Error('Update the agent to change schedule types (protocol 12 required)')
     }
     delete data.actions
     delete data.schedules
@@ -258,7 +294,7 @@ async function onJobSubmit(data) {
     showJobDialog.value = false
   } catch (e) {
     if (shouldIgnoreApiError(e)) return
-    $q.notify({ message: getApiErrorMessage(e), color: 'red', position: 'top' })
+    $q.notify({ message: getApiErrorMessage(e, e.message || 'Could not save job'), color: 'red', position: 'top' })
   } finally {
     jobDialogSubmitting.value = false
   }
@@ -270,9 +306,7 @@ async function reloadJob(jobId) {
 
 function mapSchedulePayload(schedule, recoveryKey = userStore.recoveryKey) {
   return {
-    hour: schedule.hour,
-    minute: schedule.minute,
-    day_of_week: schedule.day_of_week,
+    timing: schedule.timing,
     repository_id: schedule.repository_id,
     retention_id: schedule.retention_id || null,
     enabled: schedule.enabled,
@@ -322,7 +356,7 @@ async function syncJobRelatedConfig(job, config) {
   for (const schedule of config.schedules) {
     if (String(schedule.id).startsWith('draft-')) {
       await createScheduleWithRecovery(job.id, schedule)
-    } else {
+    } else if (!sameSchedule(schedule, job.schedules.find(original => original.id === schedule.id))) {
       await updateScheduleWithRecovery(schedule.id, schedule)
     }
   }
@@ -394,8 +428,13 @@ function confirmDeleteJob(job) {
     message: `Delete backup job "${job.name}"?`,
     cancel: true,
   }).onOk(async () => {
-    await jobStore.deleteJob(job.id)
-    $q.notify({ message: 'Job deleted', color: 'green', position: 'top' })
+    try {
+      await jobStore.deleteJob(job.id)
+      $q.notify({ message: 'Job deleted', color: 'green', position: 'top' })
+    } catch (error) {
+      if (shouldIgnoreApiError(error)) return
+      $q.notify({ message: getApiErrorMessage(error), color: 'negative', position: 'top' })
+    }
   })
 }
 

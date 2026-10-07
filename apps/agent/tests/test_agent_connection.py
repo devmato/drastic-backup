@@ -581,7 +581,6 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
             ]
         ),
     )
-    monkeypatch.setattr(agent_module.croniter, "match", lambda cron_string, now: True)
     agent._Agent__execution = ImmediateExecution()
     monkeypatch.setattr(
         agent,

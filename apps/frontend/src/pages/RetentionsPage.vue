@@ -104,8 +104,13 @@ function confirmDelete(retention) {
     message: `Remove retention policy "${retention.name}"? This will unassign it from all jobs.`,
     cancel: true,
   }).onOk(async () => {
-    await retentionStore.deleteRetention(retention.id)
-    $q.notify({ message: 'Retention deleted', color: 'green', position: 'top' })
+    try {
+      await retentionStore.deleteRetention(retention.id)
+      $q.notify({ message: 'Retention deleted', color: 'green', position: 'top' })
+    } catch (error) {
+      if (shouldIgnoreApiError(error)) return
+      $q.notify({ message: getApiErrorMessage(error), color: 'negative', position: 'top' })
+    }
   })
 }
 

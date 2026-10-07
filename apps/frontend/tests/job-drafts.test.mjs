@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
+import { describeTiming, scheduleTiming } from '../src/utils/schedule.js'
 
 for (const [kind, item, changes] of [
   ['Action', { module: 'command', hook: 'start', data: { command: 'original' } }, { data: { command: 'edited' } }],
@@ -14,10 +15,11 @@ for (const [kind, item, changes] of [
     const initial = JSON.stringify(props.modelValue)
     let confirm
     let updates = 0
-    const source = readFileSync(new URL(`../src/components/jobs/panels/Job${kind}sPanel.vue`, import.meta.url), 'utf8')
+    const panelPath = kind === 'Schedule' ? '../src/components/SchedulesPanel.vue' : '../src/components/jobs/panels/JobActionsPanel.vue'
+    const source = readFileSync(new URL(panelPath, import.meta.url), 'utf8')
       .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
     const panel = runInNewContext(`${source}\n;({ show: show${kind}Dialog, submit: on${kind}Submit, remove: confirmDelete${kind} })`, {
-      computed, ref,
+      computed, ref, scheduleTiming, describeTiming,
       defineProps: () => props,
       defineEmits: () => (event, value) => {
         assert.equal(event, 'update:modelValue')
@@ -60,7 +62,7 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
   const props = { editingJob: null }
   let saved
   const dialog = runInNewContext(`${source}\n;({ cloneConfig, resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref,
+    computed, reactive, ref, scheduleTiming,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),
@@ -93,7 +95,7 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   const props = { editingJob: { name: 'VMs', type: 'proxmox', config, actions: [], schedules: [] } }
   let saved
   const dialog = runInNewContext(`${source}\n;({ resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref,
+    computed, reactive, ref, scheduleTiming,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),
@@ -121,7 +123,7 @@ test('job submission validates general fields even when another section is activ
   const saved = []
   const notices = []
   const dialog = runInNewContext(`${source}\n;({ submitForm, jobForm, activeSection })`, {
-    computed, reactive, ref,
+    computed, reactive, ref, scheduleTiming,
     defineProps: () => ({ editingJob: null }),
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved.push(value) },
     defineModel: () => ref(true),

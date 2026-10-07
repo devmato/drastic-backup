@@ -80,6 +80,7 @@ class AgentOperationService:
         self._upsert_artifacts(operation, operation_data.get("artifacts") or [])
         self._mark_forgotten_artifacts(operation_data)
         self._link_waiting_children(operation)
+        self._apply_retention_results(operation)
         self._update_repository_from_operation(operation)
         new_delivery_ids = self._queue_notification_deliveries(
             operation,
@@ -98,6 +99,32 @@ class AgentOperationService:
             "operation events",
         )
         return operation_id
+
+    @staticmethod
+    def _apply_retention_results(operation):
+        parent = operation.parent_operation if operation.type == AgentOperationType.retention else operation
+        if operation.type not in {AgentOperationType.backup, AgentOperationType.retention}:
+            return
+        latest = AgentOperation.query.filter(
+            AgentOperation.agent_id == operation.agent_id,
+            AgentOperation.job_id == operation.job_id,
+            AgentOperation.repository_id == operation.repository_id,
+            AgentOperation.type == AgentOperationType.retention,
+            AgentOperation.state != AgentOperationState.running,
+            AgentOperation.ended.is_not(None),
+        ).order_by(AgentOperation.ended.desc(), AgentOperation.id.desc()).first()
+        if latest:
+            cleanup_pending = bool((latest.data or {}).get("cleanup_pending", latest.state != AgentOperationState.success))
+            if (parent is not None and parent.type == AgentOperationType.backup
+                    and parent.started is not None and latest.ended >= parent.started):
+                parent.data = {**(parent.data or {}), "retention_state": latest.state.name,
+                               "cleanup_pending": cleanup_pending}
+            if not cleanup_pending:
+                # New retention work supersedes older pending work for the same job/repo.
+                for backup in AgentOperation.query.filter_by(agent_id=operation.agent_id, job_id=operation.job_id,
+                                                            repository_id=operation.repository_id, type=AgentOperationType.backup):
+                    if (backup.data or {}).get("cleanup_pending") and backup.started and backup.started <= latest.ended:
+                        backup.data = {**backup.data, "retention_state": latest.state.name, "cleanup_pending": False}
 
     def _set_parent_operation(self, operation, parent_uuid):
         if not parent_uuid:

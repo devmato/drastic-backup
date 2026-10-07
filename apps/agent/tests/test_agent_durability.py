@@ -228,6 +228,45 @@ def test_scheduler_restart_deduplicates_persisted_utc_slot(monkeypatch, tmp_path
     assert rows[0]["status"] == "started"
 
 
+def test_once_schedule_is_not_replayed_after_restart_or_history_cleanup(monkeypatch, tmp_path):
+    runs = create_schedule_runs_table(connect_database(tmp_path))
+    schedule = {"id": 41, "job_id": 4, "repository_id": 9, "cron_string": "",
+                "config": {"timing": {"type": "once", "date": "2026-07-23", "hour": 12, "minute": 5}}}
+    started = []
+    monkeypatch.setattr(agent_module, "schedule_runs", runs)
+    monkeypatch.setattr(agent_module, "jobs", [{"id": 4}])
+    monkeypatch.setattr(agent_module, "schedules", Schedules(schedule))
+    now = datetime(2026, 7, 23, 12, 5)
+    for _ in range(2):
+        agent = build_agent()
+        agent._Agent__execution = ImmediateExecution()
+        agent.cmd_run_job = lambda *args, **kwargs: started.append(1)
+        agent._Agent__run_due_schedules(now)
+        agent._Agent__recover_schedule_runs()
+        agent._Agent__prune_schedule_runs(datetime(2030, 1, 1, tzinfo=timezone.utc))
+    assert started == [1]
+    assert runs.find_one(schedule_id=41)["planned_slot"].startswith('once:')
+    agent._Agent__run_due_schedules(now + timedelta(days=1))
+    assert started == [1]
+
+
+def test_arbitrary_periodic_schedule_survives_agent_restart(monkeypatch, tmp_path):
+    runs = create_schedule_runs_table(connect_database(tmp_path))
+    schedule = {"id": 42, "job_id": 4, "repository_id": 9, "cron_string": "",
+                "config": {"timing": {"type": "periodic", "interval": 90, "offset": 5}}}
+    started = []
+    monkeypatch.setattr(agent_module, "schedule_runs", runs)
+    monkeypatch.setattr(agent_module, "jobs", [{"id": 4}])
+    monkeypatch.setattr(agent_module, "schedules", Schedules(schedule))
+    for at in (datetime(2026, 10, 7, 1, 35, tzinfo=timezone.utc), datetime(2026, 10, 7, 2, 5, tzinfo=timezone.utc),
+               datetime(2026, 10, 7, 3, 5, tzinfo=timezone.utc)):
+        agent = build_agent()
+        agent._Agent__execution = ImmediateExecution()
+        agent.cmd_run_job = lambda *args, **kwargs: started.append(1)
+        agent._Agent__run_due_schedules(at)
+    assert len(started) == 2
+
+
 def test_scheduler_persists_rejected_slot_as_skipped(monkeypatch, tmp_path):
     schedule_runs = create_schedule_runs_table(connect_database(tmp_path))
     schedule = {
