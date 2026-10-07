@@ -1,3 +1,4 @@
+import csv
 import json
 import os
 import subprocess
@@ -117,6 +118,41 @@ class _FakeResticProcess:
 
     def kill(self):
         self.return_code = -9
+
+
+@pytest.mark.parametrize("temp_name", ["O'Brien tmp", 'tmp with "quotes"'])
+def test_sftp_uses_managed_ssh_config(monkeypatch, tmp_path, temp_name):
+    if not which("ssh"):
+        pytest.skip("ssh binary is not available")
+
+    known_hosts = tmp_path / "agent data" / "known_hosts"
+    temp_dir = tmp_path / temp_name
+    temp_dir.mkdir()
+    monkeypatch.setattr("drastic_common.restic.client.tempfile.tempdir", str(temp_dir))
+    api = ResticApi("restic", ResticRepository(
+        location="sftp://user@example.test:23/backup", password="secret",
+        ssh_private_key="agent-private-key", ssh_known_hosts_path=str(known_hosts),
+    ))
+    cmd = ["restic"]
+    with api._ResticApi__restic_env(cmd) as env:
+        [option] = next(csv.reader([cmd[cmd.index("-o") + 1]]))
+        assert option.startswith("sftp.args=-F ")
+        quoted_path = option.removeprefix("sftp.args=-F ")
+        assert quoted_path[0] in "\"'" and quoted_path[-1] == quoted_path[0]
+        assert quoted_path[0] not in quoted_path[1:-1]  # Restic cannot join quoted fragments.
+        config = Path(quoted_path[1:-1])
+        key = config.with_name("identity")
+        assert key.read_text(encoding="utf-8") == "agent-private-key\n"
+        assert key.stat().st_mode & 0o777 == 0o600
+        # Ask real OpenSSH which settings it uses, without opening a connection.
+        settings = subprocess.run(
+            ["ssh", "-G", "-F", str(config), "user@example.test"],
+            env=env, capture_output=True, text=True, check=True,
+        ).stdout
+        assert f"identityfile {key}\n" in settings
+        assert f"userknownhostsfile {known_hosts}\n" in settings
+        assert "identitiesonly yes\n" in settings
+        assert "stricthostkeychecking accept-new\n" in settings
 
 
 def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):

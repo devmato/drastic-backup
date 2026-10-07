@@ -105,7 +105,7 @@ class ResticApi:
         return env
 
     @contextmanager
-    def __restic_env(self):
+    def __restic_env(self, cmd):
         env = self.__build_env()
         repository = self.repository
         private_key = getattr(repository, "ssh_private_key", None) if repository else None
@@ -134,13 +134,18 @@ class ResticApi:
             with open(config_path, "w", encoding="utf-8") as config_file:
                 config_file.write(
                     "Host *\n"
-                    f"  IdentityFile {key_path}\n"
+                    f"  IdentityFile {json.dumps(key_path, ensure_ascii=False)}\n"
                     "  IdentitiesOnly yes\n"
-                    f"  UserKnownHostsFile {known_hosts_path}\n"
+                    f"  UserKnownHostsFile {json.dumps(known_hosts_path, ensure_ascii=False)}\n"
                     "  StrictHostKeyChecking accept-new\n"
                 )
             os.chmod(config_path, 0o600)
-            env["HOME"] = temp_home
+            # OpenSSH resolves its home via the OS user, not the HOME environment variable.
+            # Restic splits quoted fragments instead of concatenating them like a shell.
+            quote = '"' if '"' not in config_path else "'"
+            option = f"sftp.args=-F {quote}{config_path}{quote}"
+            # The --option flag parses CSV before the SFTP backend splits arguments.
+            cmd.extend(["-o", '"' + option.replace('"', '""') + '"'])
             yield env
         finally:
             shutil.rmtree(temp_home, ignore_errors=True)
@@ -306,7 +311,7 @@ class ResticApi:
         restic_env_context = None
         process = None
         try:
-            restic_env_context = self.__restic_env()
+            restic_env_context = self.__restic_env(cmd)
             env = restic_env_context.__enter__()
             process = self.__popen(
                 cmd,
@@ -383,7 +388,7 @@ class ResticApi:
         mountpoint.mkdir(mode=0o700)
         command = self.__make_command("mount", str(mountpoint), path_template="ids/%I", quiet=True)
         try:
-            with self.__restic_env() as env, mounted_process(
+            with self.__restic_env(command) as env, mounted_process(
                 command, mountpoint, env=env, cancelled=lambda: self._cancelled() or cancelled(),
                 timeout=min(self.timeout or timeout, timeout),
             ) as process:
@@ -493,7 +498,7 @@ class ResticApi:
                 raise ResticFailedError(f"Backup source command not found: {command[0]}") from err
 
             try:
-                restic_env_context = self.__restic_env()
+                restic_env_context = self.__restic_env(cmd)
                 restic_env = restic_env_context.__enter__()
                 process = self.__popen(
                     cmd,
