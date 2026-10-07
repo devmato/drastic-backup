@@ -385,7 +385,10 @@ class AgentOperation:
                 # Restic omits zero counters; missing fields must not retain the previous value.
                 current.update(bytes_processed=status_dict.get("bytes_done", 0),
                                files_processed=status_dict.get("files_done", 0),
+                               duration=status_dict.get("seconds_elapsed", 0),
                                current_files=status_dict.get("current_files", []))
+                if "data_added_packed" in status_dict:
+                    current["data_added_packed"] = status_dict["data_added_packed"]
             else:
                 for source, target in summary_params.items():
                     if source in status_dict:

@@ -117,3 +117,53 @@ def test_size_estimates_are_corrected_without_losing_unstarted_or_failed_artifac
     assert report.data["bytes_processed"] == 2050
     assert report.data["backup_bytes_total"] == 2200
     assert report.data["backup_data_complete"] is False
+
+
+def test_repository_bytes_are_cumulative_per_artifact_and_summaries_replace_live_counts():
+    report = AgentReport(type=AgentOperationType.backup, persist=False)
+    report.set_data("backup_items_total", 2)
+    report.begin_backup_artifact("first")
+    assert "data_added_packed" not in report.data
+    status = {"message_type": "status", "bytes_done": 100, "data_added_packed": 10}
+    report.process_backup_status([status, status])
+    assert report.data["data_added_packed"] == 10
+    report.process_backup_status({"message_type": "status", "bytes_done": 200})
+    assert report.data["data_added_packed"] == 10  # Older/missing counters cannot erase a live total.
+    summary = {"message_type": "summary", "total_bytes_processed": 200, "data_added_packed": 30}
+    report.process_backup_status([summary, summary])
+    assert report.data["data_added_packed"] == 30
+    report.begin_backup_artifact("second")
+    report.process_backup_status({"message_type": "status", "bytes_done": 50, "data_added_packed": 0})
+    assert report.data["data_added_packed"] == 30
+    report.process_backup_status({"message_type": "status", "bytes_done": 100, "data_added_packed": 7})
+    assert report.data["data_added_packed"] == 37
+    summary = {"message_type": "summary", "total_bytes_processed": 100, "data_added_packed": 8}
+    report.process_backup_status([summary, summary])
+    assert report.data["data_added_packed"] == 38
+    assert report.data["bytes_processed"] == 300  # Processed/reused bytes are a different quantity.
+
+
+def test_transfer_runtime_aggregates_live_seconds_and_replaces_them_with_final_durations():
+    report = AgentReport(type=AgentOperationType.backup, persist=False)
+    report.set_data("backup_items_total", 2)
+    report.begin_backup_artifact("first")
+    status = {"message_type": "status", "seconds_elapsed": 2, "data_added_packed": 200}
+    report.process_backup_status([status, status])
+    assert report.data["duration"] == 2
+    assert report.data["data_added_packed"] / report.data["duration"] == 100
+    summary = {"message_type": "summary", "total_duration": 2.5, "data_added_packed": 250}
+    report.process_backup_status([summary, summary])
+    assert report.data["duration"] == 2.5
+    report.begin_backup_artifact("second")
+    report.process_backup_status({"message_type": "status", "data_added_packed": 0})  # Restic omits zero elapsed time.
+    assert report.data["duration"] == 2.5
+    assert report.data["data_added_packed"] == 250
+    report.process_backup_status({"message_type": "status", "seconds_elapsed": 1, "data_added_packed": 50})
+    assert report.data["duration"] == 3.5
+    assert report.data["data_added_packed"] == 300
+    summary = {"message_type": "summary", "total_duration": 1.5, "data_added_packed": 75}
+    report.process_backup_status([summary, summary])
+    assert report.data["duration"] == 4
+    assert report.data["data_added_packed"] == 325
+    report.set_data("backup_phase", "statistics")
+    assert report.data["duration"] == 4  # Post-backup phases do not change the rate's denominator.

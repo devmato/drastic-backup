@@ -484,7 +484,26 @@ def test_real_restic_deduplicates_snapshot_stream_and_restores_exact_disks(tmp_p
     api.init()
 
     def save():
-        return api.backup_stdin_from_command([sys.executable, "-m", "drastic_agent.proxmox_snapshot", str(plan_path)], stdin_filename="qemu-101.tar")
+        report = AgentReport.command_report()
+        report.set_backup_size_estimates({"vm:101": len(data)})
+        report.begin_backup_artifact("vm:101")
+        events = []
+        def progress(line):
+            event = json.loads(line)
+            events.append(event)
+            report.process_backup_status(event)
+            if event.get("message_type") != "summary":
+                assert report.data["backup_bytes_total"] == len(data)
+                assert report.data["backup_bytes_total_estimated"] is True
+        summary = api.backup_stdin_from_command(
+            [sys.executable, "-m", "drastic_agent.proxmox_snapshot", str(plan_path)],
+            stdin_filename="qemu-101.tar", callback=progress,
+        )
+        assert not any(event.get("action") == "scan_finished" for event in events)
+        assert report.data["backup_bytes_total"] == summary["total_bytes_processed"] > len(data)
+        assert report.data["data_added_packed"] == summary["data_added_packed"]
+        assert report.data["duration"] == summary["total_duration"] > 0
+        return summary
 
     first, unchanged = save(), save()
     assert first["data_added"] > len(data)

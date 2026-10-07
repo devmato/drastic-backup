@@ -74,9 +74,9 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.summaryColumns.value[0], 'Job'), 'Documents')
   assert.equal(field(page.summaryColumns.value[0], 'Repository'), 'Offsite')
   assert.equal(field(page.summaryColumns.value[1], 'Device'), 'Backup host')
-  assert.equal(field(page.metricCards.value, 'Files'), '1')
+  assert.equal(field(page.metricCards.value, 'Files processed'), '1')
   assert.equal(field(page.metricCards.value, 'Changes'), '1 new')
-  assert.equal(field(page.metricCards.value, 'Newly stored (job)'), '256 B')
+  assert.equal(field(page.metricCards.value, 'Data transferred'), '256 B · Ø 85 B/s')
   assert.equal(field(page.metricCards.value, 'Snapshot'), undefined)
   assert.equal(field(page.technicalDetails.value, 'Snapshot'), 'snapshot-id')
   assert.equal(field(page.technicalDetails.value, 'Restic duration'), '3s')
@@ -88,18 +88,18 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.summaryColumns.value[0], 'Status'), 'running')
   // Older agents' scan-in-progress totals are not a reliable denominator.
   assert.equal(page.progressValue.value, null)
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '544 B')
+  assert.equal(field(page.metricCards.value, 'Data processed'), '544 B')
   page.operation.value.data.backup_progress = { total_known: true, bytes_total: 1024, bytes_processed: 544 }
   assert.equal(page.progressValue.value, 544 / 1024)
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '544 B / 1 KiB')
+  assert.equal(field(page.metricCards.value, 'Data processed'), '544 B / 1 KiB')
   assert.equal(page.currentFiles.value[0], '/old/file')
   page.operation.value.data.files_new = 0
   page.operation.value.data.data_added_packed = 0
   assert.equal(field(page.metricCards.value, 'Changes'), 'No changes')
-  assert.equal(field(page.metricCards.value, 'Newly stored (job)'), '0 B')
+  assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B · Ø 0 B/s')
   page.operation.value.data = {}
   assert.equal(field(page.metricCards.value, 'Changes'), undefined)
-  assert.equal(field(page.metricCards.value, 'Newly stored (job)'), undefined)
+  assert.equal(field(page.metricCards.value, 'Data transferred'), 'Not yet known')
   page.operation.value.started = 'invalid'
   assert.equal(page.duration.value, null)
 
@@ -143,8 +143,8 @@ test('background operation updates stay quiet and preserve data on failure', asy
     id: 1, type: 'backup', state: 'running',
     data: { proxmox_progress: { vmid: 100, phase: 'backing_up', percent_done: 50, bytes_processed: 1024, bytes_total: 2048 } },
   }
-  assert.equal(field(page.metricCards.value, 'VM data processed'), '1 KiB / 2 KiB')
-  assert.equal(field(page.metricCards.value, 'Total VM size'), '2 KiB')
+  assert.equal(field(page.metricCards.value, 'VM data processed'), undefined)
+  assert.equal(field(page.metricCards.value, 'Total VM size'), undefined)
   assert.equal(page.progressValue.value, null) // An older agent's VM progress is not a job total.
   assert.equal(page.progressLabel.value, null)
   page.operation.value.data.proxmox_progress.percent_done = 0
@@ -176,13 +176,13 @@ test('background operation updates stay quiet and preserve data on failure', asy
   }
   const native = page.operation.value.data
   assert.equal(page.progressLabel.value, '0%')
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '0 B / 4 KiB')
+  assert.equal(field(page.metricCards.value, 'Data processed'), '0 B / 4 KiB')
   native.proxmox_progress = { vmid: 101, guest_index: 1, guests_total: 2, phase: 'backing_up',
     backup_mode: 'native_cbt', percent_done: 99, bytes_processed: 512, bytes_total: 512 }
   native.bytes_processed = 1024 // Restic has processed read AND reused data.
   assert.equal(page.progressLabel.value, '25%')
   assert.equal(field(page.metricCards.value, 'Disk data read (current VM)'), '512 B / 512 B')
-  assert.match(page.progressBasis.value, /Data processed \(job\).*estimated.*VM 1 of 2/)
+  assert.match(page.progressBasis.value, /Data processed.*estimated.*VM 1 of 2/)
   for (const phase of ['cleanup', 'complete', 'snapshots']) {
     native.proxmox_progress.phase = phase
     assert.equal(page.progressLabel.value, '25%', phase)
@@ -203,7 +203,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
     native.backup_phase = phase
     assert.equal(page.progressLabel.value, '100%', phase)
     assert.equal(page.progressIndeterminate.value, false, phase)
-    assert.match(page.progressBasis.value, /Data processed \(job\) — /, phase)
+    assert.match(page.progressBasis.value, /Data processed — /, phase)
   }
   native.bytes_processed = 2048
   native.partial_failure = true
@@ -218,7 +218,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   native.backup_data_complete = true
   page.operation.value.state = 'success'
   assert.equal(page.progressLabel.value, '100%')
-  assert.equal(page.progressBasis.value, 'Data processed (job)')
+  assert.equal(page.progressBasis.value, 'Data processed')
 
   page.operation.value = {
     id: 1, type: 'backup', state: 'running',
@@ -234,14 +234,14 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.progressLabel.value, null)
   assert.match(page.progressBasis.value, /Dataset 2 of 3 · tank\/photos/)
   assert.match(page.progressBasis.value, /Total size not yet known/)
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '2 KiB')
-  assert.equal(field(page.metricCards.value, 'Dataset data processed'), '100 B')
+  assert.equal(field(page.metricCards.value, 'Data processed'), '2 KiB')
+  assert.equal(field(page.metricCards.value, 'Dataset data processed'), undefined)
   data.backup_progress.total_known = true
   data.backup_progress.bytes_total = 200
   assert.equal(page.progressValue.value, null) // A dataset's scan still does not reveal the other datasets' sizes.
   assert.equal(page.showProgress.value, true)
   assert.equal(page.progressIndeterminate.value, true)
-  assert.equal(field(page.metricCards.value, 'Dataset data processed'), '100 B / 200 B')
+  assert.equal(field(page.metricCards.value, 'Dataset data processed'), undefined)
 
   data.backup_progress.bytes_processed = 199.9
   assert.equal(page.progressLabel.value, null)
@@ -288,13 +288,13 @@ test('background operation updates stay quiet and preserve data on failure', asy
   data.truenas_progress.phase = 'backup'
   data.backup_bytes_total = null
   assert.equal(page.progressIndeterminate.value, true) // A known current dataset is not a job total.
-  assert.match(page.progressBasis.value, /Data processed \(job\).*Total size not yet known/)
+  assert.match(page.progressBasis.value, /Data processed.*Total size not yet known/)
   data.backup_bytes_total = 8192
   data.backup_bytes_total_estimated = true
   data.backup_data_complete = false
   assert.equal(page.progressLabel.value, '25%')
-  assert.match(page.progressBasis.value, /Data processed \(job\).*estimated.*Dataset 3 of 3/)
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '2 KiB / 8 KiB')
+  assert.match(page.progressBasis.value, /Data processed.*estimated.*Dataset 3 of 3/)
+  assert.equal(field(page.metricCards.value, 'Data processed'), '2 KiB / 8 KiB')
   for (const phase of ['snapshots', 'cleanup', 'backup']) {
     data.truenas_progress.phase = phase
     assert.equal(page.progressLabel.value, '25%', phase)
@@ -305,7 +305,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   data.backup_bytes_total_estimated = false
   assert.equal(page.progressLabel.value, '50%')
   assert.doesNotMatch(page.progressBasis.value, /estimated/)
-  assert.equal(field(page.metricCards.value, 'Data processed (job)'), '2 KiB / 4 KiB')
+  assert.equal(field(page.metricCards.value, 'Data processed'), '2 KiB / 4 KiB')
   data.bytes_processed = 8192
   assert.equal(page.progressLabel.value, '99%') // Even underestimated totals cannot imply success.
   for (const state of ['warning', 'failed', 'cancelled']) {
@@ -326,10 +326,10 @@ test('background operation updates stay quiet and preserve data on failure', asy
   for (const phase of ['finalizing', 'check', 'retention', 'statistics', 'hooks']) {
     data.backup_phase = phase
     assert.equal(page.progressLabel.value, '100%', phase)
-    assert.match(page.progressBasis.value, /Data processed \(job\) — /, phase)
+    assert.match(page.progressBasis.value, /Data processed — /, phase)
   }
   page.operation.value.state = 'success'
-  assert.equal(page.progressBasis.value, 'Data processed (job)')
+  assert.equal(page.progressBasis.value, 'Data processed')
   // Empty datasets never divide by zero, and reach 100% only after successful data completion.
   page.operation.value.state = 'running'
   data.backup_phase = 'backup'
@@ -349,14 +349,33 @@ test('background operation updates stay quiet and preserve data on failure', asy
   ]) {
     page.operation.value = { id: 1, type: 'backup', state: 'running', data: {
       ...source, backup_phase: 'backup', bytes_processed: 1024, backup_bytes_total: 4096,
-      backup_bytes_total_estimated: false, backup_data_complete: false, data_added_packed: 100,
+      backup_bytes_total_estimated: false, backup_data_complete: false, data_added_packed: 100, files_processed: 3,
     } }
     const job = page.operation.value.data
     assert.equal(page.progressLabel.value, '25%')
-    assert.match(page.progressBasis.value, /^Data processed \(job\) — /)
-    assert.equal(page.metricCards.value[0].label, 'Data processed (job)')
+    assert.match(page.progressBasis.value, /^Data processed — /)
+    assert.equal(page.metricCards.value[0].label, 'Data processed')
     assert.equal(page.metricCards.value[0].value, '1 KiB / 4 KiB')
-    assert.equal(page.metricCards.value[1].label, 'Newly stored (job)')
+    assert.equal(page.metricCards.value[1].label, 'Files processed')
+    assert.equal(page.metricCards.value[2].label, 'Data transferred')
+    assert.equal(page.metricCards.value[2].value, '100 B')
+    assert.match(page.metricCards.value[2].tooltip, /deduplication and compression.*completed files.*network overhead/)
+    assert.equal(page.metricCards.value.filter(metric => metric.label === 'Data processed').length, 1)
+    assert.ok(!page.metricCards.value.some(metric => /Dataset|VM data processed|Total VM size|Files \(job\)/.test(metric.label)))
+    job.data_added_packed = 200
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B')
+    for (const seconds of [null, 0, -1, 'invalid']) {
+      job.duration = seconds
+      assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B')
+    }
+    job.duration = 4
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B · Ø 50 B/s')
+    assert.match(page.metricCards.value[2].tooltip, /provisional average.*Restic runtime.*not the current network speed/)
+    job.data_added_packed = 0
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B · Ø 0 B/s')
+    delete job.data_added_packed
+    job.data_added = 500 // Uncompressed logical additions are not transferred bytes.
+    assert.equal(field(page.metricCards.value, 'Data transferred'), 'Not yet known')
     job.bytes_processed = 4096
     assert.equal(page.progressLabel.value, '99%')
     page.operation.value.state = 'warning'
@@ -366,6 +385,11 @@ test('background operation updates stay quiet and preserve data on failure', asy
     job.backup_phase = 'statistics'
     assert.equal(page.progressLabel.value, '100%')
     assert.match(page.progressBasis.value, /Updating repository statistics/)
+    job.data_added_packed = 225
+    job.duration = 4.5
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B · Ø 50 B/s')
+    job.backup_phase = 'hooks'
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B · Ø 50 B/s')
     job.backup_data_complete = false
     job.backup_bytes_total = null
     job.proxmox_bytes_total = 4096 // New unknown totals must not fall back to older fields.

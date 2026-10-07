@@ -228,6 +228,7 @@ class ResticApi:
         last_callback_invoked = None
         stream_closed = False
         last_monitor = 0
+        data_added_packed = None
         while not (stream_closed and process.poll() is not None):
             if monitor_callback is not None and time.monotonic() - last_monitor >= 5:
                 monitor_callback()
@@ -252,7 +253,13 @@ class ResticApi:
                 diagnostics.local_event("restic.output", {"pid": process.pid, "status": message},
                                         operation_uuid=callback_args.get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None))
             if message_type == "verbose_status" and message.get("action") != "scan_finished":
+                if message.get("action") in {"new", "modified", "unchanged"}:
+                    # Count completed items before throttling; keep no per-file history.
+                    data_added_packed = (data_added_packed or 0) + message.get("data_size_in_repo", 0) + message.get("metadata_size_in_repo", 0)
                 continue
+            if message_type == "status" and data_added_packed is not None:
+                message["data_added_packed"] = data_added_packed
+                line = json.dumps(message) + "\n"
             # One-shot scan and summary events must survive status throttling.
             essential = message_type in {"summary", "verbose_status"}
             if callback is not None and (
@@ -445,6 +452,8 @@ class ResticApi:
             stdin=True,
             stdin_filename=stdin_filename,
             tag=tags,
+            verbose=True,
+            no_scan=True,
         )
 
         return self.__execute_command(
@@ -475,6 +484,8 @@ class ResticApi:
             stdin=True,
             stdin_filename=stdin_filename,
             tag=tags,
+            verbose=True,
+            no_scan=True,
         )
         callback_args = dict(callback_args or {})
         deadline = self.__deadline()

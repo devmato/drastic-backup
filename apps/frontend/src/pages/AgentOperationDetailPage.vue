@@ -48,7 +48,7 @@
               <div class="row q-col-gutter-md text-body2">
                 <div v-for="(column, index) in summaryColumns" :key="index" class="col-12 col-md-6">
                   <div v-for="field in column" :key="field.label" class="row no-wrap items-baseline q-py-xs">
-                    <span class="col-auto q-mr-sm">{{ field.label }}:</span>
+                    <span class="col-auto q-mr-sm" :title="field.tooltip">{{ field.label }}:</span>
                     <div class="col db-break-word">
                       <q-badge v-if="field.color" :color="field.color" text-color="grey-10" :label="field.value" class="text-capitalize" />
                       <router-link v-else-if="field.to" :to="field.to" class="text-primary">{{ field.value }}</router-link>
@@ -331,7 +331,7 @@ const progressSource = computed(() => {
     const total = backupBytesTotal.value
     const value = backupDataComplete.value ? 1 : total > 0
       ? Math.min(0.99, clampProgress((bytesProcessed.value ?? 0) / total)) : null
-    const basis = `Data processed (job)${backupTotalEstimated.value ? ' — estimated' : ''}`
+    const basis = `Data processed${backupTotalEstimated.value ? ' — estimated' : ''}`
     if (operation.value?.state !== 'running') return { value, basis: value === null ? null : basis }
     const sizeHint = total === null ? ' · Total size not yet known'
       : total === 0 && !backupDataComplete.value ? ' · No file data to back up' : ''
@@ -422,35 +422,33 @@ const metricCards = computed(() => {
   const total = isBackupOperation.value ? backupBytesTotal.value : bytesTotal.value
   if (bytesProcessed.value !== null || total !== null || bytesTotal.value !== null) {
     metrics.push({
-      label: isBackupOperation.value ? 'Data processed (job)' : 'Data processed',
+      label: 'Data processed',
       value: formatProcessed(total !== null ? bytesProcessed.value ?? 0 : bytesProcessed.value,
         operation.value?.state === 'running' ? total : total ?? bytesTotal.value, formatBytes),
+      tooltip: 'Data processed across the entire job, including data reused from previous backups.',
     })
-  }
-
-  const addedBytes = numberOrNull(operationData.value.data_added_packed ?? operationData.value.data_added)
-  if (addedBytes !== null) metrics.push({ label: 'Newly stored (job)', value: formatBytes(addedBytes) })
-
-  if (proxmoxProgress.value && operation.value?.state === 'running') {
-    const progress = proxmoxProgress.value
-    const native = ['native', 'native_cbt'].includes(progress.backup_mode) || 'proxmox_bytes_total' in operationData.value
-    if (progress.bytes_processed != null) metrics.push({ label: native ? 'Disk data read (current VM)' : 'VM data processed',
-      value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
-    if ((progress.disk_bytes || progress.bytes_total) > 0) metrics.push({ label: 'Total VM size', value: formatBytes(progress.disk_bytes || progress.bytes_total) })
-    if (progress.archive_bytes != null) metrics.push({ label: 'VM archive size', value: formatBytes(progress.archive_bytes) })
-  }
-
-  if (truenasProgress.value?.phase === 'backup' && operation.value?.state === 'running' && backupProgress.value) {
-    const progress = backupProgress.value
-    metrics.push({ label: 'Dataset data processed', value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
-    metrics.push({ label: 'Dataset files', value: formatProcessed(numberOrNull(progress.files_processed), numberOrNull(progress.files_total), formatNumber) })
   }
 
   if (filesProcessed.value !== null || filesTotal.value !== null) {
     metrics.push({
-      label: filesProcessed.value === null ? 'Total files' : proxmoxProgress.value ? 'Archive / manifest files' : truenasProgress.value ? 'Files (job)' : 'Files',
+      label: isBackupOperation.value ? 'Files processed' : 'Files',
       value: formatProcessed(filesProcessed.value, filesTotal.value, formatNumber),
     })
+  }
+
+  if (isBackupOperation.value) {
+    const addedBytes = numberOrNull(operationData.value.data_added_packed)
+    const resticSeconds = numberOrNull(operationData.value.duration)
+    const rate = addedBytes !== null && resticSeconds > 0 ? ` · Ø ${formatBytes(addedBytes / resticSeconds)}/s` : ''
+    metrics.push({ label: 'Data transferred', value: addedBytes === null ? 'Not yet known' : `${formatBytes(addedBytes)}${rate}`,
+      tooltip: 'New data written to the repository after deduplication and compression. Updated after completed files or archive streams; finalized at backup completion. Excludes network overhead. Ø is the provisional average over the combined Restic runtime, not the current network speed; preparation and post-backup actions are excluded.' })
+  }
+
+  if (proxmoxProgress.value && operation.value?.state === 'running') {
+    const progress = proxmoxProgress.value
+    const native = ['native', 'native_cbt'].includes(progress.backup_mode) || 'proxmox_bytes_total' in operationData.value
+    if (native && progress.bytes_processed != null) metrics.push({ label: 'Disk data read (current VM)',
+      value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
   }
 
   const newFiles = numberOrNull(operationData.value.files_new)

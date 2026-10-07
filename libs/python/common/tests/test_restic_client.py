@@ -4,6 +4,7 @@ import os
 import subprocess
 import threading
 from contextlib import contextmanager
+from datetime import datetime, timedelta
 from pathlib import Path
 from shutil import which
 from types import SimpleNamespace
@@ -186,6 +187,8 @@ def test_backup_stdin_from_command_streams_via_restic_stdin(monkeypatch):
         "archive.vma",
         "--tag",
         "job-1",
+        "--verbose",
+        "--no-scan",
     ]
     assert result["snapshot_id"] == "snap-1"
     assert diagnostic_operations == ["stream-operation", "stream-operation"]
@@ -221,6 +224,46 @@ def test_partial_backup_keeps_snapshot_identity_without_reporting_success(monkey
     with pytest.raises(ResticFailedError) as failure:
         ResticApi("restic").backup(["/data"])
     assert failure.value.snapshot_id == "snap-1"
+
+
+@pytest.mark.parametrize("mode", ["files", "stdin", "producer"])
+def test_repository_bytes_include_throttled_completed_items_and_keep_final_summary(monkeypatch, mode):
+    scan = {"message_type": "verbose_status", "action": "scan_finished",
+            "data_size": 100 if mode == "files" else 0, "total_files": 3 if mode == "files" else 1}
+    summary = {"message_type": "summary", "snapshot_id": "saved", "data_added_packed": 30}
+    messages = [
+        {"message_type": "status", "bytes_done": 1},
+        {"message_type": "verbose_status", "action": "new", "data_size": 80, "data_size_in_repo": 12, "metadata_size_in_repo": 1},
+        {"message_type": "status", "bytes_done": 20},
+        {"message_type": "verbose_status", "action": "modified", "data_size_in_repo": 8, "metadata_size_in_repo": 2},
+        {"message_type": "verbose_status", "action": "unchanged"},
+        scan, {"message_type": "status", "bytes_done": 99}, summary,
+    ]
+    start = datetime(2026, 10, 7)
+    times = iter([start] * (3 if mode == "files" else 2) + [start + timedelta(seconds=61)] * 3)
+    monkeypatch.setattr("drastic_common.restic.client.datetime", SimpleNamespace(now=lambda: next(times)))
+    def popen(cmd, **kwargs):
+        if cmd[0] == "producer":
+            return _FakeProducerProcess(cmd)
+        assert "--verbose" in cmd
+        assert ("--no-scan" in cmd) is (mode != "files")
+        process = _FakeResticProcess(cmd)
+        process.stdin = SimpleNamespace(write=lambda _: None, close=lambda: None)
+        process.stdout = _FakeTextStream(lines=[json.dumps(message) + "\n" for message in messages
+                                              if message is not scan or "--no-scan" not in cmd])
+        return process
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    events = []
+    options = {"callback": lambda line: events.append(json.loads(line)), "callback_throttle": 60000}
+    api = ResticApi("restic")
+    if mode == "files":
+        result = api.backup(["/data"], **options)
+    elif mode == "stdin":
+        result = api.backup_stdin("data", "archive", **options)
+    else:
+        result = api.backup_stdin_from_command(["producer"], "archive", **options)
+    assert events == [messages[0], *([scan] if mode == "files" else []), {**messages[-2], "data_added_packed": 23}, summary]
+    assert result == summary  # Includes the final root metadata, not just completed-file counters.
 
 
 def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
@@ -742,6 +785,19 @@ def test_real_restic_backup_restore_smoke(tmp_path):
     assert scan["data_size"] == backup_result["total_bytes_processed"] == 25
     assert scan["total_files"] == backup_result["total_files_processed"] == 2
     assert events[-1] == backup_result
+    assert backup_result["data_added_packed"] > 0
+    unchanged = api.backup(paths=[str(source_path)], parent=backup_result["snapshot_id"], tags=["smoke-test"])
+    assert unchanged["total_bytes_processed"] == 25
+    assert unchanged["files_unmodified"] == 2
+    assert unchanged["data_blobs"] == 0  # File data is reused; directory metadata may still be written.
+
+    stdin_events = []
+    payload = "stream data\n"
+    stdin_result = api.backup_stdin(payload, "stdin.data", callback=lambda line: stdin_events.append(json.loads(line)))
+    assert stdin_result["total_bytes_processed"] == len(payload.encode())
+    assert stdin_result["data_added_packed"] > 0
+    assert not any(event.get("action") == "scan_finished" for event in stdin_events)
+    assert stdin_events[-1] == stdin_result
 
     stats = api.stats()
     assert stats["mode"] == "raw-data"
