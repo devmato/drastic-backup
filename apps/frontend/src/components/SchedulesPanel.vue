@@ -25,7 +25,7 @@
     </q-table>
 
     <div class="row justify-end q-mt-md">
-      <q-btn unelevated no-caps no-wrap :disable="disabled || (!timeOnly && !hasAnyRepositories)" color="primary" icon="add" label="Add Schedule" @click="showScheduleDialog(null)" />
+      <q-btn unelevated no-caps no-wrap :disable="disabled" color="primary" icon="add" label="Add Schedule" @click="showScheduleDialog(null)" />
     </div>
 
     <template v-if="chains.length">
@@ -97,8 +97,6 @@ const scheduleColumns = computed(() => [
   ] : []),
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ])
-
-const hasAnyRepositories = computed(() => props.allRepositories.length > 0)
 
 function getRepositoryName(repositoryId) {
   const repository = props.allRepositories.find(item => item.id === repositoryId) || props.repositories.find(item => item.id === repositoryId)

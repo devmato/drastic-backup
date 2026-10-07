@@ -41,7 +41,7 @@
             <template v-if="!timeOnly">
               <div class="col-12"><q-separator /></div>
               <div class="col-12"><q-checkbox v-model="showAllRepositories" dense label="Show all repositories" /></div>
-              <div class="col-12"><q-select outlined dense hide-bottom-space v-model="form.repository_id" :options="repositoryOptions" label="Repository" emit-value map-options :rules="[val => !!val || 'Required']" /></div>
+              <div class="col-12"><q-select outlined dense hide-bottom-space v-model="form.repository_id" :options="repositoryOptions" label="Repository" :hint="repositoryHint" emit-value map-options :rules="[val => !!val || 'Required']" /></div>
               <div class="col-12"><q-select outlined dense v-model="form.retention_id" :options="retentionOptions" label="Retention Policy" emit-value map-options /></div>
               <div class="col-12"><q-toggle v-model="form.repository_check.enabled" label="Run repository check after successful backup" /></div>
               <div v-if="form.repository_check.enabled" class="col-12"><q-input outlined dense v-model="form.repository_check.read_data" label="Read data" hint="Optional: 1/10, 5% or 100%. Leave empty for a basic check." /></div>
@@ -128,6 +128,12 @@ const repositoryOptions = computed(() => selectableRepositories.value.map(reposi
   label: getRepositoryLabel(repository),
   value: repository.id,
 })))
+const repositoryHint = computed(() => {
+  if (repositoryOptions.value.length) return ''
+  return !showAllRepositories.value && props.allRepositories.length
+    ? 'No repositories assigned to this agent. Enable "Show all repositories" to select one.'
+    : 'No repositories available.'
+})
 const retentionOptions = computed(() => [
   { label: 'None', value: null },
   ...props.retentions.map(retention => ({ label: retention.name, value: retention.id })),
