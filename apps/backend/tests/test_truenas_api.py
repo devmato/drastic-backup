@@ -4,6 +4,7 @@ import test_proxmox_settings_api
 from drastic_common.secret_envelope import decrypt_with_private_key
 from drastic_server.extensions import db
 from drastic_server.services.agent import command as agent_command
+from drastic_server.services.agent.request import AgentException, AgentRequestService
 from drastic_server.services.job import ensure_job_connection
 
 api_client = test_proxmox_settings_api.api_client
@@ -70,3 +71,37 @@ def test_truenas_job_validation_preserves_existing_jobs_and_rejects_unready_agen
     assert response.status_code == 201
     assert client.get(f"/api/jobs/{response.json['id']}").json["config"]["include_children"] is True
     assert client.post("/api/jobs/", json={**payload, "config": {**config, "include_children": "invalid"}}).status_code == 422
+
+
+def test_dataset_exclusions_validate_round_trip_and_require_capable_agents(api_client):
+    client, agent, _, _ = api_client
+    agent.protocol_version = 12
+    agent.connections = {"truenas": {"configured": True, "available": True}}
+    db.session.commit()
+    config = {"datasets": ["tank"], "include_children": True, "exclude_datasets": ["tank/data"]}
+    payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": config}
+    response = client.post("/api/jobs/", json=payload)
+    assert response.status_code == 400
+    assert "protocol 13" in response.json["message"]
+    response = client.post("/api/jobs/", json={**payload, "config": {**config, "exclude_datasets": []}})
+    assert response.status_code == 201
+    job_id = response.json["id"]
+    assert "exclude_datasets" not in client.get(f"/api/jobs/{job_id}").json["config"]
+    assert "exclude_datasets" not in AgentRequestService(agent).sync()["jobs"][0]["config"]
+    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 400
+
+    agent.protocol_version = 13
+    db.session.commit()
+    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 200
+    assert client.get(f"/api/jobs/{job_id}").json["config"]["exclude_datasets"] == ["tank/data"]
+    assert AgentRequestService(agent).sync()["jobs"][0]["config"]["exclude_datasets"] == ["tank/data"]
+    for excluded in (["tank/../data"], ["tank/data", "tank/data"], ["tank"], ["tank", "tank/data"]):
+        invalid = {**config, "exclude_datasets": excluded}
+        assert client.post("/api/jobs/", json={**payload, "config": invalid}).status_code == 422
+        assert client.put(f"/api/jobs/{job_id}", json={"config": invalid}).status_code == 400
+        assert client.get(f"/api/jobs/{job_id}").json["config"]["exclude_datasets"] == ["tank/data"]
+
+    agent.protocol_version = 12
+    db.session.commit()
+    with pytest.raises(AgentException, match="protocol 13"):
+        AgentRequestService(agent).sync()

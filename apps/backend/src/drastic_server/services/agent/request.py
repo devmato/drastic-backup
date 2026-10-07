@@ -72,6 +72,9 @@ class AgentRequestService:
             raise AgentException("Update the agent before syncing automatic temporary storage selection (protocol 9)")
         if (self.agent.protocol_version or 0) < 3 and any(job.type.name == "truenas" for job in agent_jobs):
             raise AgentException("Update the agent before syncing TrueNAS jobs")
+        if (self.agent.protocol_version or 0) < 13 and any(
+                job.type.name == "truenas" and (job.config or {}).get("exclude_datasets") for job in agent_jobs):
+            raise AgentException("Update the agent before syncing TrueNAS dataset exclusions (protocol 13)")
         agent_schedules = JobSchedule.query.join(Job).filter(Job.agent_id == self.agent.id, JobSchedule.enabled).all()
         if (self.agent.protocol_version or 0) < 12 and any(schedule.config.get("timing") for schedule in agent_schedules):
             raise AgentException("Update the agent before syncing schedule types (protocol 12)")

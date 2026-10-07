@@ -1,6 +1,14 @@
 <template>
   <SelectionLayout class="q-mt-md" available-title="Available Guests"
     :selected-title="includeMode ? 'Selected Guests' : 'Exclusions'"
+    :available-entries="availableRows" :selected-entries="selectedRows" :available-actions="availableActions"
+    :available-message="agentOnline ? '' : 'Agent must be online on the Proxmox host to discover guests.'"
+    :available-error="loadError" :loading="loadingGuests" loading-label="Loading guests…"
+    :empty-available-label="guests.length ? 'No remaining guests available.' : 'No supported Proxmox guests found.'"
+    :empty-selected-label="includeMode ? 'No guests selected yet.' : 'No exclusions. All supported guests will be backed up.'"
+    @select="guest => updateSelectedIds([...selectedIds, guest.vmid])"
+    @exclude="guest => updateSelectedIds([...selectedIds, guest.vmid])"
+    @remove="guest => updateSelectedIds(selectedIds.filter(id => id !== guest.vmid))"
     :advanced-invalid="configModel.backup_mode !== 'snapshot' && !/^(?:[A-Za-z][A-Za-z0-9_.-]*)?$/.test(configModel.fleecing_storage)">
     <template #header>
       <div class="text-subtitle1">Guest Selection</div>
@@ -32,63 +40,6 @@
       <q-banner v-if="configModel.backup_mode !== 'snapshot' && nativeError" class="bg-negative text-white q-mt-sm">
         {{ nativeError }}
       </q-banner>
-    </template>
-    <template #available>
-      <q-card flat bordered>
-        <q-scroll-area style="height: 320px">
-          <q-banner v-if="!agentOnline">
-            Agent must be online on the Proxmox host to discover guests.
-          </q-banner>
-          <q-banner v-else-if="loadError" class="bg-negative text-white">
-            {{ loadError }}
-          </q-banner>
-          <div v-else-if="loadingGuests" class="text-grey q-pa-md">Loading guests…</div>
-          <q-list v-else-if="availableGuests.length > 0" separator>
-            <q-item v-for="guest in availableGuests" :key="guest.vmid">
-              <q-item-section>
-                <q-item-label class="db-break-word">{{ guest.name || `VM ${guest.vmid}` }}</q-item-label>
-                <q-item-label caption>
-                  VMID {{ guest.vmid }} | {{ guest.type }} | {{ guest.status || 'unknown' }}
-                </q-item-label>
-              </q-item-section>
-              <q-item-section side>
-                <q-btn flat dense round :icon="includeMode ? 'add' : 'remove'" :color="includeMode ? 'positive' : 'negative'" :aria-label="`${includeMode ? 'Select' : 'Exclude'} VM ${guest.vmid}`" @click="updateSelectedIds([...selectedIds, guest.vmid])">
-                  <q-tooltip>{{ includeMode ? 'Select guest' : 'Exclude guest' }}</q-tooltip>
-                </q-btn>
-              </q-item-section>
-            </q-item>
-          </q-list>
-          <div v-else class="text-grey q-pa-md">
-            {{ guests.length ? 'No remaining guests available.' : 'No supported Proxmox guests found.' }}
-          </div>
-        </q-scroll-area>
-      </q-card>
-    </template>
-    <template #selected>
-      <q-card flat bordered>
-        <q-scroll-area style="height: 320px">
-          <q-list v-if="selectedGuests.length > 0" separator>
-            <q-item v-for="guest in selectedGuests" :key="guest.vmid">
-              <q-item-section>
-                <q-item-label class="db-break-word">{{ guest.name || `VM ${guest.vmid}` }}</q-item-label>
-                <q-item-label caption>
-                  VMID {{ guest.vmid }}
-                  <template v-if="guest.type"> | {{ guest.type }} | {{ guest.status || 'unknown' }}</template>
-                  <template v-else> | Details unavailable</template>
-                </q-item-label>
-              </q-item-section>
-              <q-item-section side>
-                <q-btn flat dense round icon="delete" color="grey-7" :aria-label="`Remove VM ${guest.vmid} from ${includeMode ? 'selection' : 'exclusions'}`" @click="updateSelectedIds(selectedIds.filter(id => id !== guest.vmid))">
-                  <q-tooltip>{{ includeMode ? 'Remove from selection' : 'Remove exclusion' }}</q-tooltip>
-                </q-btn>
-              </q-item-section>
-            </q-item>
-          </q-list>
-          <div v-else class="text-grey q-pa-md">
-            {{ includeMode ? 'No guests selected yet.' : 'No exclusions. All supported guests will be backed up.' }}
-          </div>
-        </q-scroll-area>
-      </q-card>
     </template>
     <template v-if="configModel.backup_mode !== 'snapshot'" #advanced>
       <q-input outlined dense :model-value="configModel.fleecing_storage" label="Temporary backup storage (optional)"
@@ -143,6 +94,25 @@ const availableGuests = computed(() => guests.value.filter(guest => !selectedIds
 const selectedGuests = computed(() =>
   selectedIds.value.map(vmid => guests.value.find(guest => guest.vmid === vmid) || { vmid })
 )
+const availableActions = computed(() => [{
+  name: includeMode.value ? 'select' : 'exclude',
+  icon: includeMode.value ? 'add' : 'remove',
+  color: includeMode.value ? 'positive' : 'negative',
+  label: includeMode.value ? 'Select guest' : 'Exclude guest',
+}])
+function guestRow(guest) {
+  return {
+    ...guest,
+    id: guest.vmid,
+    label: guest.name || `VM ${guest.vmid}`,
+    actionLabel: `VM ${guest.vmid}`,
+    caption: `VMID ${guest.vmid} | ${guest.type ? `${guest.type} | ${guest.status || 'unknown'}` : 'Details unavailable'}`,
+  }
+}
+const availableRows = computed(() => availableGuests.value.map(guestRow))
+const selectedRows = computed(() => selectedGuests.value.map(guest => ({
+  ...guestRow(guest), state: includeMode.value ? 'include' : 'exclude',
+})))
 
 watch(
   () => [props.agentId, props.agentOnline],

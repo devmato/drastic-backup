@@ -1,8 +1,8 @@
 <template>
   <div class="q-mt-md">
     <PathSelectionPanel
-      v-if="agentId && agentOnline"
       mode="include-exclude"
+      :available-message="agentId && agentOnline ? '' : 'Agent must be online to browse directories.'"
       :load-entries="loadAgentEntries"
       :selection="configModel"
       :reload-key="agentId"
@@ -36,9 +36,6 @@
         </div>
       </template>
     </PathSelectionPanel>
-    <q-banner v-else class="bg-grey-2 text-grey-8">
-      Agent must be online to browse directories.
-    </q-banner>
   </div>
 </template>
 

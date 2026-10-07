@@ -265,6 +265,33 @@ def test_recursive_selection_rejects_unavailable_sources_before_snapshots(nas, s
     assert not artifacts and not snapshots and state["snapshots"].count() == 0
 
 
+@pytest.mark.parametrize("include_children", [False, True])
+def test_dataset_exclusions_skip_whole_subtrees_before_validation_and_snapshots(nas, state, monkeypatch, include_children):
+    api, controls, calls, snapshots, _ = nas
+    names = ["tank", "tank/data/photos", "tank/data/photos/new", "tank/database", "tank/locked"]
+    for name in names:
+        path = api.local_path(f"/mnt/{name}")
+        path.mkdir(parents=True, exist_ok=True)
+        (path / "example.txt").write_text(name)
+    controls["datasets"].extend(names)
+    discover = api.datasets
+
+    def datasets():
+        return [{**item, "available": False, "error": "Dataset is locked"} if item["id"] == "tank/locked"
+                else item for item in discover()]
+
+    monkeypatch.setattr(api, "datasets", datasets)
+    handler, artifacts = make_handler(api, SimpleNamespace(
+        operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=lambda **_: {"snapshot_id": "saved"}))
+    handler.job["config"] = {"datasets": ["tank", "tank/data/photos"], "include_children": include_children,
+                             "exclude_datasets": ["tank/data", "tank/locked", "tank/missing"]}
+    handler.run_backup(AgentReport.command_report())
+    expected = ["tank", "tank/database"] if include_children else ["tank"]
+    assert [params[0]["dataset"] for method, params in calls if method == "pool.snapshot.create"] == expected
+    assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
+    assert not snapshots and state["snapshots"].count() == 0
+
+
 @pytest.mark.parametrize("failure", [None, "before_scan", "after_summary"])
 @pytest.mark.parametrize("estimated", [False, True])
 def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, state, monkeypatch, failure, estimated):

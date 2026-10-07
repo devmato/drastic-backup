@@ -87,6 +87,7 @@ import ProxmoxBackupJobForm from 'components/jobs/forms/ProxmoxBackupJobForm.vue
 import TrueNASBackupJobForm from 'components/jobs/forms/TrueNASBackupJobForm.vue'
 import { useAgentStore } from 'stores/agent'
 import { supportsJob } from 'src/utils/agent-connections'
+import { hasTrueNASSelection } from 'src/utils/truenas-selection'
 import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
 import SchedulesPanel from 'components/SchedulesPanel.vue'
 import { scheduleTiming } from 'src/utils/schedule'
@@ -169,7 +170,7 @@ const dialogRepositories = computed(() => props.repositories)
 const allRepositories = computed(() => props.allRepositories)
 
 const entriesConfigured = computed(() => {
-  if (jobForm.type === 'truenas') return (jobForm.config?.datasets || []).length > 0
+  if (jobForm.type === 'truenas') return hasTrueNASSelection(jobForm.config)
   if (jobForm.type === 'file') {
     return (jobForm.config?.paths || []).length > 0
   }
@@ -263,6 +264,7 @@ function cloneConfig(type, config = {}) {
   if (type === 'truenas') return {
     datasets: [...(config.datasets || [])],
     include_children: config.include_children ?? !props.editingJob,
+    exclude_datasets: [...(config.exclude_datasets || [])],
     exclude_patterns: [...(config.exclude_patterns || [])],
   }
   if (type === 'proxmox') {
@@ -323,8 +325,8 @@ function submitForm() {
     return
   }
 
-  if (jobForm.type === 'truenas' && !(jobForm.config?.datasets || []).length) {
-    $q.notify({ message: 'Select at least one TrueNAS dataset', color: 'negative' })
+  if (jobForm.type === 'truenas' && !hasTrueNASSelection(jobForm.config)) {
+    $q.notify({ message: 'Select at least one TrueNAS dataset that is not excluded', color: 'negative' })
     return
   }
   if (jobForm.type === 'file' && (jobForm.config?.paths || []).length === 0) {

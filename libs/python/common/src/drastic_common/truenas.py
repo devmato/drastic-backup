@@ -40,12 +40,24 @@ class TrueNASSettingsSchema(Schema):
 class TrueNASBackupConfigSchema(Schema):
     datasets = fields.List(fields.String(validate=validate_dataset), required=True, validate=validate.Length(min=1))
     include_children = fields.Boolean(load_default=False)
+    exclude_datasets = fields.List(fields.String(validate=validate_dataset), load_default=list)
     exclude_patterns = fields.List(fields.String(validate=validate.Length(min=1)), load_default=list)
 
     @validates_schema
     def unique_datasets(self, data, **kwargs):
-        if len(data["datasets"]) != len(set(data["datasets"])):
-            raise ValidationError({"datasets": ["Duplicate datasets are not allowed"]})
+        for field in ("datasets", "exclude_datasets"):
+            if len(data[field]) != len(set(data[field])):
+                raise ValidationError({field: ["Duplicate datasets are not allowed"]})
+        if not any(not any(name == excluded or name.startswith(f"{excluded}/")
+                           for excluded in data["exclude_datasets"]) for name in data["datasets"]):
+            raise ValidationError({"datasets": ["Select at least one dataset that is not excluded"]})
+
+    @post_load
+    def omit_empty_exclusions(self, data, **kwargs):
+        # Older agents reject unknown fields, even when the list is empty.
+        if not data["exclude_datasets"]:
+            data.pop("exclude_datasets")
+        return data
 
 
 class ConnectionStatusSchema(Schema):

@@ -1,7 +1,10 @@
 <template>
-  <SelectionLayout :available-title="browserTitle" :selected-title="selectedTitle">
+  <SelectionLayout :available-title="browserTitle" :selected-title="selectedTitle"
+    :selected-entries="selectionRows" :empty-selected-label="emptySelectedLabel" :height="height"
+    :available-message="availableMessage"
+    @remove="entry => removePath(entry.path)">
     <template v-if="$slots.header" #header><slot name="header" /></template>
-    <template #available>
+    <template v-if="!availableMessage" #available>
       <PathBrowser
         :mode="mode"
         :load-entries="loadEntries"
@@ -16,30 +19,6 @@
       />
     </template>
 
-    <template #selected>
-      <q-card flat bordered>
-        <q-scroll-area :style="{ height }">
-          <q-list v-if="selectedEntries.length > 0" separator>
-            <q-item v-for="entry in selectedEntries" :key="entry.path">
-              <q-item-section avatar>
-                <q-icon :name="entry.exclude ? 'remove_circle' : 'add_circle'" :color="entry.exclude ? 'red' : 'green'" />
-              </q-item-section>
-              <q-item-section avatar>
-                <q-icon :name="groupIcon(entry.group)" color="blue-grey-7" />
-              </q-item-section>
-              <q-item-section>
-                <q-item-label>{{ entry.path }}</q-item-label>
-                <q-item-label caption>{{ entry.exclude ? 'Exclude' : selectedCaption }}</q-item-label>
-              </q-item-section>
-              <q-item-section side>
-                <q-btn flat dense round icon="delete" color="grey-7" @click="removePath(entry.path)" />
-              </q-item-section>
-            </q-item>
-          </q-list>
-          <div v-else class="text-grey q-pa-md">{{ emptySelectedLabel }}</div>
-        </q-scroll-area>
-      </q-card>
-    </template>
     <template v-if="$slots.advanced" #advanced><slot name="advanced" /></template>
   </SelectionLayout>
 </template>
@@ -62,6 +41,7 @@ const props = defineProps({
   selectedTitle: { type: String, default: 'Selected Paths' },
   selectedCaption: { type: String, default: 'Include' },
   emptyLabel: { type: String, default: 'No entries found.' },
+  availableMessage: { type: String, default: '' },
   emptySelectedLabel: { type: String, default: 'No paths selected yet.' },
   errorMessage: { type: String, default: 'Could not load entries' },
   height: { type: String, default: '320px' },
@@ -78,6 +58,14 @@ const selectedEntries = computed(() => {
     ...(props.selection.exclude_patterns || []).map(entry => ({ ...entry, exclude: true })),
   ]
 })
+const selectionRows = computed(() => selectedEntries.value.map(entry => ({
+  ...entry,
+  id: `${entry.exclude ? 'exclude' : 'include'}:${entry.path}`,
+  label: entry.path,
+  caption: entry.exclude ? 'Exclude' : props.selectedCaption,
+  state: entry.exclude ? 'exclude' : 'include',
+  icon: groupIcon(entry.group),
+})))
 
 function removePath(path) {
   if (props.mode === 'include-only') {

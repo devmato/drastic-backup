@@ -1,5 +1,7 @@
 # Unreleased
 
+- Backup selections share default split-view lists, actions and discovery states, with custom browser slots retained. File selections remain visible while the agent is offline. TrueNAS selections show inherited dataset scope and support exclusions of entire dataset subtrees, including future children; dataset exclusions require agent protocol 13.
+
 - Restricted agent admission locking so slow browsing and process cancellation do not block unrelated control requests. Recovery HTML now includes backup chains, their schedules and ordered step settings. Retention retries stop when a policy disappears; already pending prune is retained as prune-only work and survives restarts.
 
 - Fixed retention safety after failed data checks: only a successful full-data check now clears the cleanup block, including previously stored sample-check failures. Policy updates/deletions synchronize all owned online agents, including chain-only and pending-cleanup agents.

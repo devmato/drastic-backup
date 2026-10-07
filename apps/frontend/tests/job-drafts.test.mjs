@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { describeTiming, scheduleTiming } from '../src/utils/schedule.js'
+import { hasTrueNASSelection, isDatasetWithin } from '../src/utils/truenas-selection.js'
 
 for (const [kind, item, changes] of [
   ['Action', { module: 'command', hook: 'start', data: { command: 'original' } }, { data: { command: 'edited' } }],
@@ -62,7 +63,7 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
   const props = { editingJob: null }
   let saved
   const dialog = runInNewContext(`${source}\n;({ cloneConfig, resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref, scheduleTiming,
+    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),
@@ -73,7 +74,7 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
   })
   assert.equal(dialog.cloneConfig('truenas').include_children, true)
   for (const configured of [undefined, false, true]) {
-    const config = { datasets: ['tank'], exclude_patterns: ['cache/**'] }
+    const config = { datasets: ['tank'], exclude_datasets: ['tank/cache'], exclude_patterns: ['cache/**'] }
     if (configured !== undefined) config.include_children = configured
     props.editingJob = { name: 'NAS', type: 'truenas', config, actions: [], schedules: [] }
     dialog.resetForm()
@@ -81,6 +82,8 @@ test('TrueNAS job drafts default new jobs to children and preserve existing scop
     dialog.submitForm()
     assert.equal(saved.config.include_children, configured ?? false)
     assert.notEqual(saved.config.datasets, config.datasets)
+    assert.notEqual(saved.config.exclude_datasets, config.exclude_datasets)
+    assert.deepEqual(Array.from(saved.config.exclude_datasets), ['tank/cache'])
     dialog.jobForm.config.include_children = !(configured ?? false)
     dialog.submitForm()
     assert.equal(saved.config.include_children, !(configured ?? false))
@@ -95,7 +98,7 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   const props = { editingJob: { name: 'VMs', type: 'proxmox', config, actions: [], schedules: [] } }
   let saved
   const dialog = runInNewContext(`${source}\n;({ resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref, scheduleTiming,
+    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),
@@ -123,7 +126,7 @@ test('job submission validates general fields even when another section is activ
   const saved = []
   const notices = []
   const dialog = runInNewContext(`${source}\n;({ submitForm, jobForm, activeSection })`, {
-    computed, reactive, ref, scheduleTiming,
+    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
     defineProps: () => ({ editingJob: null }),
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved.push(value) },
     defineModel: () => ref(true),
@@ -228,12 +231,12 @@ test('TrueNAS split selection retains missing datasets, rejects unavailable addi
   let fail = false
   const available = { id: 'tank/other', path: '/mnt/tank/other', available: true }
   const unavailable = { id: 'tank/locked', error: 'Dataset unavailable', available: false }
-  const panel = runInNewContext(`${source}\n;({ loadDatasets, selectedDatasets, availableDatasets, addDataset, update, error })`, {
-    computed, ref,
+  const panel = runInNewContext(`${source}\n;({ loadDatasets, selectedDatasets, datasets, addDataset, update, error })`, {
+    computed, ref, hasTrueNASSelection, isDatasetWithin,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
     watch: () => {},
-    useAgentStore: () => ({ getTrueNASDatasets: async () => {
+    useAgentStore: () => ({ agents: [], getTrueNASDatasets: async () => {
       if (fail) throw new Error('Discovery failed')
       return [{ id: 'tank/data', path: '/mnt/tank/data', available: true }, available, unavailable]
     } }),
@@ -243,13 +246,13 @@ test('TrueNAS split selection retains missing datasets, rejects unavailable addi
   const ids = list => Array.from(list.value, item => item.id)
   await panel.loadDatasets()
   assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/missing'])
-  assert.deepEqual(ids(panel.availableDatasets), ['tank/other', 'tank/locked'])
+  assert.deepEqual(ids(panel.datasets), ['tank/data', 'tank/other', 'tank/locked'])
   panel.addDataset(unavailable)
   assert.equal(props.modelValue.datasets.length, 2)
   panel.addDataset(available)
   panel.addDataset(available)
   assert.deepEqual(ids(panel.selectedDatasets), ['tank/data', 'tank/missing', 'tank/other'])
-  assert.deepEqual(ids(panel.availableDatasets), ['tank/locked'])
+  assert.deepEqual(ids(panel.datasets), ['tank/data', 'tank/other', 'tank/locked'])
   panel.update({ datasets: props.modelValue.datasets.filter(id => id !== 'tank/missing') })
   fail = true
   await panel.loadDatasets()
@@ -261,4 +264,107 @@ test('TrueNAS split selection retains missing datasets, rejects unavailable addi
   assert.equal(props.modelValue.include_children, true)
   assert.deepEqual(Array.from(props.modelValue.exclude_patterns), ['cache/**'])
   assert.deepEqual(original.datasets, ['tank/data', 'tank/missing'])
+})
+
+test('TrueNAS rules display inherited scope, exclude subtrees and retain rules across discovery failures', async () => {
+  const source = readFileSync(new URL('../src/components/jobs/forms/TrueNASBackupJobForm.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const original = { datasets: ['tank'], include_children: true, exclude_patterns: ['cache/**'] }
+  const props = reactive({ modelValue: original, agentId: 1, agentOnline: true })
+  const agent = reactive({ id: 1, protocol_version: 13 })
+  const names = ['tank', 'tank/data', 'tank/data/photos', 'tank/database', 'tank/locked']
+  let fail = false
+  const panel = runInNewContext(`${source}\n;({ loadDatasets, availableRows, selectedRows, scopeLabel, addDataset, excludeDataset, removeRule, update })`, {
+    computed, ref, hasTrueNASSelection, isDatasetWithin,
+    defineProps: () => props,
+    defineEmits: () => (_, value) => { props.modelValue = value },
+    watch: () => {},
+    useAgentStore: () => ({ agents: [agent], getTrueNASDatasets: async () => {
+      if (fail) throw new Error('Discovery failed')
+      return names.map(id => ({ id, available: id !== 'tank/locked', path: `/mnt/${id}` }))
+    } }),
+    shouldIgnoreApiError: () => false,
+    getApiErrorMessage: error => error.message,
+  })
+  const row = id => panel.availableRows.value.find(entry => entry.id === id)
+  await panel.loadDatasets()
+  assert.equal(panel.scopeLabel.value, '5 included · 0 exclusions')
+  assert.equal(row('tank/data').note, 'Included via tank')
+  assert.equal(row('tank/data').actions[0].disable, true)
+  panel.addDataset(row('tank/data'))
+  assert.deepEqual(Array.from(props.modelValue.datasets), ['tank'], 'inherited selections do not become explicit rules')
+  assert.equal(row('tank').actions[1].disable, true, 'cannot exclude the entire selection')
+  panel.excludeDataset(row('tank'))
+  assert.equal(props.modelValue.exclude_datasets.length, 0)
+
+  panel.excludeDataset(row('tank/data'))
+  assert.equal(panel.scopeLabel.value, '3 included · 1 exclusion')
+  assert.equal(row('tank/data/photos').state, 'exclude')
+  assert.equal(row('tank/data/photos').actions[0].disable, true)
+  assert.equal(row('tank/database').state, 'include', 'segment boundaries matter')
+  panel.addDataset(row('tank/data/photos'))
+  assert.deepEqual(Array.from(props.modelValue.exclude_datasets), ['tank/data'])
+  panel.excludeDataset(row('tank/locked'))
+  assert.deepEqual(Array.from(props.modelValue.exclude_datasets), ['tank/data', 'tank/locked'], 'unavailable inherited datasets can be excluded')
+
+  names.push('tank/data/new', 'tank/new')
+  await panel.loadDatasets()
+  assert.equal(row('tank/data/new').state, 'exclude')
+  assert.equal(row('tank/new').state, 'include')
+  panel.addDataset(row('tank/data'))
+  assert.deepEqual(Array.from(props.modelValue.exclude_datasets), ['tank/locked'])
+  assert.deepEqual(Array.from(props.modelValue.datasets), ['tank'])
+  panel.removeRule(panel.selectedRows.value.find(entry => entry.state === 'exclude'))
+  assert.equal(props.modelValue.exclude_datasets.length, 0)
+
+  agent.protocol_version = 12
+  assert.equal(row('tank/data').actions[1].disable, true)
+  panel.excludeDataset(row('tank/data'))
+  assert.equal(props.modelValue.exclude_datasets.length, 0)
+  agent.protocol_version = 13
+  panel.excludeDataset(row('tank/data'))
+  panel.update({ include_children: false })
+  assert.equal(row('tank/database').state, undefined)
+  assert.equal(row('tank/data').state, 'exclude')
+  assert.match(panel.selectedRows.value[1].note, /outside current selection/)
+  panel.update({ datasets: ['tank', 'tank/data/photos'] })
+  assert.equal(panel.selectedRows.value.find(entry => entry.state === 'exclude').note, 'Excluded with child datasets',
+    'an ancestor exclusion still affects explicitly selected descendants without automatic child inclusion')
+  panel.update({ datasets: ['tank', 'tank/database'] })
+  assert.match(panel.selectedRows.value.find(entry => entry.state === 'exclude').note, /outside current selection/,
+    'similarly named siblings are outside the excluded subtree')
+  panel.update({ datasets: ['tank'], include_children: true })
+
+  fail = true
+  await panel.loadDatasets()
+  assert.equal(panel.selectedRows.value.length, 2)
+  assert.match(panel.scopeLabel.value, /scope unavailable/)
+  props.agentOnline = false
+  await panel.loadDatasets()
+  assert.equal(panel.selectedRows.value.length, 2)
+  panel.removeRule(panel.selectedRows.value[1])
+  assert.equal(props.modelValue.exclude_datasets.length, 0)
+  assert.deepEqual(original, { datasets: ['tank'], include_children: true, exclude_patterns: ['cache/**'] })
+})
+
+test('TrueNAS cannot submit a job whose explicit roots are all excluded', () => {
+  assert.equal(hasTrueNASSelection({ datasets: ['tank/data'], exclude_datasets: ['tank'] }), false)
+  assert.equal(hasTrueNASSelection({ datasets: ['tank/database'], exclude_datasets: ['tank/data'] }), true)
+  const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const notices = []
+  const dialog = runInNewContext(`${source}\n;({ jobForm, entriesConfigured, submitForm })`, {
+    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
+    defineProps: () => ({ editingJob: null }),
+    defineEmits: () => () => assert.fail('excluded selection must not be saved'),
+    defineModel: () => ref(true),
+    defineOptions: () => {},
+    watch: () => {},
+    useQuasar: () => ({ notify: notice => notices.push(notice) }),
+    useAgentStore: () => ({ agents: [] }),
+  })
+  Object.assign(dialog.jobForm, { name: 'NAS', type: 'truenas', config: { datasets: ['tank/data'], exclude_datasets: ['tank'] } })
+  assert.equal(dialog.entriesConfigured.value, false)
+  dialog.submitForm()
+  assert.match(notices[0].message, /not excluded/)
 })

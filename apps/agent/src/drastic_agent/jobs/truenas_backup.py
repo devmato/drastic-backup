@@ -69,6 +69,9 @@ class TrueNASBackupJobHandler(BackupJobHandler):
             if config["include_children"]:
                 prefixes = tuple(f"{parent}/" for parent in config["datasets"])
                 names.update(name for name in available if name.startswith(prefixes))
+            excluded = set(config.get("exclude_datasets", []))
+            excluded_prefixes = tuple(f"{name}/" for name in excluded)
+            names = {name for name in names if name not in excluded and not name.startswith(excluded_prefixes)}
             selected = []
             for name in sorted(names):
                 dataset = available.get(name)
