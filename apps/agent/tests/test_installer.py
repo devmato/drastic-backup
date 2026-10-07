@@ -371,6 +371,18 @@ def test_preserved_identity_cannot_be_moved_to_another_server(installer):
         installer.install(arguments())
 
 
+def test_wrapper_help_includes_uninstall(installer):
+    runtime = installer.ROOT / "current/venv/bin/drastic-agent"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_text('#!/bin/sh\nexit 0\n')
+    runtime.chmod(0o755)
+    installer.write_wrapper({})
+
+    result = subprocess.run([str(installer.WRAPPER), "--help"],
+                            capture_output=True, text=True, check=True)
+    assert "uninstall [--purge] [--yes]" in result.stdout
+
+
 def test_pipe_help_needs_no_root_or_downloads():
     script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
     result = subprocess.run(["bash", "-s", "--", "--help"], input=script.read_text(),

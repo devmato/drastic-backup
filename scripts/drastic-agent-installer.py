@@ -166,6 +166,21 @@ case "${{1:-}}" in
         exec "{sys.executable}" "{ROOT}/current/source/scripts/drastic-agent-installer.py" "$@" ;;
 esac
 {exports}
+case "${{1:-}}" in
+    -h|--help)
+        "{ROOT}/current/venv/bin/drastic-agent" "$@"
+        printf '%s\\n' \\
+            '' \\
+            'Installation commands:' \\
+            '  install [options]' \\
+            '  update [options]' \\
+            '  status' \\
+            '  uninstall [--purge] [--yes]' \\
+            '' \\
+            'Uninstall is only available for native Linux installations.' \\
+            "Run 'drastic-agent COMMAND --help' for command-specific options."
+        exit 0 ;;
+esac
 exec "{ROOT}/current/venv/bin/drastic-agent" "$@"
 ''', 0o755)
     WRAPPER.parent.mkdir(parents=True, exist_ok=True)
@@ -509,9 +524,9 @@ def main():
     image.add_argument('--repository', default=REPOSITORY)
     image.add_argument('--ref', default='main')
     image.add_argument('--commit', default='unknown')
-    sub = commands.add_parser('uninstall')
-    sub.add_argument('--purge', action='store_true')
-    sub.add_argument('--yes', action='store_true')
+    sub = commands.add_parser('uninstall', description='Remove the native agent; keep local identity and settings unless --purge is used.')
+    sub.add_argument('--purge', action='store_true', help='Also remove all local agent data, identity and settings')
+    sub.add_argument('--yes', action='store_true', help='Skip confirmation (required for unattended uninstall)')
     args = parser.parse_args()
     try:
         if sys.platform != 'linux' or os.geteuid() != 0:
