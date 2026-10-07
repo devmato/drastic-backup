@@ -76,7 +76,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.summaryColumns.value[1], 'Device'), 'Backup host')
   assert.equal(field(page.metricCards.value, 'Files processed'), '1')
   assert.equal(field(page.metricCards.value, 'Changes'), '1 new')
-  assert.equal(field(page.metricCards.value, 'Data transferred'), '256 B · Ø 85 B/s')
+  assert.equal(field(page.metricCards.value, 'Data transferred'), '256 B')
   assert.equal(field(page.metricCards.value, 'Snapshot'), undefined)
   assert.equal(field(page.technicalDetails.value, 'Snapshot'), 'snapshot-id')
   assert.equal(field(page.technicalDetails.value, 'Restic duration'), '3s')
@@ -96,7 +96,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   page.operation.value.data.files_new = 0
   page.operation.value.data.data_added_packed = 0
   assert.equal(field(page.metricCards.value, 'Changes'), 'No changes')
-  assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B · Ø 0 B/s')
+  assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B')
   page.operation.value.data = {}
   assert.equal(field(page.metricCards.value, 'Changes'), undefined)
   assert.equal(field(page.metricCards.value, 'Data transferred'), 'Not yet known')
@@ -369,16 +369,38 @@ test('background operation updates stay quiet and preserve data on failure', asy
       assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B')
     }
     job.duration = 4
-    assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B · Ø 50 B/s')
-    assert.match(page.metricCards.value[2].tooltip, /provisional average.*Restic runtime.*not the current network speed/)
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '200 B')
+    assert.equal(field(page.metricCards.value, 'Processing speed'), 'Not yet known')
+    job.processing_bytes_per_second = 2 * 1024 * 1024
+    assert.equal(field(page.metricCards.value, 'Processing speed'), '2 MiB/s')
+    assert.match(page.metricCards.value.find(metric => metric.label === 'Processing speed').tooltip,
+      /last 10 seconds.*reused data.*not the network upload speed/)
+    job.processing_bytes_per_second = 0
+    assert.equal(field(page.metricCards.value, 'Processing speed'), '0 B/s')
+    for (const speed of [null, -1, 'invalid']) {
+      job.processing_bytes_per_second = speed
+      assert.equal(field(page.metricCards.value, 'Processing speed'), 'Not yet known')
+    }
+    job.processing_bytes_per_second = 1024
+    job.backup_progress = { complete: true }
+    assert.equal(field(page.metricCards.value, 'Processing speed'), undefined)
+    job.backup_progress.complete = false
+    for (const progress of [job.proxmox_progress, job.truenas_progress].filter(Boolean)) {
+      const phase = progress.phase
+      progress.phase = 'cleanup'
+      assert.equal(field(page.metricCards.value, 'Processing speed'), undefined)
+      progress.phase = phase
+    }
     job.data_added_packed = 0
-    assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B · Ø 0 B/s')
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '0 B')
     delete job.data_added_packed
     job.data_added = 500 // Uncompressed logical additions are not transferred bytes.
     assert.equal(field(page.metricCards.value, 'Data transferred'), 'Not yet known')
+    assert.equal(field(page.metricCards.value, 'Processing speed'), '1 KiB/s') // Independent of transfer totals.
     job.bytes_processed = 4096
     assert.equal(page.progressLabel.value, '99%')
     page.operation.value.state = 'warning'
+    assert.equal(field(page.metricCards.value, 'Processing speed'), undefined)
     assert.equal(page.progressLabel.value, '99%') // An explicit false completion flag wins over final status.
     page.operation.value.state = 'running'
     job.backup_data_complete = true
@@ -387,9 +409,10 @@ test('background operation updates stay quiet and preserve data on failure', asy
     assert.match(page.progressBasis.value, /Updating repository statistics/)
     job.data_added_packed = 225
     job.duration = 4.5
-    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B · Ø 50 B/s')
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B')
+    assert.equal(field(page.metricCards.value, 'Processing speed'), undefined)
     job.backup_phase = 'hooks'
-    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B · Ø 50 B/s')
+    assert.equal(field(page.metricCards.value, 'Data transferred'), '225 B')
     job.backup_data_complete = false
     job.backup_bytes_total = null
     job.proxmox_bytes_total = 4096 // New unknown totals must not fall back to older fields.

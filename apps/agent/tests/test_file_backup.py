@@ -167,3 +167,32 @@ def test_transfer_runtime_aggregates_live_seconds_and_replaces_them_with_final_d
     assert report.data["data_added_packed"] == 325
     report.set_data("backup_phase", "statistics")
     assert report.data["duration"] == 4  # Post-backup phases do not change the rate's denominator.
+
+
+def test_processing_speed_uses_recent_samples_and_resets_between_artifacts():
+    report = AgentReport(type=AgentOperationType.backup, persist=False)
+    def status(seconds, done):
+        report.process_backup_status({"message_type": "status", "seconds_elapsed": seconds, "bytes_done": done})
+        return report.data["processing_bytes_per_second"]
+
+    assert status(0, 0) is None
+    assert status(2, 2000) == 1000
+    assert status(2, 2000) == 1000  # Duplicate samples are not additional work.
+    assert status(2, 3000) == 1500  # Replace samples from the same integer second.
+    assert status(10, 10000) == 1000
+    assert status(12, 12000) == 900  # Window starts at the updated second-2 sample.
+    assert status(20, 12000) == 200
+    assert status(22, 12000) == 0  # No processing in the last ten seconds.
+    assert status(40, 20000) is None  # No recent baseline after a long reporting gap.
+    assert status(42, 22000) == 1000
+    assert status(43, 100) is None  # Counter reset cannot create a negative rate.
+    assert status(1, 200) is None  # Clock reset also starts a fresh window.
+    assert status(2, 300) == 100
+    report.process_backup_status({"message_type": "summary", "total_bytes_processed": 300})
+    assert "processing_bytes_per_second" not in report.data
+    report.begin_backup_artifact("second")
+    assert "processing_bytes_per_second" not in report.data
+    assert status(2, 0) is None
+    assert status(4, 200) == 100
+    report.process_backup_status(None, pid=None)  # Failed/cancelled subprocess exit clears the live rate.
+    assert "processing_bytes_per_second" not in report.data

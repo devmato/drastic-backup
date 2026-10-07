@@ -71,6 +71,7 @@ class AgentOperation:
         self.data = data if data is not None else {}
         self.artifacts = []
         self._backup_stats = {}
+        self._backup_rate_samples = deque()
         self._backup_size_estimates = {}
         self._backup_artifact_key = None
         self._logs = []
@@ -261,6 +262,8 @@ class AgentOperation:
 
     def begin_backup_artifact(self, artifact_key):
         with self._lock:
+            self._backup_rate_samples.clear()
+            self.remove_data("processing_bytes_per_second")
             self._backup_artifact_key = artifact_key
             self._backup_stats[artifact_key] = {
                 "artifact_key": artifact_key,
@@ -346,6 +349,7 @@ class AgentOperation:
         if pid is not _PID_UNSET:
             if pid is None:
                 self.remove_data("pid")
+                self.remove_data("processing_bytes_per_second")
             else:
                 self.set_data("pid", pid)
         summary_params = {
@@ -389,7 +393,19 @@ class AgentOperation:
                                current_files=status_dict.get("current_files", []))
                 if "data_added_packed" in status_dict:
                     current["data_added_packed"] = status_dict["data_added_packed"]
+                samples = self._backup_rate_samples
+                elapsed, processed = current["duration"], current["bytes_processed"]
+                if samples and (elapsed < samples[-1][0] or processed < samples[-1][1]):
+                    samples.clear()
+                if samples and elapsed == samples[-1][0]:
+                    samples.pop()  # Restic timestamps have whole-second resolution.
+                samples.append((elapsed, processed))
+                while len(samples) > 1 and samples[0][0] < elapsed - 10:
+                    samples.popleft()
+                seconds = elapsed - samples[0][0]
+                self.set_data("processing_bytes_per_second", (processed - samples[0][1]) / seconds if seconds > 0 else None)
             else:
+                self.remove_data("processing_bytes_per_second")
                 for source, target in summary_params.items():
                     if source in status_dict:
                         current[target] = status_dict[source]

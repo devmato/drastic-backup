@@ -438,10 +438,16 @@ const metricCards = computed(() => {
 
   if (isBackupOperation.value) {
     const addedBytes = numberOrNull(operationData.value.data_added_packed)
-    const resticSeconds = numberOrNull(operationData.value.duration)
-    const rate = addedBytes !== null && resticSeconds > 0 ? ` · Ø ${formatBytes(addedBytes / resticSeconds)}/s` : ''
-    metrics.push({ label: 'Data transferred', value: addedBytes === null ? 'Not yet known' : `${formatBytes(addedBytes)}${rate}`,
-      tooltip: 'New data written to the repository after deduplication and compression. Updated after completed files or archive streams; finalized at backup completion. Excludes network overhead. Ø is the provisional average over the combined Restic runtime, not the current network speed; preparation and post-backup actions are excluded.' })
+    metrics.push({ label: 'Data transferred', value: addedBytes === null ? 'Not yet known' : formatBytes(addedBytes),
+      tooltip: 'New data written to the repository after deduplication and compression. Updated after completed files or archive streams; finalized at backup completion. Excludes network overhead.' })
+    if (operation.value?.state === 'running' && operationData.value.backup_phase === 'backup'
+      && !backupDataComplete.value && !backupProgress.value?.complete
+      && (!proxmoxProgress.value || proxmoxProgress.value.phase === 'backing_up')
+      && (!truenasProgress.value || truenasProgress.value.phase === 'backup')) {
+      const speed = numberOrNull(operationData.value.processing_bytes_per_second)
+      metrics.push({ label: 'Processing speed', value: speed !== null && speed >= 0 ? `${formatBytes(speed)}/s` : 'Not yet known',
+        tooltip: 'Restic processing rate over the last 10 seconds, including reused data. This is not the network upload speed.' })
+    }
   }
 
   if (proxmoxProgress.value && operation.value?.state === 'running') {
