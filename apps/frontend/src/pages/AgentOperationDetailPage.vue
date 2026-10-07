@@ -42,7 +42,7 @@
                 </div>
               </q-linear-progress>
             </div>
-            <div v-if="progressBasis && (operation.state === 'running' || proxmoxBytesTotal > 0)" class="text-caption db-break-word" role="status">{{ progressBasis }}</div>
+            <div v-if="progressBasis" class="text-caption db-break-word" role="status">{{ progressBasis }}</div>
 
             <div>
               <div class="row q-col-gutter-md text-body2">
@@ -295,74 +295,48 @@ const restoreBytesRestored = computed(() => numberOrNull(operationData.value.res
 const restoreBytesTotal = computed(() => numberOrNull(operationData.value.restore_bytes_total ?? operationData.value.total_bytes))
 const restoreFilesRestored = computed(() => numberOrNull(operationData.value.restore_files_restored ?? operationData.value.files_restored))
 const restoreFilesTotal = computed(() => numberOrNull(operationData.value.restore_files_total ?? operationData.value.total_files))
-const proxmoxBytesTotal = computed(() => numberOrNull(operationData.value.proxmox_bytes_total))
+const backupBytesTotal = computed(() => {
+  const data = operationData.value
+  // Older agents may supply a source-specific job total; never use a single VM/dataset as the job total.
+  return numberOrNull('backup_bytes_total' in data ? data.backup_bytes_total
+    : data.proxmox_bytes_total
+      ?? (!proxmoxProgress.value && !truenasProgress.value && backupProgress.value?.total_known
+        ? bytesTotal.value ?? backupProgress.value.bytes_total : null))
+})
+const backupTotalEstimated = computed(() => operationData.value.backup_bytes_total_estimated ?? false)
+const backupDataComplete = computed(() => operationData.value.backup_data_complete
+  ?? (['success', 'warning'].includes(operation.value?.state) && !operationData.value.partial_failure))
+const backupPhaseLabel = computed(() => {
+  const phase = operationData.value.backup_phase
+  const phases = {
+    preparing: 'Preparing backup', finalizing: 'Finalizing backup', check: 'Checking repository',
+    retention: 'Applying retention policy', statistics: 'Updating repository statistics', hooks: 'Running backup actions',
+  }
+  if (phase && phase !== 'backup') return phases[phase] || 'Finalizing backup'
+  const vm = proxmoxProgress.value
+  if (vm) {
+    const phases = { snapshots: 'Preparing VM backup', backing_up: 'Backing up', cleanup: 'Cleaning up VM backup',
+      finalizing: 'Finalizing snapshot', complete: 'VM backup completed', failed: 'VM backup failed' }
+    return `VM ${vm.guest_index} of ${vm.guests_total} · ${vm.vmid} — ${phases[vm.phase] || 'Preparing VM backup'}`
+  }
+  const dataset = truenasProgress.value
+  if (dataset?.phase === 'snapshots') return 'Creating TrueNAS snapshots'
+  if (dataset?.phase === 'cleanup') return 'Cleaning up TrueNAS snapshots'
+  const scope = dataset ? `Dataset ${dataset.dataset_index} of ${dataset.datasets_total} · ${dataset.dataset} — ` : ''
+  return `${scope}${backupProgress.value?.complete ? 'Finalizing snapshot' : 'Backing up'}`
+})
 
 const progressSource = computed(() => {
   if (isBackupOperation.value) {
-    const nativeTotal = proxmoxBytesTotal.value
-    const nativeProgress = nativeTotal > 0 ? clampProgress((bytesProcessed.value ?? 0) / nativeTotal) : null
-    if (operation.value?.state !== 'running') {
-      if (nativeProgress !== null) return { value: nativeProgress, basis: 'Data processed (all VMs)' }
-      return { value: ['success', 'warning'].includes(operation.value?.state) && !operationData.value.partial_failure ? 1 : null }
-    }
-
-    const phases = {
-      preparing: 'Preparing backup',
-      finalizing: 'Finalizing backup',
-      check: 'Checking repository',
-      retention: 'Applying retention policy',
-      statistics: 'Updating repository statistics',
-      hooks: 'Running backup actions',
-    }
-    if (operationData.value.backup_phase && operationData.value.backup_phase !== 'backup') {
-      const phase = phases[operationData.value.backup_phase] || 'Finalizing backup'
-      return { value: nativeProgress,
-        basis: `${nativeProgress === null ? '' : 'Data processed (all VMs) — '}${phase}` }
-    }
-    if (nativeProgress !== null) {
-      const progress = proxmoxProgress.value
-      const phases = {
-        snapshots: 'Preparing VM backup', backing_up: `Backing up VM ${progress?.vmid}`,
-        cleanup: 'Cleaning up VM backup', complete: 'VM backup completed', failed: 'VM backup failed',
-      }
-      return { value: nativeProgress,
-        basis: `Data processed (all VMs) — ${progress
-          ? `VM ${progress.guest_index} of ${progress.guests_total} · ${phases[progress.phase] || 'Finalizing VM backup'}`
-          : 'Preparing VM backups'}` }
-    }
-  }
-
-  if (isBackupOperation.value && proxmoxProgress.value) {
-    const progress = proxmoxProgress.value
-    const phases = {
-      snapshots: 'Creating VM snapshot',
-      cleanup: 'Removing VM snapshot',
-      backing_up: `Backing up VM ${progress.vmid}`,
-      finalizing: 'Finalizing restic snapshot',
-      complete: 'VM backup completed',
-      failed: 'VM backup failed',
-    }
+    const total = backupBytesTotal.value
+    const value = backupDataComplete.value ? 1 : total > 0
+      ? Math.min(0.99, clampProgress((bytesProcessed.value ?? 0) / total)) : null
+    const basis = `Data processed (job)${backupTotalEstimated.value ? ' — estimated' : ''}`
+    if (operation.value?.state !== 'running') return { value, basis: value === null ? null : basis }
+    const sizeHint = total === null ? ' · Total size not yet known'
+      : total === 0 && !backupDataComplete.value ? ' · No file data to back up' : ''
     return {
-      value: progress.phase === 'backing_up' && progress.bytes_total > 0
-        && numberOrNull(progress.percent_done) !== null && progress.percent_done >= 0 && progress.percent_done < 100
-        ? progress.percent_done / 100 : null,
-      basis: `VM ${progress.guest_index} of ${progress.guests_total} — ${phases[progress.phase] || 'Running'}${progress.percent_done == null && progress.phase === 'backing_up' ? ' — progress not yet known' : ''}`,
-    }
-  }
-
-  if (isBackupOperation.value) {
-    const dataset = truenasProgress.value
-    if (dataset?.phase === 'snapshots') return { value: null, basis: 'Creating TrueNAS snapshots' }
-    if (dataset?.phase === 'cleanup') return { value: null, basis: 'Cleaning up TrueNAS snapshots' }
-    const scope = dataset ? `Dataset ${dataset.dataset_index} of ${dataset.datasets_total} · ${dataset.dataset} — ` : ''
-    const progress = backupProgress.value
-    if (progress?.complete) return { value: null, basis: `${scope}Finalizing snapshot` }
-    if (!progress?.total_known) return { value: null, basis: `${scope}Backing up · Total size not yet known` }
-    const total = numberOrNull(progress.bytes_total)
-    const processed = numberOrNull(progress.bytes_processed)
-    return {
-      value: total > 0 && processed !== null && processed >= 0 && processed <= total ? processed / total : null,
-      basis: `${scope}${total === 0 ? 'No file data to back up' : processed > total ? 'Backing up · Source size changed' : 'Backing up'}`,
+      value, basis: `${basis} — ${backupPhaseLabel.value}${sizeHint}`,
     }
   }
 
@@ -414,33 +388,6 @@ const progressBasis = computed(() => progressSource.value.basis)
 const metricCards = computed(() => {
   const metrics = []
 
-  if (isBackupOperation.value && proxmoxBytesTotal.value > 0) {
-    const progress = proxmoxProgress.value
-    return [
-      { label: 'Data processed (all VMs)', value: formatProcessed(bytesProcessed.value ?? 0, proxmoxBytesTotal.value, formatBytes) },
-      ...(operation.value?.state === 'running' && progress?.bytes_processed != null
-        ? [{ label: 'Disk data read (current VM)', value: formatProcessed(progress.bytes_processed, progress.bytes_total, formatBytes) }] : []),
-      ...(operationData.value.data_added_packed != null
-        ? [{ label: 'Newly stored (job)', value: formatBytes(operationData.value.data_added_packed) }] : []),
-    ]
-  }
-
-  if (proxmoxProgress.value && operation.value?.state === 'running') {
-    const progress = proxmoxProgress.value
-    return [
-      ...(bytesProcessed.value !== null ? [{ label: 'Data processed (job)', value: formatBytes(bytesProcessed.value) }] : []),
-      ...(progress.bytes_processed != null ? [{ label: 'VM data processed', value: formatBytes(progress.bytes_processed) }] : []),
-      ...((progress.disk_bytes || progress.bytes_total) > 0 ? [{ label: 'Total VM size', value: formatBytes(progress.disk_bytes || progress.bytes_total) }] : []),
-      ...(progress.archive_bytes != null ? [{ label: 'VM archive size', value: formatBytes(progress.archive_bytes) }] : []),
-    ]
-  }
-
-  if (truenasProgress.value?.phase === 'backup' && operation.value?.state === 'running' && backupProgress.value) {
-    const progress = backupProgress.value
-    metrics.push({ label: 'Dataset data processed', value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
-    metrics.push({ label: 'Dataset files', value: formatProcessed(numberOrNull(progress.files_processed), numberOrNull(progress.files_total), formatNumber) })
-  }
-
   if (isRestoreOperation.value) {
     if (operationData.value.target_vmid) {
       metrics.push({ label: 'Target VM', value: operationData.value.target_vmid })
@@ -472,11 +419,31 @@ const metricCards = computed(() => {
     return metrics
   }
 
-  if (bytesProcessed.value !== null || bytesTotal.value !== null) {
+  const total = isBackupOperation.value ? backupBytesTotal.value : bytesTotal.value
+  if (bytesProcessed.value !== null || total !== null || bytesTotal.value !== null) {
     metrics.push({
-      label: bytesProcessed.value === null ? 'Total data' : truenasProgress.value ? 'Data processed (job)' : 'Data processed',
-      value: formatProcessed(bytesProcessed.value, bytesTotal.value, formatBytes),
+      label: isBackupOperation.value ? 'Data processed (job)' : 'Data processed',
+      value: formatProcessed(total !== null ? bytesProcessed.value ?? 0 : bytesProcessed.value,
+        operation.value?.state === 'running' ? total : total ?? bytesTotal.value, formatBytes),
     })
+  }
+
+  const addedBytes = numberOrNull(operationData.value.data_added_packed ?? operationData.value.data_added)
+  if (addedBytes !== null) metrics.push({ label: 'Newly stored (job)', value: formatBytes(addedBytes) })
+
+  if (proxmoxProgress.value && operation.value?.state === 'running') {
+    const progress = proxmoxProgress.value
+    const native = ['native', 'native_cbt'].includes(progress.backup_mode) || 'proxmox_bytes_total' in operationData.value
+    if (progress.bytes_processed != null) metrics.push({ label: native ? 'Disk data read (current VM)' : 'VM data processed',
+      value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
+    if ((progress.disk_bytes || progress.bytes_total) > 0) metrics.push({ label: 'Total VM size', value: formatBytes(progress.disk_bytes || progress.bytes_total) })
+    if (progress.archive_bytes != null) metrics.push({ label: 'VM archive size', value: formatBytes(progress.archive_bytes) })
+  }
+
+  if (truenasProgress.value?.phase === 'backup' && operation.value?.state === 'running' && backupProgress.value) {
+    const progress = backupProgress.value
+    metrics.push({ label: 'Dataset data processed', value: formatProcessed(numberOrNull(progress.bytes_processed), numberOrNull(progress.bytes_total), formatBytes) })
+    metrics.push({ label: 'Dataset files', value: formatProcessed(numberOrNull(progress.files_processed), numberOrNull(progress.files_total), formatNumber) })
   }
 
   if (filesProcessed.value !== null || filesTotal.value !== null) {
@@ -494,11 +461,6 @@ const metricCards = computed(() => {
   ].filter(Boolean)
   if (changes.length > 0 || (newFiles === 0 && modifiedFiles === 0)) {
     metrics.push({ label: 'Changes', value: changes.join(' · ') || 'No changes' })
-  }
-
-  const addedBytes = numberOrNull(operationData.value.data_added_packed ?? operationData.value.data_added)
-  if (addedBytes !== null) {
-    metrics.push({ label: 'Added to repo', value: formatBytes(addedBytes) })
   }
 
   return metrics

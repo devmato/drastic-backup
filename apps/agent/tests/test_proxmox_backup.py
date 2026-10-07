@@ -2,6 +2,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 from contextlib import nullcontext
 from pathlib import Path
@@ -16,7 +17,7 @@ from drastic_agent.agent.report import AgentReport
 from drastic_agent.guest_disks import DirectorySnapshot, snapshot_disks
 from drastic_agent.proxmox import ProxmoxError, QemuVolumeGuestDriver
 from drastic_agent.proxmox_blocks import make_manifest, view_metadata
-from drastic_agent.proxmox_snapshot import write_archive
+from drastic_agent.proxmox_snapshot import SNAPSHOT_INFO, write_archive
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError, ResticFailedError
 from drastic_common.restic.repository import ResticRepository
@@ -34,6 +35,33 @@ def test_guest_discovery_requires_at_least_one_backupable_volume():
     api = SimpleNamespace(list_qemu_guests=lambda: [{"vmid": vmid} for vmid in configs],
                           get_qemu_config=configs.get, get_node=lambda: "pve")
     assert [guest["vmid"] for guest in QemuVolumeGuestDriver().list_supported_guests(api)] == [105, 106, 107]
+
+
+@pytest.mark.parametrize("size", [4096, None, "invalid"])
+def test_snapshot_preflight_reads_optional_sizes_without_activating_disks(tmp_path, size):
+    if not shutil.which("perl"):
+        pytest.skip("Perl is required for the snapshot preflight check")
+    state = tmp_path / "state.json"
+    state.write_text(json.dumps({"config": {}, "storages": {"local": {"type": "lvmthin", "vgname": "pve", "thinpool": "data"}},
+                                "volumes": [{"included": True, "key": "scsi0", "volume_config": {"file": "local:disk"}}],
+                                "volume_sizes": {"local:disk": size}}))
+    # Reuse the existing PVE stand-in and execute the real embedded Perl preflight.
+    wrapper = """
+require shift @ARGV;
+$INC{'PVE/QemuServer.pm'} = __FILE__;
+sub JSON::true { JSON::PP::true() }
+sub PVE::QemuConfig::has_feature { 1 }
+sub PVE::Storage::parse_volume_id { split /:/, $_[0], 2 }
+sub PVE::QemuServer::write_vm_config { '' }
+eval shift @ARGV; die $@ if $@;
+"""
+    result = subprocess.run(["perl", "-e", wrapper, str(Path(__file__).with_name("native_recovery_stub.pm")),
+                             SNAPSHOT_INFO, "101", "", "", "read"],
+                            env={**os.environ, "RECOVERY_STATE": str(state)}, capture_output=True, text=True, timeout=10)
+    assert result.returncode == 0, result.stderr
+    volume = json.loads(result.stdout)["volumes"][0]
+    assert volume.get("size") == (4096 if size == 4096 else None)
+    assert "path" not in volume
 
 
 @pytest.fixture
@@ -98,6 +126,9 @@ def test_snapshot_stream_and_cleanup_use_one_artifact_per_vm(job):
     assert report.artifacts[0]["snapshot_id"] == "snap-1"
     assert report.data["backup_items_total"] == 1
     assert report.data["bytes_processed"] == 10240
+    assert report.data["backup_bytes_total"] == 10240
+    assert report.data["backup_bytes_total_estimated"] is False
+    assert report.data["backup_data_complete"] is True
     assert report.data["completed_guests"] == [101]
     assert report.data["proxmox_progress"]["phase"] == "complete"
     assert report.log.count("~65.5 GiB free; minimum reserve 20 GiB; data 96.17%; metadata 3.55%") == 1
@@ -118,7 +149,45 @@ def test_multiple_vm_snapshots_aggregate_once_and_clean_between_guests(job):
     handler.run_backup(report)
     assert len(exports) == len(report.artifacts) == report.data["backup_items_total"] == 2
     assert report.data["bytes_processed"] == report.data["bytes_total"] == 20480
+    assert report.data["backup_bytes_total"] == 20480
+    assert report.data["backup_data_complete"] is True
     assert report.data["completed_guests"] == [101, 102]
+    assert not snapshots and not backup.proxmox_snapshots.count()
+
+
+@pytest.mark.parametrize("known_size", [False, True])
+@pytest.mark.parametrize("partial_second", [False, True])
+def test_snapshot_job_size_is_refined_and_summary_does_not_confirm_success(job, monkeypatch, known_size, partial_second):
+    handler, report, _, exports, snapshots = job
+    handler.agent.get_proxmox_client().list_qemu_guests = lambda: [{"vmid": 101}, {"vmid": 102}]
+    info = backup.snapshot_info
+    def snapshot_info(vmid, name="", owner="", **kwargs):
+        plan = info(vmid, name, owner, **kwargs)
+        if not kwargs.get("check"):
+            if not name and not known_size:
+                plan["volumes"][0].pop("size")
+            elif vmid == 101:
+                plan["volumes"][0]["size"] = 2048
+        return plan
+    monkeypatch.setattr(backup, "snapshot_info", snapshot_info)
+    save = handler.agent.resticapi.backup_stdin_from_command
+    def stream(*args, **kwargs):
+        first = not exports
+        assert report.data["backup_bytes_total"] == ((6144 if known_size else None) if first else 14336)
+        assert report.data["backup_bytes_total_estimated"] is True
+        assert report.data["bytes_processed"] == (0 if first else 10240)
+        assert report.data["backup_data_complete"] is False
+        status = save(*args, **kwargs)
+        assert report.data["backup_data_complete"] is False
+        if not first and partial_second:
+            raise ResticFailedError("partial backup after summary", snapshot_id=status["snapshot_id"])
+        return status
+    handler.agent.resticapi.backup_stdin_from_command = stream
+    with pytest.raises(ProxmoxError) if partial_second else nullcontext():
+        handler.run_backup(report)
+    assert report.data["backup_bytes_total"] == report.data["bytes_processed"] == 20480
+    assert report.data["backup_bytes_total_estimated"] is False
+    assert report.data["backup_data_complete"] is (not partial_second)
     assert not snapshots and not backup.proxmox_snapshots.count()
 
 
@@ -186,7 +255,9 @@ def test_native_job_progress_uses_logical_sizes_and_keeps_failed_vm_in_total(job
     def save(**kwargs):
         plan = json.loads((Path(kwargs["cwd"]).parent / "view.json").read_text())
         size = sum(volume["size"] for volume in plan["manifest"]["volumes"]) + sum(map(len, view_metadata(plan).values()))
-        totals.append(report.data["proxmox_bytes_total"])
+        totals.append(report.data["backup_bytes_total"])
+        assert report.data["backup_bytes_total_estimated"] is True
+        assert report.data["backup_data_complete"] is False
         processed.append(report.data.get("bytes_processed", 0))
         kwargs["callback"]({"message_type": "status", "bytes_done": size // 2})
         if fail_second and len(totals) == 2:
@@ -206,7 +277,9 @@ def test_native_job_progress_uses_logical_sizes_and_keeps_failed_vm_in_total(job
         assert len(totals) == 2, report.log
         assert processed == [0, totals[0] - 4096]
         assert totals[1] < totals[0]  # Resize corrected, not hidden behind a fixed estimate.
-        assert report.data["proxmox_bytes_total"] == totals[1]
+        assert report.data["backup_bytes_total"] == totals[1]
+        assert report.data["backup_bytes_total_estimated"] is fail_second
+        assert report.data["backup_data_complete"] is (not fail_second)
         if fail_second:
             assert processed[1] < report.data["bytes_processed"] < totals[1]
             assert report.data["failed_guests"][0]["vmid"] == 102
@@ -289,6 +362,8 @@ def test_cleanup_failure_keeps_successful_backup_but_stops_remaining_guests(job,
     assert len(exports) == 1
     assert report.artifacts[0]["state"] == "success"
     assert report.data["partial_failure"] is True
+    assert report.data["backup_data_complete"] is False
+    assert report.data["backup_bytes_total"] == 10240 + 4096
     assert report.data["completed_guests"] == [101]
     assert report.data["failed_guests"] == [{"vmid": 102, "error": "Previous VM snapshot cleanup pending"}]
     assert snapshots and backup.proxmox_snapshots.count() == 1
@@ -306,6 +381,7 @@ def test_stream_failure_or_cancellation_removes_snapshot_and_marks_artifact_fail
         handler.run_backup(report)
     assert report.artifacts[0]["state"] == "failed"
     assert report.artifacts[0]["snapshot_id"] == getattr(error, "snapshot_id", None)
+    assert report.data["backup_data_complete"] is False
     assert not snapshots and not backup.proxmox_snapshots.count()
     assert commands[-1][1] == "delsnapshot"
 

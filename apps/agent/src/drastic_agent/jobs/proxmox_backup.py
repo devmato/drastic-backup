@@ -87,15 +87,18 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 raise ProxmoxError("No supported Proxmox guests matched this job configuration")
             # Preflight every selected guest before any snapshot or data transfer.
             native_plans = {}
+            sizes = {}
             for guest in guests:
                 if mode == "snapshot":
-                    check_thin_pools(snapshot_info(guest["vmid"]), report=report)
+                    plan = snapshot_info(guest["vmid"])
+                    check_thin_pools(plan, report=report)
+                    sizes[f"vm:{guest['vmid']}"] = sum(volume["size"] for volume in plan["volumes"]) if all(volume.get("size") is not None for volume in plan["volumes"]) else None
                 else:
                     native_plans[guest["vmid"]] = preflight(guest["vmid"], config.get("fleecing_storage", ""))
+                    sizes[f"vm:{guest['vmid']}"] = native_plans[guest["vmid"]]["disk_bytes"]
             report.set_data("guests", [guest["vmid"] for guest in guests])
             report.set_data("backup_items_total", len(guests))
-            if native_plans:
-                report.set_data("proxmox_bytes_total", sum(plan["disk_bytes"] for plan in native_plans.values()))
+            report.set_backup_size_estimates(sizes)
             completed, failed = [], []
             for index, guest in enumerate(guests, 1):
                 self._check_cancelled(report)
@@ -146,6 +149,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             if firewall.is_file():
                 plan["firewall"] = firewall.read_text()
             progress.update(phase="backing_up", bytes_total=sum(item["size"] for item in plan["volumes"]), bytes_processed=0)
+            report.set_backup_size_estimates({f"vm:{vmid}": progress["bytes_total"]})
             report.set_data("proxmox_progress", dict(progress))
             artifact = self.start_artifact(f"vm:{vmid}", report=report, data={
                 "vmid": vmid, "guest_name": guest.get("name"), "archive_filename": filename,

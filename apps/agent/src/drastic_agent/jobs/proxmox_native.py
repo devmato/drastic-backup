@@ -136,7 +136,7 @@ def run_native(handler, report, guest, index, info=None):
     storage = handler.job["config"].get("fleecing_storage", "")
     info = dict(info if info is not None else preflight(vmid, storage))
     # Progress estimates are not part of the confirmed CBT source identity.
-    planned_bytes = info.pop("disk_bytes")
+    info.pop("disk_bytes")
     report.log_message(f"VM {vmid}: temporary backup storage {info['fleecing_storage']} ({'configured' if storage else 'automatic'})")
     check_thin_pools({"volumes": info["pools"]}, report=report)
     old_manifest, parent, reason = None, None, "CBT disabled" if mode == "native" else "No confirmed checkpoint"
@@ -250,10 +250,9 @@ def run_native(handler, report, guest, index, info=None):
         artifact = handler.start_artifact(f"vm:{vmid}", report=report, data=details)
         plan = {"manifest": manifest, "sources": [{**v, "dirty": sorted(v["dirty"])} for v in volumes],
                  "config": ready["config"], "firewall": ready.get("firewall"), "metrics": str(work / "metrics.json")}
-        if report.data.get("proxmox_bytes_total") is not None:
-            # Use the frozen export sizes, including the exact metadata Restic reads.
-            logical_bytes = details["disk_bytes"] + sum(len(data) for data in view_metadata(plan).values())
-            report.set_data("proxmox_bytes_total", report.data["proxmox_bytes_total"] - planned_bytes + logical_bytes)
+        # Use the frozen export sizes, including the exact metadata Restic reads.
+        logical_bytes = details["disk_bytes"] + sum(len(data) for data in view_metadata(plan).values())
+        report.set_backup_size_estimates({f"vm:{vmid}": logical_bytes})
         (work / "view.json").write_text(json.dumps(plan))
         # System Python provides FUSE/libnbd, keeping them out of the agent's venv.
         view = subprocess.Popen(["/usr/bin/python3", str(VIEW), str(work / "view.json"), str(work / "mount")],

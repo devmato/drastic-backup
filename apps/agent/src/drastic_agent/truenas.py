@@ -110,7 +110,9 @@ class TrueNASClient:
 
     def datasets(self):
         result = []
-        for item in self.call("pool.dataset.query", [], {"extra": {"flat": True}}):
+        for item in self.call("pool.dataset.query", [], {"extra": {
+            "flat": True, "properties": ["mountpoint", "encryption", "logicalreferenced"],
+        }}):
             name = item["id"]
             try:
                 validate_dataset(name)
@@ -130,8 +132,15 @@ class TrueNASClient:
                         error = "Dataset must be mounted read-only into this agent at its host-root path"
                 except TrueNASError as exc:
                     error = str(exc)
+            size = item.get("logicalreferenced") or {}
+            try:
+                size = size.get("parsed") if size.get("parsed") is not None else size.get("rawvalue")
+                size = int(size) if type(size) in (int, str) else None
+                size = size if size is not None and size >= 0 else None
+            except (AttributeError, TypeError, ValueError, OverflowError):
+                size = None
             result.append({"id": name, "mountpoint": mountpoint, "path": str(local) if local else None,
-                           "available": not error, "error": error})
+                           "available": not error, "error": error, "bytes_estimated": size})
         return sorted(result, key=lambda item: item["id"])
 
     def snapshot_path(self, dataset, name):

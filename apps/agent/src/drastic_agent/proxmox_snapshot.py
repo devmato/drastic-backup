@@ -57,6 +57,10 @@ for my $item (@{PVE::QemuConfig->get_backup_volumes($conf)}) {
         die "Invalid disk size\n" if !$size;
         $entry->{path} = $path;
         $entry->{size} = $size;
+    } else {
+        # Progress metadata is optional; do not prevent a backup if size discovery fails.
+        my ($size) = eval { PVE::Storage::volume_size_info($cfg, $volid, 10) };
+        $entry->{size} = int($size) if defined($size) && $size =~ /^\d+$/ && $size > 0;
     }
     push @volumes, $entry;
 }

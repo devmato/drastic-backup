@@ -92,7 +92,9 @@ def nas(state, tmp_path, monkeypatch):
         if method == "system.host_id":
             return "nas-id"
         if method == "pool.dataset.query":
-            return [{"id": name, "type": "FILESYSTEM", "mountpoint": f"/mnt/{name}", "locked": False} for name in controls["datasets"]]
+            assert params == ([], {"extra": {"flat": True, "properties": ["mountpoint", "encryption", "logicalreferenced"]}})
+            return [{"id": name, "type": "FILESYSTEM", "mountpoint": f"/mnt/{name}", "locked": False,
+                     "logicalreferenced": controls.get("sizes", {}).get(name)} for name in controls["datasets"]]
         if method == "pool.snapshot.create":
             config = params[0]
             source = root / "mnt" / config["dataset"]
@@ -168,6 +170,7 @@ def test_missing_mount_or_cancellation_never_backs_up_live_data_and_cleans_up(na
     with pytest.raises(ResticCancelledError if cancel else TrueNASError):
         handler.run_backup(report)
     assert not snapshots and not artifacts and not state["snapshots"].count()
+    assert report.data["backup_data_complete"] is False
 
 
 def test_cleanup_survives_failure_checks_ownership_and_recovers(nas, state, monkeypatch):
@@ -262,13 +265,16 @@ def test_recursive_selection_rejects_unavailable_sources_before_snapshots(nas, s
     assert not artifacts and not snapshots and state["snapshots"].count() == 0
 
 
-@pytest.mark.parametrize("fail_first", [False, True])
-def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, state, monkeypatch, fail_first):
-    api, controls, _, snapshots, live = nas
+@pytest.mark.parametrize("failure", [None, "before_scan", "after_summary"])
+@pytest.mark.parametrize("estimated", [False, True])
+def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, state, monkeypatch, failure, estimated):
+    api, controls, calls, snapshots, live = nas
     other = live.parent / "other"
     other.mkdir()
     (other / "example.txt").write_text("other content")
     controls["datasets"].append("tank/other")
+    if estimated:
+        controls["sizes"] = {"tank/data": {"parsed": 900}, "tank/other": {"rawvalue": "20"}}
     report = AgentReport.command_report()
     monkeypatch.setattr(base_module, "agent_operation_artifacts", state["artifacts"])
 
@@ -277,27 +283,69 @@ def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, sta
         size = 1000 if first else 10
         assert report.artifacts[-1]["state"] == "running"
         assert report.data["backup_progress"]["total_known"] is False
-        kwargs["callback"]({"message_type": "status", "bytes_done": 5})
-        if first and fail_first:
+        expected_total = (920 if first or failure == "before_scan" else 1020) if estimated else None
+        assert report.data["backup_bytes_total"] == expected_total
+        assert report.data["backup_bytes_total_estimated"] is True
+        assert report.data["backup_data_complete"] is False
+        assert report.data["bytes_processed"] == (0 if first else 5 if failure == "before_scan" else 1000)
+        assert kwargs["callback"].__self__ is report
+        callback = kwargs["callback"]
+        callback(None, pid=123)
+        assert report.data["pid"] == 123
+        callback({"message_type": "status", "bytes_done": 5})
+        if first and failure == "before_scan":
             raise OSError("read failed")
-        kwargs["callback"]({"message_type": "verbose_status", "action": "scan_finished", "data_size": size, "total_files": 1})
-        # No callback for the summary: the returned summary must still be processed.
-        return {"message_type": "summary", "snapshot_id": str(size), "total_bytes_processed": size, "total_files_processed": 1}
+        callback({"message_type": "verbose_status", "action": "scan_finished", "data_size": size, "total_files": 1})
+        if first:
+            assert report.data["backup_bytes_total"] == (1020 if estimated else None)
+        summary = {"message_type": "summary", "snapshot_id": str(size), "total_bytes_processed": size, "total_files_processed": 1}
+        # First summary arrives twice; second only as the return value.
+        if first:
+            callback(summary)
+            if failure == "after_summary":
+                raise OSError("partial backup after summary")
+        callback(None, pid=None)
+        assert "pid" not in report.data
+        return summary
 
     restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=backup)
     handler, _ = make_handler(api, restic)
     del handler.start_artifact, handler.finish_artifact
     handler.operation = {"id": 1}
     handler.job["config"]["datasets"] = controls["datasets"]
-    with pytest.raises(TrueNASError, match="tank/data") if fail_first else nullcontext():
+    with pytest.raises(TrueNASError, match="tank/data") if failure else nullcontext():
         handler.run_backup(report)
-    assert report.data["bytes_processed"] == (15 if fail_first else 1010)
-    assert report.data["bytes_total"] == (None if fail_first else 1010)
+    assert report.data["bytes_processed"] == (15 if failure == "before_scan" else 1010)
+    assert report.data["bytes_total"] == (None if failure == "before_scan" else 1010)
+    assert report.data["backup_bytes_total"] == ((910 if estimated else None) if failure == "before_scan" else 1010)
+    assert report.data["backup_bytes_total_estimated"] is (failure == "before_scan")
+    assert report.data["backup_data_complete"] is (failure is None)
     assert report.data["current_files"] == []
     assert report.data["truenas_progress"]["phase"] == "cleanup"
     assert len(report.artifacts) == 2
-    assert report.artifacts[0]["state"] == ("failed" if fail_first else "success")
+    assert report.artifacts[0]["state"] == ("failed" if failure else "success")
     assert not snapshots
+    assert len(calls) == 12  # Same API calls as before progress estimates; no size-query roundtrips.
+
+
+@pytest.mark.parametrize("value, expected", [
+    ({"parsed": 123}, 123), ({"rawvalue": "0"}, 0), ({"parsed": None, "rawvalue": "42"}, 42),
+    (None, None), ({"parsed": -1}, None), ({"rawvalue": "invalid"}, None),
+    ({"parsed": True}, None), ({"parsed": 1.5}, None), ("invalid", None),
+])
+def test_dataset_size_metadata_is_optional_and_locked_sources_stay_unavailable(nas, monkeypatch, value, expected):
+    api, controls, _, _, _ = nas
+    controls["sizes"] = {"tank/data": value}
+    assert api.datasets()[0]["bytes_estimated"] == expected
+    call = api.call
+    def locked_call(method, *params):
+        result = call(method, *params)
+        if method == "pool.dataset.query":
+            result[0]["locked"] = True
+        return result
+    monkeypatch.setattr(api, "call", locked_call)
+    assert api.datasets()[0]["available"] is False
+    assert api.datasets()[0]["error"] == "Dataset is locked"
 
 
 def test_mount_detection_requires_exact_dataset_and_unescapes_paths(monkeypatch, tmp_path):

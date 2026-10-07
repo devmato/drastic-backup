@@ -166,6 +166,7 @@ def test_repository_stats_failure_marks_completed_backup_warning(monkeypatch):
 
     assert report.final_state == AgentReportState.warning
     assert any("stats failed" in line for line in report.log_list)
+    assert report.data["backup_data_complete"] is True
 
 
 def test_backup_job_uses_server_operation_uuid(monkeypatch):
@@ -220,6 +221,7 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
         assert handler.report.state == AgentReportState.running
         assert handler.report.data["backup_phase"] == expected
         assert handler.report.artifacts[0]["state"] == "success"
+        assert handler.report.data["backup_data_complete"] is True
         phases.append(expected)
 
     def check(**kwargs):
@@ -316,6 +318,7 @@ def test_backup_failure_skips_retention(monkeypatch):
 
     assert report.final_state == AgentReportState.failed
     assert any("Error during backup" in line for line in report.log_list)
+    assert report.data["backup_data_complete"] is False
 
 
 def test_start_hook_failure_prevents_backup_and_runs_error_and_end(monkeypatch):

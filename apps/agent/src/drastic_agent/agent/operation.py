@@ -71,6 +71,7 @@ class AgentOperation:
         self.data = data if data is not None else {}
         self.artifacts = []
         self._backup_stats = {}
+        self._backup_size_estimates = {}
         self._backup_artifact_key = None
         self._logs = []
         self._log_cursor = 0
@@ -269,6 +270,25 @@ class AgentOperation:
             }
             self._publish_backup_progress()
 
+    def set_backup_size_estimates(self, sizes):
+        """Use cheap source metadata until Restic supplies each artifact's real size."""
+        with self._lock:
+            self._backup_size_estimates.update(sizes)
+            self._publish_backup_totals()
+
+    def _publish_backup_totals(self):
+        stats = list(self._backup_stats.values())
+        expected = self.data.get("backup_items_total", 1)
+        total_known = len(stats) == expected and all(item["total_known"] for item in stats)
+        for key in ("bytes_total", "files_total"):
+            self.set_data(key, sum(item[key] for item in stats) if total_known else None)
+        sizes = {**self._backup_size_estimates,
+                 **{key: item["bytes_total"] for key, item in self._backup_stats.items() if item["total_known"]}}
+        self.set_data("backup_bytes_total", sum(sizes.values()) if len(sizes) == expected and all(size is not None for size in sizes.values()) else None)
+        self.set_data("backup_bytes_total_estimated", not total_known)
+        if "backup_data_complete" not in self.data:
+            self.set_data("backup_data_complete", False)
+
     def _publish_backup_progress(self):
         """Replace cumulative counters per artifact; never add the same summary twice."""
         current = self._backup_stats[self._backup_artifact_key]
@@ -279,9 +299,7 @@ class AgentOperation:
                     "dirs_new", "dirs_changed", "dirs_unmodified", "data_added", "data_added_packed", "duration"):
             if any(key in item for item in stats):
                 self.set_data(key, sum(item.get(key, 0) for item in stats))
-        total_known = len(stats) == self.data.get("backup_items_total", 1) and all(item["total_known"] for item in stats)
-        for key in ("bytes_total", "files_total"):
-            self.set_data(key, sum(item[key] for item in stats) if total_known else None)
+        self._publish_backup_totals()
         if self.data.get("backup_items_total", 1) == 1 and current.get("snapshot_id"):
             self.set_data("snapshot_id", current["snapshot_id"])
         else:

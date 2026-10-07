@@ -49,6 +49,9 @@ def test_file_backup_summary_sets_final_totals(previous_status, total_bytes, tot
     assert report.data["files_total"] == report.data["files_processed"] == total_files
     assert report.data["data_added"] == total_bytes
     assert report.data["data_added_packed"] == total_bytes // 2
+    assert report.data["backup_bytes_total"] == total_bytes
+    assert report.data["backup_bytes_total_estimated"] is False
+    assert report.data["backup_data_complete"] is False  # A summary alone does not confirm success.
 
 
 def test_backup_progress_requires_finished_scan_and_aggregates_artifacts_once():
@@ -95,3 +98,22 @@ def test_failed_unscanned_artifact_keeps_job_total_unknown():
     assert report.data["bytes_processed"] == 5
     assert report.data["bytes_total"] is None
     assert report.data["backup_progress"]["bytes_total"] == 0
+
+
+def test_size_estimates_are_corrected_without_losing_unstarted_or_failed_artifacts():
+    report = AgentReport(type=AgentOperationType.backup, persist=False)
+    report.set_data("backup_items_total", 2)
+    report.set_backup_size_estimates({"vm:large": 1000, "vm:small": 100})
+    assert report.data["backup_bytes_total"] == 1100
+    assert report.data["bytes_total"] is None
+    assert report.data["backup_bytes_total_estimated"] is True
+    report.begin_backup_artifact("vm:large")
+    report.process_backup_status({"message_type": "summary", "total_bytes_processed": 2000})
+    assert report.data["backup_bytes_total"] == 2100
+    report.set_backup_size_estimates({"vm:small": 200})
+    assert report.data["backup_bytes_total"] == 2200
+    report.begin_backup_artifact("vm:small")
+    report.process_backup_status({"message_type": "status", "bytes_done": 50})
+    assert report.data["bytes_processed"] == 2050
+    assert report.data["backup_bytes_total"] == 2200
+    assert report.data["backup_data_complete"] is False

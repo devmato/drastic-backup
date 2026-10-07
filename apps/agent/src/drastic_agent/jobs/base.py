@@ -239,6 +239,9 @@ class BackupJobHandler:
             self._artifact_payload(artifact)
             for artifact in agent_operation_artifacts.find(operation_id=self.operation["id"])
         )
+        report.set_data("backup_data_complete", len(report.artifacts) == report.data.get("backup_items_total", 1)
+                        and all(artifact["state"] == AgentOperationState.success.name and artifact["snapshot_id"]
+                                for artifact in report.artifacts))
         report.sent = False
 
     def _artifact_payload(self, artifact):

@@ -79,6 +79,9 @@ class TrueNASBackupJobHandler(BackupJobHandler):
             name = f"drastic-{report.uuid}"
             paths = []
             report.set_data("backup_items_total", len(selected))
+            # ponytail: ZFS logical sizes are estimates (metadata, sparse files, exclusions);
+            # refine from Restic's existing scan instead of adding a filesystem walk.
+            report.set_backup_size_estimates({f"dataset:{dataset['id']}": dataset.get("bytes_estimated") for dataset in selected})
             report.set_data("truenas_progress", {"phase": "snapshots", "datasets_total": len(selected)})
             for dataset in selected:
                 self._check_cancelled(report)
