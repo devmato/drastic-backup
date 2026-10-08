@@ -261,6 +261,9 @@ class Agent:
         self.__repository_passwords = {}
         self.__secret_values = {}
         self.__shutdown_event = Event()
+        self.__connect_requested = Event()
+        self.__connect_requested.set()
+        self.__sync_pending = Event()
         self.__execution = ExecutionManager()
         self._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
         from drastic_agent.services.diagnostics import install_log
@@ -453,6 +456,7 @@ class Agent:
 
     def __start_scheduler(self):
         sleep_time = 0.1
+        next_sync_attempt = 0
 
         while not self.__shutdown_event.wait(sleep_time):
             now = datetime.now()
@@ -467,7 +471,16 @@ class Agent:
                 except Exception:
                     logging.exception("Restore workspace cleanup failed")
 
-            if not self.__check_update():
+            if self.connected and self.__sync_pending.is_set() and monotonic() >= next_sync_attempt:
+                self.__sync_pending.clear()
+                self._debug_scheduler["phase"] = "sync"
+                if self.cmd_sync().state == AgentReportState.failed:
+                    self.__sync_pending.set()
+                    next_sync_attempt = monotonic() + 15
+                continue
+
+            # Online schedules must use refreshed config; offline schedules keep using the cache.
+            if not self.__check_update() and not (self.connected and self.__sync_pending.is_set()):
                 self._debug_scheduler["phase"] = "schedules"
                 self.__run_due_schedules(now)
                 if monotonic() >= getattr(self, "_next_retention_retry", 0):
@@ -759,7 +772,7 @@ class Agent:
             })
 
     def __maintain_server_connection(self, now):
-        if self.connected:
+        if self.__shutdown_event.is_set() or self.connected:
             return
 
         if not self.configured:
@@ -781,7 +794,8 @@ class Agent:
 
         self.__not_configured_logged = False
 
-        if now < self.__next_reconnect_attempt_at:
+        # Socket.IO owns transport reconnects; only bootstrap/server disconnects come here.
+        if not self.__connect_requested.is_set() or now < self.__next_reconnect_attempt_at:
             return
 
         self.__next_reconnect_attempt_at = now + self.__reconnect_retry_interval
@@ -805,12 +819,8 @@ class Agent:
                     ),
                 )
             except Exception as exc:
-                logging.warning(f"Agent request '{__action}' failed: {exc}")
-                try:
-                    self.client.disconnect()
-                except Exception:
-                    pass
-                self.client = None
+                # A timed-out call may belong to an already recovered connection.
+                logging.warning("Agent request '%s' failed (%s): %s", __action, type(exc).__name__, exc)
 
         return {"success": False, "result": {}}
 
@@ -1188,17 +1198,20 @@ class Agent:
         return report.data.get("pid")
 
     def __create_client(self):
-        client = socketio.Client(logger=False, engineio_logger=False, reconnection=False)
+        client = socketio.Client(logger=False, engineio_logger=False)
 
         @client.event(namespace="/agent")
         def connect():
+            self.__sync_pending.set()
             logging.info("Connected to server")
             diagnostics.record("connection.connected", {})
 
         @client.event(namespace="/agent")
-        def disconnect():
-            logging.warning("Disconnected from server")
-            diagnostics.record("connection.disconnected", {})
+        def disconnect(reason):
+            if reason == client.reason.SERVER_DISCONNECT:
+                self.__connect_requested.set()
+            logging.warning("Disconnected from server: %s", reason)
+            diagnostics.record("connection.disconnected", {"reason": reason})
 
         @client.event(namespace="/agent")
         def connect_error(data=None):
@@ -1457,6 +1470,8 @@ class Agent:
         return getattr(self, prefixed_command)(**command_args)
 
     def __connect(self):
+        if self.__shutdown_event.is_set():
+            return False
         if not self.configured:
             if not self.__not_configured_logged:
                 logging.info(
@@ -1468,19 +1483,24 @@ class Agent:
         if self.connected:
             return True
 
+        if not self.__connect_requested.is_set():
+            return False
+        self.__connect_requested.clear()
+
         if self.client:
             try:
-                self.client.disconnect()
+                self.client.shutdown()
             except Exception:
                 pass
             self.client = None
 
-        client = self.__create_client()
+        client = self.client = self.__create_client()
 
         try:
-            client.connect(self.__server, auth=self.authdata, namespaces=["/agent"])
-            self.client = client
-            self.cmd_sync()
+            client.connect(self.__server, auth=lambda: self.authdata, namespaces=["/agent"])
+            if self.__shutdown_event.is_set():
+                client.shutdown()
+                return False
             return True
         except ConnectionError as exc:
             logging.warning(f"Could not connect to server {self.__server}: {exc}")
@@ -1488,9 +1508,11 @@ class Agent:
             logging.warning(f"Unexpected agent connection error: {exc}")
 
         try:
-            client.disconnect()
+            client.shutdown()
         except Exception:
             pass
+        self.client = None
+        self.__connect_requested.set()
 
         return False
 
@@ -1671,13 +1693,13 @@ class Agent:
     def shutdown(self):
         logging.info("Shutting down...")
 
-        AgentReport.cancel_running()
         if hasattr(self, "_Agent__shutdown_event"):
             self.__shutdown_event.set()
+        AgentReport.cancel_running()
 
         if self.client:
             try:
-                self.client.disconnect()
+                self.client.shutdown()
             except Exception:
                 pass
 

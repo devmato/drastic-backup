@@ -8,8 +8,10 @@ import subprocess
 from datetime import datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
+import socketio
 
 import drastic_agent.agent.agent as agent_module
 from drastic_agent.agent.agent import Agent
@@ -36,6 +38,10 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__schedule_run_slots = {}
     agent._Agent__repository_passwords = {}
     agent._Agent__secret_values = {}
+    agent._Agent__shutdown_event = Event()
+    agent._Agent__connect_requested = Event()
+    agent._Agent__connect_requested.set()
+    agent._Agent__sync_pending = Event()
     agent._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
     return agent
 
@@ -551,6 +557,99 @@ def test_maintain_server_connection_retries_registration_and_connects(monkeypatc
     ]
 
 
+def test_failed_initial_connection_and_server_disconnect_retry_on_schedule(monkeypatch):
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    clients = []
+
+    def connect(client, *args, **kwargs):
+        clients.append(client)
+        if len(clients) == 1:
+            raise socketio.exceptions.ConnectionError("server unavailable")
+        client.connected = True
+        client.handlers["/agent"]["connect"]()
+
+    monkeypatch.setattr(socketio.Client, "connect", connect)
+    now = datetime.now()
+    agent._Agent__maintain_server_connection(now)
+    assert not agent.connected
+    agent._Agent__maintain_server_connection(now + timedelta(seconds=1))
+    assert len(clients) == 1
+    agent._Agent__maintain_server_connection(now + timedelta(seconds=15))
+    assert agent.connected
+
+    client = agent.client
+    client.connected = False
+    client.handlers["/agent"]["disconnect"](client.reason.SERVER_DISCONNECT)
+    agent._Agent__maintain_server_connection(now + timedelta(seconds=16))
+    assert len(clients) == 2
+    agent._Agent__maintain_server_connection(now + timedelta(seconds=30))
+    assert agent.connected
+    assert len(clients) == 3
+    agent.client.shutdown()
+
+
+@pytest.mark.parametrize(("outcome", "sync_times", "prefix"), [
+    ("reconnect", [0, 0], ["sync", "sync"]),
+    ("failed", [0, 15], ["sync", "reports", "reports", "sync"]),
+    ("warning", [0], ["sync"]),
+    ("offline", [], []),
+])
+def test_scheduler_syncs_before_schedules_and_retries_failures(monkeypatch, outcome, sync_times, prefix):
+    agent = build_agent()
+    agent.client = agent._Agent__create_client()
+    calls, attempts = [], []
+    clock = 0
+
+    def sync():
+        calls.append("sync")
+        attempts.append(clock)
+        if len(attempts) == 1 and outcome == "reconnect":
+            # A second connection arriving during sync must not be forgotten.
+            agent.client.handlers["/agent"]["connect"]()
+        state = AgentReportState[outcome] if len(attempts) == 1 and outcome in {"failed", "warning"} else AgentReportState.success
+        return SimpleNamespace(state=state)
+
+    def flush():
+        nonlocal clock
+        calls.append("reports")
+        assert len(calls) < 10  # Bound the test if a regression leaves sync permanently pending.
+        if agent._Agent__sync_pending.is_set():
+            clock = 14 if clock == 0 else 15
+        else:
+            agent._Agent__shutdown_event.set()
+
+    monkeypatch.setattr(agent, "cmd_sync", sync)
+    monkeypatch.setattr(agent_module, "monotonic", lambda: clock)
+    monkeypatch.setattr(agent, "_Agent__check_update", lambda: False)
+    monkeypatch.setattr(agent, "_Agent__run_due_schedules", lambda now: calls.append("schedules"))
+    monkeypatch.setattr(agent, "_Agent__retry_retention", lambda: calls.append("retention"))
+    monkeypatch.setattr(agent, "_Agent__maintain_server_connection", lambda now: agent._Agent__shutdown_event.set())
+    monkeypatch.setattr(agent, "_Agent__flush_report_queue", flush)
+    agent._next_restore_cleanup = agent._next_diagnostics = float("inf")
+    agent.client.handlers["/agent"]["connect"]()
+    assert not calls  # Connect callback performs no blocking work.
+    agent.client.connected = outcome != "offline"
+    agent._Agent__start_scheduler()
+    assert attempts == sync_times
+    assert calls == prefix + ["schedules", "retention"] + ([] if outcome == "offline" else ["reports"])
+    agent.client.shutdown()
+
+
+def test_shutdown_stops_client_and_prevents_connection_attempts(monkeypatch):
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    agent.client = SimpleNamespace(connected=False, shutdown=Mock())
+    connect = Mock()
+    monkeypatch.setattr(agent, "_Agent__connect", connect)
+    monkeypatch.setattr(AgentReport, "cancel_running", lambda: None)
+    monkeypatch.setattr(AgentReport, "save_queue", lambda: None)
+    monkeypatch.setattr("drastic_agent.services.proxmox_restore.cleanup_workspaces", lambda **kwargs: None)
+    agent.shutdown()
+    assert agent._Agent__shutdown_event.is_set()
+    agent.client.shutdown.assert_called_once_with()
+    agent._Agent__maintain_server_connection(datetime.now())
+    connect.assert_not_called()
+
+
 def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     started_jobs = []
@@ -602,7 +701,7 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
     ]
 
 
-def test_send_report_stays_pending_when_request_fails(monkeypatch):
+def test_report_timeout_after_reconnect_keeps_connection_and_report_pending(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -610,13 +709,26 @@ def test_send_report_stays_pending_when_request_fails(monkeypatch):
     report = AgentReport.job_report(job_id=1, repository_id=2)
     report.log_message("starting backup")
 
-    monkeypatch.setattr(
-        agent,
-        "_Agent__send_request",
-        lambda action, **kwargs: {"success": False, "result": {}},
-    )
+    client = agent.client = agent._Agent__create_client()
+    assert client.reconnection
+    client.connected = True
+    agent._Agent__connect_requested.clear()
+    connect = Mock()
+    monkeypatch.setattr(agent, "_Agent__connect", connect)
+
+    def interrupted_call(*args, **kwargs):
+        client.connected = False
+        client.handlers["/agent"]["disconnect"](client.reason.TRANSPORT_ERROR)
+        agent._Agent__maintain_server_connection(datetime.now())
+        client.connected = True
+        client.handlers["/agent"]["connect"]()
+        raise socketio.exceptions.TimeoutError()  # Old request expires after recovery.
+
+    monkeypatch.setattr(client, "call", interrupted_call)
 
     assert Agent._Agent__send_report(agent, report) is False
+    connect.assert_not_called()
+    assert agent.client is client and agent.connected
     assert report.sent is False
     assert report.log.endswith("starting backup")
 
