@@ -62,7 +62,6 @@ from drastic_agent.proxmox import (
 from drastic_agent.services.restore import RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASClient, TrueNASError
-from drastic_agent.version import agent_version
 from drastic_common import diagnostics
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
@@ -85,6 +84,7 @@ from drastic_common.secret_envelope import (
 )
 from drastic_common.ssh_keys import generate_ssh_keypair
 from drastic_common.truenas import TrueNASSettingsSchema, validate_api_key
+from drastic_common.version import get_version as agent_version
 
 AGENT_INSTALL_ROOT = Path("/opt/drastic-agent")
 AGENT_COMMAND = AGENT_INSTALL_ROOT / "bin/drastic-agent"

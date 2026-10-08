@@ -4,6 +4,7 @@ import pytest
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.secret_envelope import decrypt_with_private_key, generate_agent_keypair
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
+from drastic_common.version import get_version
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.app import create_app
 from drastic_server.extensions import db, socketio
@@ -65,6 +66,7 @@ def test_agent_alias_can_be_set_offline_and_cleared_with_validated_owner_access(
     db.session.commit()
     response = client.put(url, json={"alias": "  Home server  "})
     assert response.status_code == 200
+    assert response.json["backend_version"] == get_version()
     assert response.json["online"] is False
     assert response.json["alias"] == response.json["display_name"] == "Home server"
     assert response.json["hostname"] == "backup-host"

@@ -25,7 +25,7 @@ docker compose -f docker-compose.yaml up -d
 
 Open the backend address in a browser to reach the web UI; `/` redirects to `/app/`. `DRASTIC_PUBLIC_URL` is optional; if it is empty, the install page derives displayed URLs from the browser's current origin.
 
-The server and Docker agent use the published GHCR `latest` images by default; `latest` is updated only for releases, not `develop` pushes. Official images support `linux/amd64` and `linux/arm64`. To pin a version or roll back, set `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE` to the same explicit release tag (for example `v0.1.0`), including `DRASTIC_AGENT_IMAGE` on the server for Docker install snippets. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
+The server and Docker agent use the published GHCR `latest` images by default; `latest` is updated only for releases, not `develop` pushes. Official images support `linux/amd64` and `linux/arm64`. To pin a version or roll back, set `DRASTIC_SERVER_IMAGE` and `DRASTIC_AGENT_IMAGE` to the same explicit release tag (for example `2026-10-08-a1b2c3d4`), including `DRASTIC_AGENT_IMAGE` on the server for Docker install snippets. The integrated rest-server is independently pinned with `DRASTIC_REST_SERVER_VERSION` so upgrades are intentional.
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 

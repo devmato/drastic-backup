@@ -9,6 +9,7 @@ from drastic_common.agent.enums import (
 from drastic_common.agent.schemas import AgentOperationSchema, UTCDateTime
 from drastic_common.proxmox import ProxmoxSettingsSchema, validate_proxmox_token_secret
 from drastic_common.truenas import AgentConnectionsSchema, TrueNASSettingsSchema, validate_api_key
+from drastic_common.version import get_version
 from drastic_server.schemas.repository import RepositoryResponseSchema
 
 _OPERATION_TYPE_NAMES = tuple(AgentOperationType.__members__)
@@ -26,6 +27,7 @@ class AgentResponseSchema(Schema):
     display_name = fields.String(required=True)
     os = fields.String(allow_none=True)
     version = fields.String(allow_none=True)
+    backend_version = fields.Function(lambda _: get_version())
     protocol_version = fields.Integer(required=True)
     connections = fields.Nested(AgentConnectionsSchema, allow_none=True)
     install_type = fields.String(required=True)

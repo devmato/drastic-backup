@@ -26,9 +26,9 @@ REGISTRY=${REGISTRY#http://}
 REGISTRY=${REGISTRY#https://}
 NAMESPACE=$(printf '%s' "$NAMESPACE" | tr '[:upper:]' '[:lower:]')
 IMAGE="$REGISTRY/$NAMESPACE/$IMAGE_NAME"
-SHORT_SHA=${GITHUB_SHA::12}
+VERSION=$(python3 "$CONTEXT/libs/python/common/src/drastic_common/version.py" --source "$CONTEXT")
 
-TAGS=("$IMAGE:$SHORT_SHA")
+TAGS=("$IMAGE:$VERSION")
 
 case "${GITHUB_REF_TYPE:-}" in
     branch)
@@ -36,8 +36,11 @@ case "${GITHUB_REF_TYPE:-}" in
         TAGS+=("$IMAGE:$SAFE_BRANCH")
         ;;
     tag)
-        VERSION=${GITHUB_REF_NAME#v}
-        TAGS+=("$IMAGE:${GITHUB_REF_NAME}" "$IMAGE:$VERSION" "$IMAGE:latest")
+        if [[ "$GITHUB_REF_NAME" != "$VERSION" ]]; then
+            echo "Release tag $GITHUB_REF_NAME does not match source version $VERSION." >&2
+            exit 1
+        fi
+        TAGS+=("$IMAGE:latest")
         ;;
 esac
 
@@ -48,13 +51,13 @@ for tag in "${TAGS[@]}"; do
     BUILD_TAGS+=("-t" "$tag")
 done
 
-BUILD_ARGS=()
+BUILD_ARGS=(--build-arg "DRASTIC_VERSION=$VERSION")
 if [[ "$DOCKERFILE" = apps/agent/Dockerfile ]]; then
     AGENT_REF=main
     if [[ "${GITHUB_REF_TYPE:-}" = branch ]]; then
         AGENT_REF=${GITHUB_REF_NAME:?GITHUB_REF_NAME is required.}
     fi
-    BUILD_ARGS=(--build-arg "DRASTIC_AGENT_REF=$AGENT_REF" --build-arg "DRASTIC_AGENT_COMMIT=$GITHUB_SHA")
+    BUILD_ARGS+=(--build-arg "DRASTIC_AGENT_REF=$AGENT_REF" --build-arg "DRASTIC_AGENT_COMMIT=$GITHUB_SHA")
 fi
 
 if [[ -n "${CONTAINER_PLATFORMS:-}" ]]; then

@@ -102,6 +102,11 @@ def repository(tmp_path):
     (repo / "version").write_text("one")
     (repo / "scripts").mkdir()
     (repo / "scripts/drastic-agent-installer.py").write_text("# test lifecycle manager\n")
+    version_script = Path(__file__).resolve().parents[3] / "libs/python/common/src/drastic_common/version.py"
+    target = repo / "libs/python/common/src/drastic_common/version.py"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(version_script.read_bytes())
+    (repo / ".gitignore").write_text("build-version.txt\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.net",
                     "commit", "-m", "test: initial"], check=True, capture_output=True)
@@ -116,6 +121,10 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     root = installer.ROOT
     identity = (root / "data/config.ini").read_bytes()
     old = (root / "current").resolve()
+    stamp = old / "source/libs/python/common/src/drastic_common/build-version.txt"
+    installed_version = stamp.read_text().strip()
+    assert installed_version.endswith(installer.read_state()["commit"][:8])
+    assert installer.read_state()["version"] == installed_version
     env = root / "drastic-agent.env"
     env.write_text(env.read_text() + "DRASTIC_PROXMOX_TOKEN_SECRET=keep-me\n")
     assert service["active"] and service["enabled"]
@@ -134,6 +143,7 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     with pytest.raises(RuntimeError, match="failed to start"):
         installer.install(arguments("update", server=None))
     assert (root / "current").resolve() == old
+    assert stamp.read_text().strip() == installed_version
     assert service["active"] and service["enabled"]
     assert list((root / "releases").iterdir()) == [old]
     assert (root / "data/config.ini").read_bytes() == identity
@@ -345,6 +355,7 @@ def test_branch_updates_follow_remote_and_build_failure_keeps_service(installer,
     subprocess.run(["git", "-C", str(repository), "checkout", "-b", "develop"], check=True)
     installer.install(arguments(repository=str(repository), ref="develop"))
     old_commit = installer.read_state()["commit"]
+    old_version = installer.read_state()["version"]
     (repository / "version").write_text("two")
     subprocess.run(["git", "-C", str(repository), "add", "version"], check=True)
     subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
@@ -353,6 +364,8 @@ def test_branch_updates_follow_remote_and_build_failure_keeps_service(installer,
     subprocess.run(["git", "-C", str(repository), "checkout", "main"], check=True)
     installer.install(arguments("update", server=None))
     assert installer.read_state()["commit"] != old_commit
+    assert installer.read_state()["version"] != old_version
+    assert installer.read_state()["version"].endswith(installer.read_state()["commit"][:8])
     assert installer.read_state()["ref"] == "develop"
     current = (installer.ROOT / "current").resolve()
     with pytest.raises(subprocess.CalledProcessError):
@@ -360,6 +373,19 @@ def test_branch_updates_follow_remote_and_build_failure_keeps_service(installer,
     assert (installer.ROOT / "current").resolve() == current
     assert list((installer.ROOT / "releases").iterdir()) == [current]
     assert service["active"]
+
+
+def test_local_source_preserves_dirty_version_without_git(installer, monkeypatch, repository):
+    mock_runtime(installer, monkeypatch)
+    project = repository / "apps/agent/pyproject.toml"
+    project.parent.mkdir(parents=True)
+    project.touch()
+    installer.install(arguments(source=str(repository)))
+    release = (installer.ROOT / "current").resolve()
+    assert not (release / "source/.git").exists()
+    stamp = release / "source/libs/python/common/src/drastic_common/build-version.txt"
+    assert stamp.read_text().strip() == installer.read_state()["version"]
+    assert installer.read_state()["version"].endswith(installer.read_state()["commit"][:8] + "-dirty")
 
 
 def test_preserved_identity_cannot_be_moved_to_another_server(installer):

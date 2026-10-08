@@ -147,7 +147,7 @@ def data_directory():
 def installation_settings(state):
     settings = {'DRASTIC_ENV': os.environ.get('DRASTIC_ENV', 'prod') if CONTAINER else 'prod',
                 'DRASTIC_AGENT_DATA_DIR': str(data_directory()), 'DRASTIC_AGENT_INSTALL_SOURCE': 'git',
-                'DRASTIC_AGENT_INSTALL_VERSION': state['ref'], 'DRASTIC_AGENT_INSTALL_REF': state['commit'],
+                'DRASTIC_AGENT_INSTALL_VERSION': state.get('version', 'unknown'), 'DRASTIC_AGENT_INSTALL_REF': state['commit'],
                 'XDG_CACHE_HOME': str(ROOT / 'cache'), 'RESTIC_CACHE_DIR': str(ROOT / 'cache/restic')}
     if state.get('server'):
         settings['DRASTIC_SERVER'] = state['server']
@@ -246,11 +246,18 @@ def prepare_release(args, state):
             commit = run('git', '-C', source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
         if not (source / 'scripts/drastic-agent-installer.py').is_file():
             fail('This Git ref does not contain the native lifecycle manager.')
+        version_script = source / 'libs/python/common/src/drastic_common/version.py'
+        version = 'unknown'
+        if version_script.is_file():
+            run(sys.executable, version_script, '--source', args.source or source,
+                '--output', version_script.with_name('build-version.txt'))
+            version = version_script.with_name('build-version.txt').read_text().strip()
         environment = {**os.environ, 'UV_CACHE_DIR': str(ROOT / 'cache/uv'),
                        'UV_PYTHON_INSTALL_DIR': str(ROOT / 'tools/python'),
                        'UV_PROJECT_ENVIRONMENT': str(release / 'venv')}
         run(ROOT / 'tools/bin/uv', 'sync', '--project', source / 'apps/agent', '--frozen',
-            '--no-dev', '--no-editable', '--python', sys.executable, env=environment)
+            '--no-dev', '--no-editable', '--refresh-package', 'drastic-agent',
+            '--refresh-package', 'drastic-common', '--python', sys.executable, env=environment)
         run(release / 'venv/bin/drastic-agent', '--help', stdout=subprocess.DEVNULL)
         if CONTAINER:
             run(sys.executable, source / 'scripts/drastic-agent-installer.py', 'run', '--help',
@@ -263,7 +270,7 @@ def prepare_release(args, state):
                 if CONTAINER:
                     raise
                 print(f'Optional dependencies were not installed: {exc}. Continuing agent installation.', file=sys.stderr)
-        new_state = {'repository': repository, 'ref': ref, 'commit': commit}
+        new_state = {'repository': repository, 'ref': ref, 'commit': commit, 'version': version}
         if CONTAINER:
             new_state['deployment'] = 'docker'
         return release, new_state
@@ -409,6 +416,8 @@ def initialize_image(args):
     ROOT.chmod(0o700)
     check_owned()
     state = {'deployment': 'docker', 'repository': args.repository, 'ref': args.ref, 'commit': args.commit}
+    stamp = ROOT / 'releases/image/source/libs/python/common/src/drastic_common/build-version.txt'
+    state['version'] = stamp.read_text().strip() if stamp.is_file() else 'unknown'
     write(ROOT / 'install.json', json.dumps(state, indent=2) + '\n')
     switch(ROOT / 'releases/image')
     write_wrapper(installation_settings(state))

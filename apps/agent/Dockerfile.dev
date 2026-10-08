@@ -10,7 +10,7 @@ ENV UV_PYTHON=python3.11
 ENV UV_PYTHON_DOWNLOADS=never
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends openssh-client \
+    && apt-get install -y --no-install-recommends openssh-client git \
     && rm -rf /var/lib/apt/lists/*
 
 RUN if ! getent group "$DRASTIC_DEV_GID" >/dev/null; then \

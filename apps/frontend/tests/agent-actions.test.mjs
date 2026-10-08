@@ -5,6 +5,26 @@ import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { getAgentConnections, getAvailableConnectionTypes } from '../src/utils/agent-connections.js'
 
+test('agent list flags differing known builds without claiming an update is available', () => {
+  const source = readFileSync(new URL('../src/pages/AgentsPage.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const hasVersionMismatch = runInNewContext(`${source}\n;hasVersionMismatch`, {
+    useQuasar: () => ({}), useAgentStore: () => ({}), useUserStore: () => ({}),
+    onMounted: () => {}, defineOptions: () => {},
+  })
+  const backend_version = '2026-10-08-a1b2c3d4'
+  for (const version of [backend_version, undefined, null, '', 'unknown']) {
+    assert.equal(hasVersionMismatch({ version, backend_version }), false)
+  }
+  for (const version of ['2026-10-07-12345678', '2026-10-09-12345678', '2026-10-08-12345678', `${backend_version}-dirty`, '0.1.0']) {
+    assert.equal(hasVersionMismatch({ version, backend_version }), true)
+    assert.equal(hasVersionMismatch({ version, backend_version: version }), false)
+    for (const missing of [undefined, null, '', 'unknown']) {
+      assert.equal(hasVersionMismatch({ version, backend_version: missing }), false)
+    }
+  }
+})
+
 test('agent actions preserve confirmation, prevent duplicate runs and recover after failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentDetailPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')

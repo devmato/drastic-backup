@@ -4,12 +4,12 @@
 
 - `develop` is the integration branch for ongoing development.
 - `main` contains released versions only.
-- Releases are created from `develop` with `./scripts/release.sh`, which merges `develop` into `main`, creates a `vX.Y.Z` tag, pushes `develop`, `main`, and the tag, then returns to `develop`.
+- Releases are created from `develop` with `./scripts/release.sh`, which merges `develop` into `main`, tags its final commit as `YYYY-MM-DD-<8-character SHA>`, pushes `develop`, `main`, and the tag, then returns to `develop`.
 - GitHub is the primary public upstream at `github.com/devmato/drastic-backup`; Forgejo copies should be pull mirrors when used.
 
 ## Commit Messages
 
-Use Conventional Commit messages because releases, versions, and changelog entries are derived from the commit history.
+Use Conventional Commit messages because release eligibility and changelog entries are derived from the commit history. Versions identify source commits, not semantic version increments.
 
 Format:
 
@@ -29,13 +29,8 @@ chore: update dependencies
 
 Release impact:
 
-- `fix:` creates a patch release.
-- `perf:` creates a patch release.
-- `security:` creates a patch release.
-- `deps:` creates a patch release.
-- `feat:` creates a minor release.
-- A `!` after the type or scope creates a major release.
-- A `BREAKING CHANGE:` footer creates a major release.
+- `feat:`, `fix:`, `perf:`, `security:`, and `deps:` qualify for a release.
+- A `!` after the type or scope, or a `BREAKING CHANGE:` footer, qualifies for a release and highlights the incompatibility in its notes.
 - `docs:`, `chore:`, `test:`, `refactor:`, `style:`, `build:`, and `ci:` do not create a release by themselves.
 
 Breaking change examples:
@@ -72,7 +67,11 @@ The script aborts when it finds non-conventional commit messages since the last 
 ./scripts/release.sh -f
 ```
 
-With `-f`, non-conventional commits are ignored for version calculation and changelog generation.
+With `-f`, non-conventional commits are ignored for changelog generation. At least one release-relevant Conventional Commit is still required.
+
+Backend and agent versions use the commit date in UTC and the first eight SHA characters, for example `2026-10-08-a1b2c3d4`. Docker builds and native installations stamp this value into the shared Python package; development checkouts read it from Git. Local modifications append `-dirty`. Missing metadata reports `unknown` rather than a package version. Protocol numbers still control agent compatibility.
+
+The `version` fields required by Python/npm packaging stay fixed and are not product versions. Do not bump them. The generated `build-version.txt` is not committed. Docker builds use the repository root as their context. CI passes the source version as the `DRASTIC_VERSION` build argument; without it, the build reads Git metadata from the context. For linked Git worktrees, generate the version on the host and pass it explicitly (see [local Docker builds](docs/ci-and-releases.md#local-docker-builds)). Git metadata is never copied into the runtime images.
 
 ## CI Providers
 
@@ -81,7 +80,7 @@ GitHub Actions is the primary CI/release provider. GitHub publishes default cont
 - `ghcr.io/devmato/drastic-backup-server`
 - `ghcr.io/devmato/drastic-backup-agent`
 
-GitHub release tags trigger server image publishing, agent image publishing, and the Linux x64 agent artifact build.
+GitHub release tags trigger server and agent image publishing and GitHub release notes. Native agents install directly from Git.
 
 ## Forgejo Actions
 
@@ -95,4 +94,4 @@ Container image publishing uses these Forgejo variables and secrets:
 - `CONTAINER_PASSWORD`: optional secret for the registry password.
 - `FORGEJO_TOKEN`: secret used as fallback registry password and for release asset uploads.
 
-Forgejo release tags can trigger server image publishing, agent image publishing, and the Linux x64 agent artifact build once Forgejo variables, secrets, and runner access are configured.
+Forgejo release tags trigger server and agent image publishing once Forgejo variables, secrets, and runner access are configured.

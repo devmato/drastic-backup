@@ -1,4 +1,4 @@
-.git/
+# Git is mounted read-only in the version build stage, never copied into images.
 **/__pycache__/
 **/*.pyc
 **/.pytest_cache/
@@ -16,8 +16,16 @@ docs-site/
 **/*.log
 .env*
 !.env.default
+!.env.example
+!.env.dev
+!.env.dev.override.example
+!.env.test.example
+!.env.agent.example
 apps/backend/storage/*
+!apps/backend/storage/README.md
 apps/backend/import/*
+!apps/backend/import/.gitkeep
 apps/backend/data/*
+!apps/backend/data/.gitkeep
 apps/agent/data/*
 apps/agent/data-dev-native/*

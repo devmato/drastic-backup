@@ -39,7 +39,7 @@ Official branch images follow their source branch (for example `develop`); relea
 
 ```bash
 docker exec AGENT_CONTAINER drastic-agent status
-docker exec AGENT_CONTAINER drastic-agent update --ref vX.Y.Z
+docker exec AGENT_CONTAINER drastic-agent update --ref 2026-10-08-a1b2c3d4
 docker logs -f AGENT_CONTAINER
 ```
 
@@ -68,7 +68,7 @@ Select a branch, release tag or commit with `--ref`. For unattended installs, su
 
 ```bash
 curl -fsSL https://backup.example.net/install | bash -s -- \
-  --ref vX.Y.Z \
+  --ref 2026-10-08-a1b2c3d4 \
   --user admin \
   --password replace-me
 ```
@@ -105,7 +105,7 @@ Outside that root, the installer creates only `/usr/local/bin/drastic-agent` (a 
 ```bash
 sudo drastic-agent status
 sudo drastic-agent update
-sudo drastic-agent update --ref vX.Y.Z
+sudo drastic-agent update --ref 2026-10-08-a1b2c3d4
 journalctl -u drastic-agent.service
 ```
 
@@ -118,6 +118,8 @@ If the service cannot be stopped during rollback, both releases remain on disk a
 The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, otherwise the browser origin. Native installations report their install type as `git`; Docker installations continue to report `docker`.
 
 ### Protocol Compatibility
+
+Docker and native agents and the backend all report `YYYY-MM-DD-<8-character SHA>`, using the commit date in UTC (for example `2026-10-08-a1b2c3d4`). Agent properties show both versions. Matching clean versions identify the same commit; differing versions do not by themselves mean incompatibility. Local changes append `-dirty`; `unknown` means source metadata is unavailable. Updates and rollbacks use the version packaged with the selected release.
 
 Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and native `update`, protocol 2 adds Proxmox restore support, protocol 3 adds connection status, connection removal and TrueNAS snapshot backups, and protocol 4 adds managed Docker updates. Unknown versions are rejected; update the server before its agents.
 

@@ -19,7 +19,7 @@ module.exports = configure(function () {
     ],
     build: {
       env: {
-        APP_VERSION: require('./package.json').version,
+        APP_VERSION: process.env.DRASTIC_VERSION || 'unknown',
         BUILD_TIME: new Date().toISOString()
       },
       target: {

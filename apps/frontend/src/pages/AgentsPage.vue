@@ -27,6 +27,14 @@
           <router-link :to="`/agents/${props.row.id}`" class="text-weight-medium text-primary">{{ props.row.display_name }}</router-link>
         </q-td>
       </template>
+      <template #body-cell-version="props">
+        <q-td :props="props">
+          {{ props.row.version || '-' }}
+          <TableActionButton v-if="hasVersionMismatch(props.row)" icon="info_outline" size="sm"
+            :color="$q.dark.isActive ? 'grey-5' : 'grey-7'" :to="`/agents/${props.row.id}`"
+            :label="`Different build than backend. Agent: ${props.row.version}. Backend: ${props.row.backend_version}.`" />
+        </q-td>
+      </template>
       <template #body-cell-status="props">
         <q-td :props="props">
           <q-badge :color="props.row.online ? 'positive' : 'negative'" :label="props.row.online ? 'Online' : 'Offline'" />
@@ -69,6 +77,11 @@ const columns = [
   { name: 'status', label: 'Status', field: 'online', align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
+
+function hasVersionMismatch({ version, backend_version }) {
+  return Boolean(version && backend_version && version !== 'unknown' && backend_version !== 'unknown'
+    && version !== backend_version)
+}
 
 function confirmDelete(agent) {
   $q.dialog({

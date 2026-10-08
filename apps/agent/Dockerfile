@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1
 
+FROM python:3.11-slim-bookworm AS version-build
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+ARG DRASTIC_VERSION
+RUN --mount=type=bind,target=/source \
+    if [ -n "$DRASTIC_VERSION" ]; then printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
+    else python /source/libs/python/common/src/drastic_common/version.py --source /source --output /build-version.txt; fi
+
 FROM python:3.11-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /opt/drastic-agent/tools/bin/uv
@@ -24,6 +31,7 @@ RUN bash /opt/drastic-agent/releases/image/source/scripts/install-agent-dependen
 WORKDIR /opt/drastic-agent/releases/image/source/apps/agent
 
 COPY libs/python/common ../../libs/python/common
+COPY --from=version-build /build-version.txt ../../libs/python/common/src/drastic_common/build-version.txt
 COPY apps/agent/pyproject.toml apps/agent/uv.lock apps/agent/README.md ./
 
 # Install python dependencies via uv

@@ -1,5 +1,12 @@
 # syntax=docker/dockerfile:1
 
+FROM python:3.13-slim-bookworm AS version-build
+RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
+ARG DRASTIC_VERSION
+RUN --mount=type=bind,target=/source \
+    if [ -n "$DRASTIC_VERSION" ]; then printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
+    else python /source/libs/python/common/src/drastic_common/version.py --source /source --output /build-version.txt; fi
+
 FROM python:3.13-slim-bookworm AS docs-build
 
 WORKDIR /app
@@ -18,7 +25,8 @@ COPY apps/frontend/package.json apps/frontend/yarn.lock apps/frontend/.yarnrc.ym
 RUN yarn install --immutable
 
 COPY apps/frontend/ ./
-RUN yarn build
+COPY --from=version-build /build-version.txt /build-version.txt
+RUN DRASTIC_VERSION="$(cat /build-version.txt)" yarn build
 
 FROM python:3.13-slim-bookworm
 
@@ -34,6 +42,7 @@ RUN apt-get update \
 WORKDIR /app
 
 COPY libs/python/common /libs/python/common
+COPY --from=version-build /build-version.txt /libs/python/common/src/drastic_common/build-version.txt
 COPY apps/backend/pyproject.toml apps/backend/uv.lock apps/backend/README.md ./
 RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 RUN uv sync --frozen --no-dev --no-install-project

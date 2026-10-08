@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Release script: derive the next SemVer release from Conventional Commits,
-# merge develop into main, tag the release, and push release refs.
+# Generate release notes, merge develop into main, and tag its final source version.
 
 set -euo pipefail
 
@@ -13,7 +12,7 @@ Usage:
 
 Options:
   -f, --force  Continue despite non-conventional commit messages.
-               Non-conventional commits are ignored for versioning and changelog generation.
+               Non-conventional commits are ignored for changelog generation.
   -h, --help   Show this help.
 EOF
 }
@@ -39,7 +38,7 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if ! git diff --quiet || ! git diff --cached --quiet; then
+if [[ -n "$(git status --porcelain)" ]]; then
     abort "Working-Tree ist nicht sauber. Bitte erst committen oder stashen."
 fi
 
@@ -52,18 +51,16 @@ if [[ ! -f "docs/changelog/UNRELEASED.md" ]]; then
     abort "docs/changelog/UNRELEASED.md existiert nicht."
 fi
 
-LAST_TAG=$(git describe --tags --abbrev=0 --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
+LAST_TAG=$(git describe --tags --abbrev=0 --match '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-????????' --match 'v[0-9]*.[0-9]*.[0-9]*' 2>/dev/null || true)
 if [[ -z "$LAST_TAG" ]]; then
-    abort "Kein SemVer-Tag gefunden. Bitte zuerst einen Baseline-Tag wie v0.1.0 setzen."
+    abort "Kein Release-Tag gefunden. Bitte zuerst einen Baseline-Tag setzen."
 fi
 
-NEXT_VERSION=$(
-    python3 - "$LAST_TAG" "$FORCE" <<'PY'
-import json
+python3 - "$LAST_TAG" "$FORCE" <<'PY'
 import re
 import subprocess
 import sys
-from datetime import date
+from datetime import datetime, timezone
 from pathlib import Path
 
 last_tag = sys.argv[1]
@@ -84,9 +81,8 @@ allowed_types = {
     "ci",
     "revert",
 }
-patch_types = {"fix", "perf", "security", "deps"}
-minor_types = {"feat"}
-other_types = allowed_types - patch_types - minor_types
+release_types = {"feat", "fix", "perf", "security", "deps"}
+other_types = allowed_types - release_types
 header_re = re.compile(r"^(?P<type>[a-z]+)(?:\((?P<scope>[^)]+)\))?(?P<breaking>!)?: (?P<summary>.+)$")
 breaking_re = re.compile(r"^BREAKING[ -]CHANGE: (?P<text>.+)$", re.MULTILINE)
 
@@ -95,26 +91,13 @@ def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True)
 
 
-def replace_required(path: str, pattern: str, replacement: str) -> None:
-    file_path = Path(path)
-    content = file_path.read_text()
-    updated, count = re.subn(pattern, replacement, content, count=1, flags=re.MULTILINE)
-    if count != 1:
-        raise SystemExit(f"ABBRUCH: Konnte Version in {path} nicht aktualisieren.")
-    file_path.write_text(updated)
-
-
-tag_match = re.fullmatch(r"v(\d+)\.(\d+)\.(\d+)", last_tag)
-if not tag_match:
-    raise SystemExit(f"ABBRUCH: Letzter Tag ist kein SemVer-Tag: {last_tag}")
-
 commits = git("rev-list", "--reverse", "--no-merges", f"{last_tag}..HEAD").splitlines()
 if not commits:
     raise SystemExit(f"ABBRUCH: Keine Commits seit {last_tag} gefunden.")
 
 entries: list[dict[str, str | bool]] = []
 non_conventional: list[str] = []
-bump = "none"
+release_relevant = False
 
 for sha in commits:
     subject = git("log", "-1", "--format=%s", sha).strip()
@@ -135,12 +118,8 @@ for sha in commits:
     is_breaking = bool(match.group("breaking") or breaking_match)
     breaking_text = breaking_match.group("text").strip() if breaking_match else summary
 
-    if is_breaking:
-        bump = "major"
-    elif bump != "major" and commit_type in minor_types:
-        bump = "minor"
-    elif bump not in {"major", "minor"} and commit_type in patch_types:
-        bump = "patch"
+    if is_breaking or commit_type in release_types:
+        release_relevant = True
 
     entries.append(
         {
@@ -161,65 +140,18 @@ if non_conventional:
     print("", file=sys.stderr)
     if not force:
         print("Bitte Commit Messages korrigieren oder bewusst mit -f releasen.", file=sys.stderr)
-        print("Hinweis: Mit -f werden diese Commits nicht fuer Version und Changelog ausgewertet.", file=sys.stderr)
+        print("Hinweis: Mit -f werden diese Commits nicht fuer das Changelog ausgewertet.", file=sys.stderr)
         sys.exit(2)
     print("WARNUNG: Release wird wegen -f fortgesetzt.", file=sys.stderr)
-    print("WARNUNG: Diese Commits werden nicht fuer Version und Changelog ausgewertet.", file=sys.stderr)
+    print("WARNUNG: Diese Commits werden nicht fuer das Changelog ausgewertet.", file=sys.stderr)
 
-if bump == "none":
+if not release_relevant:
     raise SystemExit(
         "ABBRUCH: Keine release-relevanten Conventional Commits seit "
         f"{last_tag} gefunden. Erwartet: feat, fix, perf, security, deps oder Breaking Change."
     )
 
-major, minor, patch = (int(part) for part in tag_match.groups())
-if bump == "major":
-    major += 1
-    minor = 0
-    patch = 0
-elif bump == "minor":
-    minor += 1
-    patch = 0
-else:
-    patch += 1
-
-next_version = f"{major}.{minor}.{patch}"
-release_date = date.today().isoformat()
-
-Path("VERSION").write_text(f"{next_version}\n")
-
-package_json = Path("apps/frontend/package.json")
-package_data = json.loads(package_json.read_text())
-package_data["version"] = next_version
-package_json.write_text(json.dumps(package_data, indent=2) + "\n")
-
-for pyproject in [
-    "apps/backend/pyproject.toml",
-    "apps/agent/pyproject.toml",
-    "libs/python/common/pyproject.toml",
-]:
-    replace_required(pyproject, r'^(version\s*=\s*)"[^"]+"', rf'\g<1>"{next_version}"')
-
-lock_packages = {"drastic-agent", "drastic-backup-server", "drastic-common"}
-for lock_file in [
-    Path("apps/agent/uv.lock"),
-    Path("apps/backend/uv.lock"),
-    Path("libs/python/common/uv.lock"),
-]:
-    content = lock_file.read_text()
-
-    def update_lock_entry(match: re.Match[str]) -> str:
-        name = match.group("name")
-        if name not in lock_packages:
-            return match.group(0)
-        return f'name = "{name}"\nversion = "{next_version}"'
-
-    content = re.sub(
-        r'name = "(?P<name>[^"]+)"\nversion = "[^"]+"',
-        update_lock_entry,
-        content,
-    )
-    lock_file.write_text(content)
+release_date = datetime.now(timezone.utc).date().isoformat()
 
 manual_notes_path = Path("docs/changelog/UNRELEASED.md")
 manual_lines = []
@@ -239,7 +171,8 @@ sections = [
     ("Other Changes", [entry for entry in entries if entry["type"] in other_types and not entry["breaking"]]),
 ]
 
-release_lines = [f"## [{next_version}] - {release_date}", ""]
+# The final commit hash cannot be embedded in its own committed changelog.
+release_lines = [f"## Release - {release_date}", ""]
 if manual_lines:
     release_lines.extend(["### Release Notes", "", *manual_lines, ""])
 
@@ -259,38 +192,21 @@ changelog.write_text(f"{current_changelog}\n\n" + "\n".join(release_lines).rstri
 
 manual_notes_path.write_text("# Unreleased\n\n## Release Notes\n")
 
-print(next_version)
 PY
-)
 
-TAG_NAME="v${NEXT_VERSION}"
-
-echo "=== Release: ${TAG_NAME} ==="
-echo "  Letzter Tag: ${LAST_TAG}"
-echo "  Naechste Version: ${NEXT_VERSION}"
-echo ""
-
-git add \
-    VERSION \
-    CHANGELOG.md \
-    docs/changelog/UNRELEASED.md \
-    apps/frontend/package.json \
-    apps/backend/pyproject.toml \
-    apps/backend/uv.lock \
-    apps/agent/pyproject.toml \
-    apps/agent/uv.lock \
-    libs/python/common/pyproject.toml \
-    libs/python/common/uv.lock
-
-git commit -m "chore(release): ${TAG_NAME}"
+git add CHANGELOG.md docs/changelog/UNRELEASED.md
+git commit -m "chore(release): prepare release notes"
 
 git switch main
-git merge --no-ff develop -m "chore(release): ${TAG_NAME}"
+git merge --no-ff develop -m "chore(release): merge develop into main"
 
 if git ls-files --error-unmatch docs/changelog/UNRELEASED.md >/dev/null 2>&1; then
     git rm -q docs/changelog/UNRELEASED.md
     git commit -m "chore(release): remove unreleased notes from main"
 fi
+
+TAG_NAME=$(python3 libs/python/common/src/drastic_common/version.py)
+git tag "${TAG_NAME}" main
 
 git switch develop
 git merge --ff-only main
@@ -300,7 +216,6 @@ printf '# Unreleased\n\n## Release Notes\n' > docs/changelog/UNRELEASED.md
 git add docs/changelog/UNRELEASED.md
 git commit -m "chore(release): reopen unreleased notes"
 
-git tag "${TAG_NAME}" main
 git push origin develop main "${TAG_NAME}"
 
 echo ""

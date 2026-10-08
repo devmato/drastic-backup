@@ -53,12 +53,16 @@
               <q-badge :color="agent?.online ? 'positive' : 'negative'" :label="agent?.online ? 'Online' : 'Offline'" />
             </div>
             <div class="col-12 col-sm-6">
-              <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">OS</div>
-              <div>{{ agent?.os || '-' }}</div>
+              <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Agent version</div>
+              <div>{{ agent?.version || '-' }}</div>
             </div>
             <div class="col-12 col-sm-6">
-              <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Version</div>
-              <div>{{ agent?.version || '-' }}</div>
+              <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Backend version</div>
+              <div>{{ agent?.backend_version || '-' }}</div>
+            </div>
+            <div class="col-12 col-sm-6">
+              <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">OS</div>
+              <div>{{ agent?.os || '-' }}</div>
             </div>
             <div class="col-12 col-sm-6">
               <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Protocol</div>
