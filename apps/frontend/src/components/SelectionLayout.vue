@@ -3,9 +3,6 @@
     <div v-if="$slots.header" class="row items-center q-gutter-sm q-mb-sm">
       <slot name="header" />
     </div>
-    <div v-if="$slots.options" class="q-mb-md">
-      <slot name="options" />
-    </div>
     <div class="row q-col-gutter-sm items-stretch">
       <div class="col-12 col-lg-6">
         <div class="text-subtitle2 q-mb-xs">{{ availableTitle }}</div>
@@ -23,6 +20,9 @@
             :empty-label="emptySelectedLabel" @action="(action, entry) => emit(action, entry)" />
         </slot>
       </div>
+    </div>
+    <div v-if="$slots.options" class="q-mt-md">
+      <slot name="options" />
     </div>
     <template v-if="$slots.advanced">
       <div class="row justify-end q-mt-sm">

@@ -88,6 +88,10 @@ node_modules
 
 ### Proxmox Backup
 
+Use the shared split-view browser to select the local Proxmox host or individual VMs. Click the host to browse its VMs. Selecting the host with **+** includes all supported VMs, including newly created ones; use **−** on a VM to exclude it and **+** to include it again. Without the host selected, **+** selects individual VMs and **−** removes them from the selection. The right column shows the selected host or VMs and any active exclusions.
+
+**Backup Mode** is below the split view; optional temporary backup storage remains under **Advanced**. Existing jobs retain their selection: all-guest jobs appear as a selected host with exclusions, while specific-guest jobs show their selected VMs.
+
 Proxmox backup jobs support three job-level modes. Existing jobs default to **Snapshot**:
 
 | Mode | Behavior |
@@ -123,12 +127,13 @@ Configuration:
 
 - `backup_mode` -- `snapshot` (default), `native` or `native_cbt`.
 - `fleecing_storage` -- Optional local LVM-thin storage ID for native modes; empty or omitted means automatic selection. Available under **Advanced**, hidden for Snapshot mode. Explicit selection remains compatible with agent protocol 8; automatic selection requires protocol 9.
-- `selection_mode` -- Guest selection strategy. Supported values are `all` and `include`.
+- `selection_mode` -- Derived from the browser selection: `all` when the host is selected, otherwise `include`.
 - `guest_ids` -- List of selected VMIDs. Required only when `selection_mode` is `include`.
+- `exclude_guest_ids` -- VMIDs excluded when `selection_mode` is `all`.
 
 Selection modes:
 
-- `all` -- Back up every supported QEMU guest discovered on the Proxmox node.
+- `all` -- Back up every supported QEMU guest discovered on the Proxmox node except `exclude_guest_ids`.
 - `include` -- Back up only the VMIDs listed in `guest_ids`.
 
 Guest ID rules:

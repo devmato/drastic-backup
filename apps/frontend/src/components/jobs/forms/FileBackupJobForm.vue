@@ -7,15 +7,13 @@
       :selection="configModel"
       :reload-key="agentId"
       browser-title="Directory Browser"
-      selected-title="Selected Paths"
+      selected-title="Selection"
       empty-label="No directories found or agent offline"
       error-message="Could not load directory listing"
       @update:selection="updateSelection"
     >
       <template #header>
         <div class="text-subtitle1">File Selection</div>
-        <q-space />
-        <q-badge color="grey-7" :label="`${selectedEntries.length} selected`" />
       </template>
       <template #advanced>
         <div class="text-subtitle2 q-mb-sm">Custom Exclude Pattern</div>
@@ -56,11 +54,6 @@ const jobStore = useJobStore()
 const excludePattern = ref('')
 
 const configModel = computed(() => createConfig(props.modelValue))
-
-const selectedEntries = computed(() => [
-  ...configModel.value.paths.map(entry => ({ ...entry, exclude: false })),
-  ...configModel.value.exclude_patterns.map(entry => ({ ...entry, exclude: true })),
-])
 
 function createConfig(config = {}) {
   return {

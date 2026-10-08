@@ -165,56 +165,87 @@ test('job submission validates general fields even when another section is activ
   assert.equal(dialog.activeSection.value, 'general')
 })
 
-test('Proxmox guest lists transfer selections and retain missing IDs across modes and discovery failures', async () => {
-  const source = readFileSync(new URL('../src/components/jobs/forms/ProxmoxBackupJobForm.vue', import.meta.url), 'utf8')
+test('Proxmox host and VM browser preserves scope and supports inherited selection and exclusions', async () => {
+  const script = name => readFileSync(new URL(`../src/components/${name}.vue`, import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const original = { selection_mode: 'include', guest_ids: [101, 999] }
+  const original = { selection_mode: 'include', guest_ids: [101, 999], exclude_guest_ids: [101], backup_mode: 'native_cbt', fleecing_storage: 'local-thin' }
   const props = reactive({ modelValue: original, agentId: 1, agentOnline: true })
+  const agent = reactive({ id: 1, hostname: 'pve.example', protocol_version: 14 })
+  const known = [{ vmid: 101, name: 'first', node: 'pve' }, { vmid: 102, name: 'second', node: 'pve' }]
   let fail = false
-  const panel = runInNewContext(`${source}\n;({ loadGuests, loadError, selectedIds, selectedGuests, availableGuests, updateConfig, updateSelectedIds })`, {
+  const panel = runInNewContext(`${script('jobs/forms/ProxmoxBackupJobForm')}\n;({ loadEntries, selection, entryOptions, updateConfig, updateSelection, refresh, backupModeOptions })`, {
     computed, ref,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
     defineOptions: () => {},
     watch: () => {},
-    useAgentStore: () => ({ agents: [] }),
+    useAgentStore: () => ({ agents: [agent] }),
     useJobStore: () => ({ getProxmoxGuests: async () => {
       if (fail) throw new Error('Discovery failed')
-      return [{ vmid: 101, name: 'first' }, { vmid: 102, name: 'second' }]
+      return known
     } }),
-    shouldIgnoreApiError: () => false,
-    getApiErrorMessage: error => error.message,
   })
-  const ids = list => Array.from(list.value, guest => guest.vmid)
-  await panel.loadGuests()
-  assert.deepEqual(ids(panel.availableGuests), [102])
-  assert.deepEqual(ids(panel.selectedGuests), [101, 999])
-  assert.equal(panel.selectedGuests.value[0].name, 'first')
-  panel.updateSelectedIds([101, 102, 999])
-  assert.deepEqual(ids(panel.availableGuests), [])
-  panel.updateSelectedIds([102, 999])
-  assert.deepEqual(ids(panel.availableGuests), [101])
-
-  panel.updateConfig({ selection_mode: 'all' })
-  assert.deepEqual(ids(panel.selectedGuests), [])
-  assert.deepEqual(ids(panel.availableGuests), [101, 102])
-  panel.updateSelectedIds([101])
-  assert.deepEqual(ids(panel.availableGuests), [102])
-  panel.updateConfig({ selection_mode: 'include' })
-  assert.deepEqual(ids(panel.selectedGuests), [102, 999])
-  panel.updateConfig({ selection_mode: 'all' })
-  assert.deepEqual(ids(panel.selectedGuests), [101])
-
+  const browserProps = { mode: 'include-exclude', initialPath: '/', loadEntries: panel.loadEntries,
+    get selection() { return panel.selection.value } }
+  const context = {
+    computed, ref, defineProps: () => browserProps, watch: () => {}, defineOptions: () => {},
+    useQuasar: () => ({ notify: () => assert.fail('Unexpected browser error') }),
+    shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
+    defineEmits: () => (event, value) => { if (event === 'update:selection') panel.updateSelection(value) },
+  }
+  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath })`, { ...context })
+  const selected = runInNewContext(`${script('PathSelectionPanel')}\n;({ removePath, selectionRows })`, { ...context })
+  const root = await panel.loadEntries('/')
+  const host = root.entries[0]
+  assert.equal(host.name, 'pve')
+  assert.equal(host.icon, 'dns')
+  await browser.navigate(host.path)
+  assert.equal(browser.parentPath.value, '/')
+  const vms = (await panel.loadEntries(host.path)).entries
+  assert.deepEqual(Array.from(vms, vm => vm.vmid), [101, 102])
+  assert.equal(panel.entryOptions(vms[0]).state, 'include', 'inactive exclusions do not change existing include jobs')
+  assert.deepEqual(Array.from(selected.selectionRows.value, row => row.label), ['first (VM 101)', 'VM 999'])
+  browser.setInclude(vms[1])
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [101, 999, 102])
+  browser.setExclude(vms[0])
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [999, 102])
+  selected.removePath('/host/999')
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [102])
+  browser.setInclude(host)
+  assert.equal(props.modelValue.selection_mode, 'all')
+  assert.deepEqual(Array.from(selected.selectionRows.value, row => row.icon), ['dns'])
+  browser.setExclude(vms[0])
+  assert.equal(panel.entryOptions(vms[0]).state, 'exclude')
+  assert.equal(panel.entryOptions(vms[1]).state, 'include')
+  assert.deepEqual(Array.from(selected.selectionRows.value, row => [row.icon, row.state]), [['dns', 'include'], ['computer', 'exclude']])
+  browser.setInclude(vms[0])
+  assert.deepEqual(Array.from(props.modelValue.exclude_guest_ids), [])
+  known.push({ vmid: 103, name: 'new', node: 'pve' })
+  panel.refresh()
+  const newVM = (await panel.loadEntries('/host')).entries.find(vm => vm.vmid === 103)
+  assert.equal(panel.entryOptions(newVM).state, 'include', 'new VMs inherit the host selection')
+  browser.setExclude(host)
+  assert.equal(props.modelValue.selection_mode, 'include')
+  assert.equal(props.modelValue.guest_ids.length, 0, 'removing the host leaves an empty selection')
+  browser.setInclude(newVM)
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [103])
+  assert.equal(props.modelValue.backup_mode, 'native_cbt')
+  assert.equal(props.modelValue.fleecing_storage, 'local-thin')
+  const allConfig = { ...original, selection_mode: 'all', exclude_guest_ids: [102, 999] }
+  props.modelValue = allConfig
+  panel.updateConfig({ backup_mode: 'snapshot' })
+  assert.deepEqual(Array.from(props.modelValue.exclude_guest_ids), [102, 999])
+  assert.deepEqual(Array.from(panel.selection.value.exclude_patterns, entry => entry.vmid), [102, 999])
   fail = true
-  await panel.loadGuests()
-  assert.equal(panel.loadError.value, 'Discovery failed')
-  assert.deepEqual(ids(panel.selectedGuests), [101])
+  panel.refresh()
+  await assert.rejects(panel.loadEntries('/'), /Discovery failed/)
   props.agentOnline = false
-  await panel.loadGuests()
-  assert.deepEqual(ids(panel.selectedGuests), [101])
-  panel.updateSelectedIds([])
-  assert.deepEqual(ids(panel.selectedGuests), [])
-  assert.deepEqual(original, { selection_mode: 'include', guest_ids: [101, 999] })
+  assert.deepEqual(Array.from(panel.selection.value.exclude_patterns, entry => entry.vmid), [102, 999])
+  selected.removePath('/host/999')
+  assert.deepEqual(Array.from(props.modelValue.exclude_guest_ids), [102])
+  agent.protocol_version = 7
+  assert.equal(panel.backupModeOptions.value[1].disable, true)
+  assert.deepEqual(original, { selection_mode: 'include', guest_ids: [101, 999], exclude_guest_ids: [101], backup_mode: 'native_cbt', fleecing_storage: 'local-thin' })
 })
 
 test('TrueNAS browses datasets, folders and files and retains selection after discovery errors', async () => {

@@ -1,7 +1,7 @@
 <template>
   <SelectionLayout :available-title="browserTitle" :selected-title="selectedTitle"
     :selected-entries="selectionRows" :empty-selected-label="emptySelectedLabel" :height="height"
-    :available-message="availableMessage"
+    :available-message="availableMessage" :advanced-invalid="advancedInvalid"
     @remove="entry => removePath(entry.path)">
     <template v-if="$slots.header" #header><slot name="header" /></template>
     <template v-if="!availableMessage" #available>
@@ -20,6 +20,7 @@
       />
     </template>
 
+    <template v-if="$slots.options" #options><slot name="options" /></template>
     <template v-if="$slots.advanced" #advanced><slot name="advanced" /></template>
   </SelectionLayout>
 </template>
@@ -47,6 +48,7 @@ const props = defineProps({
   emptySelectedLabel: { type: String, default: 'No paths selected yet.' },
   errorMessage: { type: String, default: 'Could not load entries' },
   height: { type: String, default: '320px' },
+  advancedInvalid: Boolean,
 })
 const emit = defineEmits(['update:selection', 'update:selectedPaths'])
 
@@ -84,6 +86,8 @@ function removePath(path) {
 function groupIcon(group) {
   if (group === 'file') return 'description'
   if (group === 'dataset') return 'storage'
+  if (group === 'host') return 'dns'
+  if (group === 'vm') return 'computer'
   if (group === 'pattern') return 'rule'
   return 'folder'
 }
