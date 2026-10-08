@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { getAgentConnections, getAvailableConnectionTypes, supportsJob } from '../src/utils/agent-connections.js'
+import { supportsAgentUpdate } from '../src/utils/agent-updates.js'
 
 test('connection-aware jobs require configuration and local support, independently of online state', () => {
   assert.equal(supportsJob(null, 'file'), true)
@@ -53,7 +54,7 @@ test('connection removal waits for confirmation, preserves rows on failure and r
   let confirm, attempts = 0
   const store = { agents: [agent], deleteConnection: async () => { attempts++; throw new Error('Pending snapshots') } }
   const page = runInNewContext(`${source}\n;({ confirmRemoveConnection, removingConnection, connections })`, {
-    computed, ref, getAgentConnections, getAvailableConnectionTypes,
+    computed, ref, getAgentConnections, getAvailableConnectionTypes, supportsAgentUpdate,
     useAgentStore: () => store,
     useRoute: () => route,
     useRouter: () => ({}),

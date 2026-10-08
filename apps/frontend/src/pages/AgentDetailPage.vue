@@ -223,6 +223,7 @@ import { useAgentStore } from 'stores/agent'
 import AgentConnectionDialog from 'components/agents/AgentConnectionDialog.vue'
 import { getAgentConnections, getAvailableConnectionTypes } from 'src/utils/agent-connections'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { supportsAgentUpdate } from 'src/utils/agent-updates'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
@@ -254,12 +255,8 @@ const activeTab = computed({
 })
 const removingRepositoryId = ref(null)
 const pendingActions = ref({})
-const supportsConfiguration = computed(() => (agent.value?.protocol_version || 0) >= 1)
 const supportsConnections = computed(() => (agent.value?.protocol_version || 0) >= 3)
-const supportsUpdate = computed(() => supportsConfiguration.value
-  && agent.value?.os?.toLowerCase() === 'linux'
-  && (agent.value?.install_type === 'git'
-    || (agent.value?.install_type === 'docker' && (agent.value?.protocol_version || 0) >= 4)))
+const supportsUpdate = computed(() => supportsAgentUpdate(agent.value))
 
 const agentActions = computed(() => [
   ...(supportsUpdate.value ? [{

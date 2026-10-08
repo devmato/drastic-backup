@@ -31,6 +31,8 @@ The default root path is `/`, which allows file jobs to reference host paths via
 
 ### Docker Updates
 
+The **Agents** overview offers **Update agents (N)** to start updates in parallel for online, supported agents whose known build differs from the backend. Click the update icon beside a differing version to update just that agent, without a confirmation dialog. The UI confirms only the start; agents finish through the existing updater and their versions refresh on reconnect. Updates follow each agent's saved repository/ref, so pinned versions may still differ afterwards. If a start acknowledgement times out, check the agent logs before retrying; update results remain available under **Reports**.
+
 Managed Docker images using protocol 4 or later support **Agent Properties > Actions > Update**. Older containers need one image update through their deployment first. The image still builds directly from the local source checkout, but uses the same `/opt/drastic-agent` release layout and Python lifecycle installer as native installations. A small launcher in that installer runs as PID 1 and restarts the agent after an update; systemd and Docker socket access are not required for updates.
 
 Updates fetch the saved Git repository/ref, prepare a non-editable virtual environment, and install or refresh required Debian packages through the target release's `install-agent-dependencies.sh`. Package or build failures leave the running agent in place. The existing startup checks restore the previous agent release if the new process fails to start; Debian package changes are not rolled back. Running/queued operations and duplicate web updates are rejected, and execution stays paused through the startup checks.

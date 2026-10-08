@@ -2,6 +2,11 @@
   <q-page class="q-pa-md">
     <PageHeader title="Agents" description="Manage connected systems and their backup configuration.">
       <template #actions>
+        <q-btn v-if="updateCandidates.length || pendingUpdates.length" outline no-caps no-wrap color="primary" icon="system_update"
+          :label="`Update agents (${updateCandidates.length})`" :loading="pendingUpdates.length > 0"
+          :disable="agentStore.loading" @click="startAgentUpdates()">
+          <q-tooltip>Update online agents whose version differs from the backend, using their saved Git repository and ref. Tags and commits stay pinned.</q-tooltip>
+        </q-btn>
         <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Agent" to="/agents/install" />
       </template>
     </PageHeader>
@@ -30,9 +35,15 @@
       <template #body-cell-version="props">
         <q-td :props="props">
           {{ props.row.version || '-' }}
-          <TableActionButton v-if="hasVersionMismatch(props.row)" icon="info_outline" size="sm"
-            :color="$q.dark.isActive ? 'grey-5' : 'grey-7'" :to="`/agents/${props.row.id}`"
-            :label="`Different build than backend. Agent: ${props.row.version}. Backend: ${props.row.backend_version}.`" />
+          <template v-if="hasVersionMismatch(props.row)">
+            <TableActionButton v-if="props.row.online && supportsAgentUpdate(props.row)" icon="system_update" size="sm"
+              :loading="pendingUpdates.includes(props.row.id)"
+              :label="`Update agent using its saved Git ref. Agent: ${props.row.version}. Backend: ${props.row.backend_version}.`"
+              @click="startAgentUpdates([props.row.id])" />
+            <TableActionButton v-else icon="info_outline" size="sm"
+              :color="$q.dark.isActive ? 'grey-5' : 'grey-7'" :to="`/agents/${props.row.id}`"
+              :label="`${props.row.online ? 'Web updates unavailable' : 'Agent offline'}. Agent: ${props.row.version}. Backend: ${props.row.backend_version}.`" />
+          </template>
         </q-td>
       </template>
       <template #body-cell-status="props">
@@ -55,7 +66,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
@@ -63,10 +74,37 @@ import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useUserStore } from 'stores/user'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { hasVersionMismatch, supportsAgentUpdate } from 'src/utils/agent-updates'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
 const userStore = useUserStore()
+const pendingUpdates = ref([])
+const updateCandidates = computed(() => agentStore.agents.filter(agent => agent.online
+  && supportsAgentUpdate(agent) && hasVersionMismatch(agent)))
+
+async function startAgentUpdates(agentIds = updateCandidates.value.map(agent => agent.id)) {
+  const selected = updateCandidates.value.filter(agent => agentIds.includes(agent.id) && !pendingUpdates.value.includes(agent.id))
+  if (!selected.length) return
+  pendingUpdates.value.push(...selected.map(agent => agent.id))
+  const results = await Promise.allSettled(selected.map(async agent => {
+    try {
+      return await agentStore.runAction(agent.id, 'update')
+    } finally {
+      pendingUpdates.value = pendingUpdates.value.filter(id => id !== agent.id)
+    }
+  }))
+  const started = results.filter(result => result.status === 'fulfilled').length
+  if (started) $q.notify({ message: started === 1 ? 'Agent update started' : `Updates started for ${started} agents`, color: 'positive', position: 'top' })
+  results.forEach((result, index) => {
+    if (result.status !== 'rejected' || shouldIgnoreApiError(result.reason)) return
+    const error = result.reason
+    const unconfirmed = !error.response || error.response.status >= 500
+    const message = getApiErrorMessage(error, unconfirmed
+      ? 'Update start not confirmed; check the agent logs before retrying' : 'Could not start agent update')
+    $q.notify({ message: `${selected[index].display_name}: ${message}`, color: unconfirmed ? 'warning' : 'negative', position: 'top' })
+  })
+}
 
 
 const columns = [
@@ -77,11 +115,6 @@ const columns = [
   { name: 'status', label: 'Status', field: 'online', align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]
-
-function hasVersionMismatch({ version, backend_version }) {
-  return Boolean(version && backend_version && version !== 'unknown' && backend_version !== 'unknown'
-    && version !== backend_version)
-}
 
 function confirmDelete(agent) {
   $q.dialog({
