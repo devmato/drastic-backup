@@ -27,6 +27,7 @@
 
 ## Frontend
 
+- Follow the [Backup Selection UI conventions](CONTRIBUTING.md#backup-selection-ui), including the exceptions for backup types that cannot represent the shared selection behavior faithfully.
 - Prefer Quasar utilities for layout, spacing, responsiveness, typography, alignment, visibility, and overflow handling when they are sensible and sufficient.
 - Do not add project-specific CSS classes for one-off layout concerns such as dialog width, grid spacing, margins, padding, or text alignment.
 - Use custom CSS only for reusable project patterns, such as standardized dialog widths, or when Quasar utilities cannot express the required behavior cleanly.

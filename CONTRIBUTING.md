@@ -73,6 +73,17 @@ Backend and agent versions use the commit date in UTC and the first eight SHA ch
 
 The `version` fields required by Python/npm packaging stay fixed and are not product versions. Do not bump them. The generated `build-version.txt` is not committed. Docker builds use the repository root as their context. CI passes the source version as the `DRASTIC_VERSION` build argument; without it, the build reads Git metadata from the context. For linked Git worktrees, generate the version on the host and pass it explicitly (see [local Docker builds](docs/ci-and-releases.md#local-docker-builds)). Git metadata is never copied into the runtime images.
 
+## Backup Selection UI
+
+- Prefer the same split-view layout for all backup job types: a hierarchical browser on the left, explicit selections and exclusions on the right. Reuse `PathBrowser`, `PathSelectionPanel`, and `SelectionLayout`.
+- Express selection scope through **+ / −** actions. Selecting a parent includes supported descendants, including newly created ones. Derive the selection mode from the selection instead of exposing separate selection-mode or child-inclusion switches.
+- Do not show selection-count badges; the selection list already communicates the scope.
+- Place job-specific controls, such as **Backup Mode**, below the split view. Put optional settings under **Advanced**.
+- Use consistent type icons in both columns: pools/datasets `storage`, folders `folder`, files `description`, hosts `dns`, and VMs `computer`.
+- Keep source identities separate from display labels and paths so equally named entries remain independently selectable.
+
+These are defaults, not requirements when a backup type cannot represent them faithfully. Use the simplest suitable alternative for atomic sources (such as whole-database backups), dynamic selection rules (such as VM tags), or non-hierarchical sources. Reuse applicable shared components and limit deviations to what the backup semantics require. Only offer inheritance and exclusions where the backup implementation supports them.
+
 ## CI Providers
 
 GitHub Actions is the primary CI/release provider. GitHub publishes default container images to:
