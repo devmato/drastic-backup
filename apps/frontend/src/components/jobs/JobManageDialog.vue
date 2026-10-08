@@ -262,9 +262,8 @@ function cloneScheduleConfig(config = {}) {
 
 function cloneConfig(type, config = {}) {
   if (type === 'truenas') return {
-    datasets: [...(config.datasets || [])],
-    include_children: config.include_children ?? !props.editingJob,
-    exclude_datasets: [...(config.exclude_datasets || [])],
+    paths: (config.paths || []).map(entry => ({ ...entry })),
+    exclude_paths: (config.exclude_paths || []).map(entry => ({ ...entry })),
     exclude_patterns: [...(config.exclude_patterns || [])],
   }
   if (type === 'proxmox') {
@@ -326,7 +325,7 @@ function submitForm() {
   }
 
   if (jobForm.type === 'truenas' && !hasTrueNASSelection(jobForm.config)) {
-    $q.notify({ message: 'Select at least one TrueNAS dataset that is not excluded', color: 'negative' })
+    $q.notify({ message: 'Select at least one TrueNAS path that is not excluded', color: 'negative' })
     return
   }
   if (jobForm.type === 'file' && (jobForm.config?.paths || []).length === 0) {

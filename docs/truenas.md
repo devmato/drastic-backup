@@ -2,7 +2,7 @@
 
 Run one dRastic agent as a Custom App on each TrueNAS system. The dRastic server can be remote; the agent reads the NAS datasets locally and sends backups to its assigned repository.
 
-The TrueNAS integration requires **TrueNAS 25.10 or newer and agent protocol 3**. Its API contract targets 25.10.4. Update the server before the agent. The native `/install` script is intended for writable Linux hosts, not the protected TrueNAS system filesystem.
+The TrueNAS integration requires **TrueNAS 25.10 or newer and agent protocol 14**. Its API contract targets 25.10.4. Update the server before the agent. The native `/install` script is intended for writable Linux hosts, not the protected TrueNAS system filesystem.
 
 ## Install the agent app
 
@@ -70,11 +70,13 @@ The API key is stored encrypted on the agent and is never returned by the settin
 
 ## Create a TrueNAS backup job
 
-Choose **Add job > TrueNAS-Backup** on the configured agent, select datasets, and configure the normal repository, schedule and retention settings.
+Choose **Add job > TrueNAS-Backup** on the configured agent, select datasets or paths, and configure the normal repository, schedule and retention settings.
 
-- Enable **Include child datasets** to select a pool or parent dataset and include all supported filesystem datasets below it. Children are discovered at every run, so newly created datasets are included automatically; overlapping parent and child selections are backed up only once. New jobs enable this option by default. Existing jobs keep their explicit selection until you enable it.
-- The split view shows datasets on the left and explicit selection rules on the right. Included children show their selected parent. Use **−** to exclude a dataset and its entire subtree; new children beneath that exclusion stay excluded. Use **+** on the excluded dataset or remove its exclusion rule to include it again. Exclusions take precedence over selections. Dataset exclusions require agent protocol 13; jobs without exclusions remain compatible with older TrueNAS agents. **Exclude patterns** under Advanced still exclude files within each dataset.
-- Every included dataset must be unlocked, mounted and readable by the agent. An unavailable dataset fails validation before temporary snapshots are created. Zvols and internal system datasets are excluded from discovery. With **Include child datasets** disabled, select each filesystem dataset explicitly.
+- Browse pools, datasets, folders and files in the same hierarchical browser used for file backups. Pools and datasets use the `storage` icon, folders `folder`, and files `description`, including in the selection on the right.
+- Selecting a pool or parent dataset automatically includes all supported filesystem datasets below it, including newly created children. A selected folder also includes child datasets mounted beneath it. Overlapping dataset selections produce only one backup per dataset.
+- Use **+** to include an entry and **−** to exclude it and its subtree. Use **+** on the excluded entry or remove its exclusion rule to include it again. Exclusions take precedence over selections. **Exclude patterns** under Advanced still apply relative to each dataset root; browser exclusions match literal paths, even if names contain wildcard characters.
+- Existing jobs are migrated once to path selection, preserving their selected datasets, exclusions and patterns. Parent selections now always include child datasets, so jobs that previously disabled child inclusion may back up more data. Update the agent to protocol 14 before running or editing these jobs.
+- Every included dataset must be unlocked, mounted and readable by the agent. An unavailable dataset fails validation before temporary snapshots are created. Zvols and internal system datasets are excluded from dataset discovery.
 - The job creates a non-recursive snapshot of every selected dataset before reading files. Separate datasets are snapshotted sequentially, not atomically as a group.
 - Exclusions are relative to each dataset root. For example, `cache/**` excludes a root-level cache; `**/cache/**` excludes nested caches too.
 - Each dataset produces a separate Restic artifact in the operation report. Restore paths start at the dataset's contents, without temporary `.zfs/snapshot/...` prefixes. Successive backups reuse the previous backup of that dataset as their parent.

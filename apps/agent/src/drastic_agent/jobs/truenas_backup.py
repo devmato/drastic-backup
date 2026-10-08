@@ -1,4 +1,6 @@
 import logging
+import re
+from pathlib import PurePosixPath
 from time import time
 
 from drastic_agent.agent.database import truenas_snapshots
@@ -6,7 +8,53 @@ from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASError
 from drastic_common.restic.exceptions import ResticCancelledError
-from drastic_common.truenas import TrueNASBackupConfigSchema
+from drastic_common.truenas import TrueNASBackupConfigSchema, path_is_within
+
+
+def dataset_paths(entries, dataset, available):
+    """Project selected subtrees onto each dataset's own snapshot root."""
+    paths = set()
+    for entry in entries:
+        if entry["dataset"] == dataset["id"]:
+            paths.add(entry["path"])
+        elif dataset["id"].startswith(entry["dataset"] + "/"):
+            if entry["path"] == ".":
+                paths.add(".")
+            elif entry["group"] != "file" and entry["dataset"] in available and dataset.get("mountpoint"):
+                source = available[entry["dataset"]].get("mountpoint")
+                if source:
+                    selected = PurePosixPath(source) / entry["path"]
+                    mount = PurePosixPath(dataset["mountpoint"])
+                    if mount.is_relative_to(selected):
+                        paths.add(".")
+                    elif selected.is_relative_to(mount):
+                        paths.add(str(selected.relative_to(mount)))
+    return ["."] if "." in paths else sorted(paths)
+
+
+def backup_selection(config, available):
+    for entry in config["paths"]:
+        if entry["dataset"] not in available and not any(path_is_within(entry, excluded) for excluded in config["exclude_paths"]):
+            raise TrueNASError(f"Dataset {entry['dataset']}: not found or unsupported")
+    selected = []
+    for dataset in sorted(available.values(), key=lambda item: item["id"]):
+        included = dataset_paths(config["paths"], dataset, available)
+        excluded = dataset_paths(config["exclude_paths"], dataset, available)
+        included = [path for path in included if not any(
+            parent == "." or path == parent or path.startswith(parent + "/") for parent in excluded)]
+        if not included:
+            continue
+        if not dataset["available"]:
+            raise TrueNASError(f"Dataset {dataset['id']}: {dataset['error']}")
+        selected.append((dataset, included, excluded))
+    if not selected:
+        raise TrueNASError("Select at least one path that is not excluded")
+    return selected
+
+
+def literal_pattern(path):
+    # Restic exclusions are glob patterns; browser selections are literal names.
+    return re.sub(r"([\\*?\[\]])", r"\\\1", str(path))
 
 
 def cleanup_snapshots(api, agent_id, report=None):
@@ -65,28 +113,17 @@ class TrueNASBackupJobHandler(BackupJobHandler):
             if truenas_snapshots.count():
                 raise TrueNASError("Clean up pending snapshots before starting another TrueNAS backup")
             available = {item["id"]: item for item in api.datasets()}
-            names = set(config["datasets"])
-            if config["include_children"]:
-                prefixes = tuple(f"{parent}/" for parent in config["datasets"])
-                names.update(name for name in available if name.startswith(prefixes))
-            excluded = set(config.get("exclude_datasets", []))
-            excluded_prefixes = tuple(f"{name}/" for name in excluded)
-            names = {name for name in names if name not in excluded and not name.startswith(excluded_prefixes)}
-            selected = []
-            for name in sorted(names):
-                dataset = available.get(name)
-                if not dataset or not dataset["available"]:
-                    raise TrueNASError(f"Dataset {name}: {dataset['error'] if dataset else 'not found or unsupported'}")
-                selected.append(dataset)
+            selected = backup_selection(config, available)
             host_id = api.call("system.host_id")
             name = f"drastic-{report.uuid}"
             paths = []
             report.set_data("backup_items_total", len(selected))
             # ponytail: ZFS logical sizes are estimates (metadata, sparse files, exclusions);
             # refine from Restic's existing scan instead of adding a filesystem walk.
-            report.set_backup_size_estimates({f"dataset:{dataset['id']}": dataset.get("bytes_estimated") for dataset in selected})
+            report.set_backup_size_estimates({f"dataset:{dataset['id']}": dataset.get("bytes_estimated")
+                                             for dataset, _, _ in selected})
             report.set_data("truenas_progress", {"phase": "snapshots", "datasets_total": len(selected)})
-            for dataset in selected:
+            for dataset, included, excluded in selected:
                 self._check_cancelled(report)
                 snapshot_id = f"{dataset['id']}@{name}"
                 record = {"snapshot_id": snapshot_id, "api_url": api.settings["api_url"], "host_id": host_id,
@@ -98,11 +135,11 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                 })
                 record["confirmed"] = True
                 truenas_snapshots.update(record, ["id"])
-                paths.append((dataset, api.snapshot_path(dataset, name)))
+                paths.append((dataset, api.snapshot_path(dataset, name), included, excluded))
                 report.log_message(f"Created and mounted {snapshot_id}")
 
             failed = []
-            for index, (dataset, path) in enumerate(paths, 1):
+            for index, (dataset, path, included, excluded) in enumerate(paths, 1):
                 self._check_cancelled(report)
                 report.set_data("truenas_progress", {"phase": "backup", "dataset": dataset["id"],
                                                     "dataset_index": index, "datasets_total": len(paths)})
@@ -110,12 +147,20 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                     "dataset": dataset["id"], "mountpoint": dataset["mountpoint"], "zfs_snapshot": f"{dataset['id']}@{name}",
                 })
                 try:
+                    for relative in included:
+                        target = path / relative
+                        # Never traverse a symlink out of the verified snapshot into live data.
+                        if not target.parent.resolve().is_relative_to(path.resolve()) and relative != ".":
+                            raise TrueNASError(f"Selected path escapes the snapshot: {relative}")
+                        if not target.exists() and not target.is_symlink():
+                            raise TrueNASError(f"Selected path is missing from the snapshot: {relative}")
                     with self.agent.resticapi.operation_cancellation(report.cancel_event):
                         previous = self.agent.resticapi.snapshots(tags=[f"job_uuid:{self.job['uuid']},dataset:{dataset['id']}"])
                         parent = max(previous, key=lambda item: item["time"])["id"] if previous else None
                         status = self.agent.resticapi.backup(
-                            paths=["."], cwd=str(path), parent=parent,
-                            exclude_patterns=[f"{path}/{pattern.lstrip('/')}" for pattern in [".zfs", *config["exclude_patterns"]]],
+                            paths=["." if relative == "." else f"./{relative}" for relative in included], cwd=str(path), parent=parent,
+                            exclude_patterns=[literal_pattern(path / relative) for relative in excluded]
+                            + [f"{literal_pattern(path)}/{pattern.lstrip('/')}" for pattern in [".zfs", *config["exclude_patterns"]]],
                             tags=[f"job_uuid:{self.job['uuid']}", f"operation_uuid:{report.uuid}", "source:truenas",
                                   f"dataset:{dataset['id']}", f"artifact_uuid:{artifact['uuid']}",
                                   f"artifact_key:{artifact['artifact_key']}"],

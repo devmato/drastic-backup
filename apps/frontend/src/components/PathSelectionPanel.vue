@@ -11,6 +11,7 @@
         :selection="selection"
         :selected-paths="selectedPaths"
         :reload-key="reloadKey"
+        :entry-options="entryOptions"
         :height="height"
         :empty-label="emptyLabel"
         :error-message="errorMessage"
@@ -37,6 +38,7 @@ const props = defineProps({
   },
   selectedPaths: { type: Array, default: () => [] },
   reloadKey: { type: [String, Number, Boolean], default: null },
+  entryOptions: { type: Function, default: null },
   browserTitle: { type: String, default: 'Directory Browser' },
   selectedTitle: { type: String, default: 'Selected Paths' },
   selectedCaption: { type: String, default: 'Include' },
@@ -61,7 +63,7 @@ const selectedEntries = computed(() => {
 const selectionRows = computed(() => selectedEntries.value.map(entry => ({
   ...entry,
   id: `${entry.exclude ? 'exclude' : 'include'}:${entry.path}`,
-  label: entry.path,
+  label: entry.label || entry.path,
   caption: entry.exclude ? 'Exclude' : props.selectedCaption,
   state: entry.exclude ? 'exclude' : 'include',
   icon: groupIcon(entry.group),
@@ -81,6 +83,7 @@ function removePath(path) {
 
 function groupIcon(group) {
   if (group === 'file') return 'description'
+  if (group === 'dataset') return 'storage'
   if (group === 'pattern') return 'rule'
   return 'folder'
 }

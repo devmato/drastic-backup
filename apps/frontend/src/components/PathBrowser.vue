@@ -5,7 +5,7 @@
         <q-tooltip>Parent directory</q-tooltip>
       </q-btn>
       <q-chip dense square color="grey-2" text-color="dark" class="col">
-        <span class="ellipsis">{{ currentPath }}</span>
+        <span class="ellipsis">{{ currentPathLabel }}</span>
       </q-chip>
       <q-spinner v-if="loading" size="sm" />
     </div>
@@ -17,11 +17,10 @@
             v-for="entry in entryRows"
             :key="entry.path"
             :clickable="entry.navigable"
-            :disable="!entry.readable"
             @click="openEntry(entry)"
           >
             <q-item-section avatar>
-              <q-icon :name="entry.file ? 'description' : 'folder'" :color="entry.file ? 'blue-grey-6' : 'amber-8'" />
+              <q-icon :name="entry.icon || (entry.file ? 'description' : 'folder')" :color="entry.group === 'dataset' || entry.file ? 'blue-grey-6' : 'amber-8'" />
             </q-item-section>
             <q-item-section>
               <q-item-label>{{ entry.name }}</q-item-label>
@@ -40,7 +39,8 @@
                   round
                   icon="add"
                   :color="entry.state === 'include' ? 'green' : 'grey-7'"
-                  :disable="!entry.readable"
+                  :disable="entry.includeDisabled ?? !entry.readable"
+                  :aria-label="`Include ${entry.name}`"
                   @click.stop="setInclude(entry)"
                 >
                   <q-tooltip>{{ includeTooltip(entry) }}</q-tooltip>
@@ -52,7 +52,8 @@
                   round
                   icon="remove"
                   :color="entry.state === 'exclude' ? 'red' : 'grey-7'"
-                  :disable="!entry.readable"
+                  :disable="entry.excludeDisabled ?? !entry.readable"
+                  :aria-label="`Exclude ${entry.name}`"
                   @click.stop="setExclude(entry)"
                 >
                   <q-tooltip>Add exclude path</q-tooltip>
@@ -85,14 +86,17 @@ const props = defineProps({
   emptyLabel: { type: String, default: 'No entries found.' },
   errorMessage: { type: String, default: 'Could not load entries' },
   reloadKey: { type: [String, Number, Boolean], default: null },
+  entryOptions: { type: Function, default: null },
 })
 const emit = defineEmits(['update:selection', 'update:selectedPaths', 'pick', 'path-change'])
 
 const $q = useQuasar()
 const currentPath = ref(props.initialPath || '/')
+const currentPathLabel = ref(currentPath.value)
 const parentPath = ref('/')
 const entries = ref([])
 const loading = ref(false)
+let loadVersion = 0
 
 const includePathSet = computed(() => new Set((props.selection.paths || []).map(entry => entry.path)))
 const excludePathSet = computed(() => new Set((props.selection.exclude_patterns || []).map(entry => entry.path)))
@@ -110,19 +114,23 @@ const entryRows = computed(() =>
 )
 
 async function navigate(path = '/') {
+  const version = ++loadVersion
   loading.value = true
   try {
     const result = await props.loadEntries(path)
+    if (version !== loadVersion) return
     currentPath.value = result.base_directory || result.path || path || '/'
+    currentPathLabel.value = result.path_label || currentPath.value
     parentPath.value = result.parent_directory || parentDirectory(currentPath.value)
     entries.value = result.directories || result.entries || []
     emit('path-change', currentPath.value)
   } catch (e) {
+    if (version !== loadVersion) return
     entries.value = []
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, props.errorMessage), color: 'red', position: 'top' })
   } finally {
-    loading.value = false
+    if (version === loadVersion) loading.value = false
   }
 }
 
@@ -137,8 +145,9 @@ function normalizeEntry(entry) {
     path,
     file,
     readable,
-    navigable: !file && readable,
+    navigable: entry.navigable ?? (!file && readable),
     state: includeState(path),
+    ...props.entryOptions?.(entry),
   }
 }
 
@@ -179,17 +188,18 @@ function setInclude(entry) {
     return
   }
 
-  setPath(entry.path, false, entry.file ? 'file' : 'folder')
+  setPath(entry, false)
 }
 
 function setExclude(entry) {
-  setPath(entry.path, true, entry.file ? 'file' : 'folder')
+  setPath(entry, true)
 }
 
-function setPath(path, exclude, group) {
+function setPath(entry, exclude) {
+  const path = entry.path
   const nextIncludes = (props.selection.paths || []).filter(entry => entry.path !== path)
   const nextExcludes = (props.selection.exclude_patterns || []).filter(entry => entry.path !== path)
-  const targetEntry = { path, group }
+  const targetEntry = { ...entry.selectionEntry, path, group: entry.group || (entry.file ? 'file' : 'folder') }
 
   if (exclude) {
     nextExcludes.push(targetEntry)
@@ -204,6 +214,7 @@ function setPath(path, exclude, group) {
 }
 
 function entryCaption(entry) {
+  if (entry.note || entry.caption) return entry.note || entry.caption
   if (!entry.readable) return 'Not readable'
   if (props.mode === 'include-only') return entry.file ? 'File in snapshot' : 'Directory in snapshot'
   return entry.file ? 'Readable file' : 'Readable directory'

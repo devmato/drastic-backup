@@ -175,7 +175,7 @@ Only a small metadata plan and bounded streaming buffers are staged on the sourc
 
 ## TrueNAS Backups
 
-Configure **Connections > TrueNAS** on a protocol 3 agent running as a TrueNAS app to enable the **TrueNAS-Backup** job type. Select datasets and enable **Include child datasets** to include descendants automatically, including datasets added later. The agent creates temporary ZFS snapshots, backs up their files through Restic, and cleans up on completion or interruption. Each dataset has its own backup artifact and normal file restore support. See [TrueNAS](truenas.md) for required mounts, permissions and the deployment smoke test.
+Configure **Connections > TrueNAS** on a protocol 14 agent running as a TrueNAS app to enable the **TrueNAS-Backup** job type. Browse pools, datasets, folders and files, using **+** and **−** to include or exclude paths. Parent dataset selections automatically include descendants, including datasets added later. The agent creates temporary ZFS snapshots, backs up the selected paths through Restic, and cleans up on completion or interruption. Each dataset has its own backup artifact and normal file restore support. See [TrueNAS](truenas.md) for required mounts, permissions and the deployment smoke test.
 
 ## Actions
 

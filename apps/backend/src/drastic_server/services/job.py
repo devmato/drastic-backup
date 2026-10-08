@@ -148,8 +148,8 @@ def _get_job_type(job_type):
 
 
 def ensure_job_connection(agent, job_type, config=None):
-    if job_type == "truenas" and (config or {}).get("exclude_datasets") and (agent.protocol_version or 0) < 13:
-        raise ValueError("Update the agent to exclude TrueNAS datasets (protocol 13 required)")
+    if job_type == "truenas" and (agent.protocol_version or 0) < 14:
+        raise ValueError("Update the agent to use TrueNAS path selection (protocol 14 required)")
     if job_type == "proxmox" and (config or {}).get("backup_mode", "snapshot") != "snapshot":
         if (agent.protocol_version or 0) < 8:
             raise ValueError("Update the agent to use native Proxmox backups (protocol 8 required)")
@@ -161,8 +161,6 @@ def ensure_job_connection(agent, job_type, config=None):
     if job_type not in {"proxmox", "truenas"}:
         return
     if (agent.protocol_version or 0) < 3:
-        if job_type == "truenas":
-            raise ValueError("Update the agent to use TrueNAS backups (protocol 3 required)")
         return  # Existing Proxmox agents predate connection status reporting.
     connection = (agent.connections or {}).get(job_type) or {}
     if not connection.get("configured") or not connection.get("available"):

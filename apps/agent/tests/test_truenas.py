@@ -21,8 +21,13 @@ from drastic_common.restic import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError
 from drastic_common.restic.repository import ResticRepository
 from drastic_common.secret_envelope import encrypt_for_public_key, generate_agent_keypair
+from drastic_common.truenas import TrueNASBackupConfigSchema
 
 SETTINGS = {"api_url": "https://nas", "username": "backup", "host_root": "/mnt/host", "verify_tls": True}
+
+
+def roots(names):
+    return [{"dataset": name, "path": ".", "group": "dataset"} for name in names]
 
 
 @pytest.fixture
@@ -131,7 +136,7 @@ def nas(state, tmp_path, monkeypatch):
 
 def make_handler(api, restic):
     agent = SimpleNamespace(identifier="agent-1", get_truenas_client=lambda: api, resticapi=restic)
-    handler = TrueNASBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {"datasets": ["tank/data"]}}, 1)
+    handler = TrueNASBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {"paths": roots(["tank/data"])}}, 1)
     artifacts = []
     handler.start_artifact = lambda key, data, report=None: artifacts.append({"uuid": "artifact", "artifact_key": key, "data": data}) or artifacts[-1]
     handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs)
@@ -208,7 +213,7 @@ def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapsh
 
     restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=backup)
     handler, artifacts = make_handler(api, restic)
-    handler.job["config"]["datasets"] = controls["datasets"]
+    handler.job["config"]["paths"] = roots(controls["datasets"])
     report = AgentReport.command_report()
     with pytest.raises(TrueNASError, match="tank/data"):
         handler.run_backup(report)
@@ -221,9 +226,8 @@ def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapsh
     assert not snapshots and state["snapshots"].count() == 0
 
 
-@pytest.mark.parametrize("include_children", [None, False, True])
 @pytest.mark.parametrize("select_pool", [False, True])
-def test_child_selection_expands_at_run_time_without_duplicates(nas, state, include_children, select_pool):
+def test_child_selection_expands_at_run_time_without_duplicates(nas, state, select_pool):
     api, controls, calls, snapshots, _ = nas
     children = ["tank/data/photos", "tank/data/photos/new", "tank/database"]
     for name in children:
@@ -235,15 +239,13 @@ def test_child_selection_expands_at_run_time_without_duplicates(nas, state, incl
     restic = SimpleNamespace(operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [],
                              backup=lambda **_: {"snapshot_id": "saved"})
     handler, artifacts = make_handler(api, restic)
-    handler.job["config"]["datasets"] = ["tank"] if select_pool else ["tank/data/photos", "tank/data"]
-    if include_children is not None:
-        handler.job["config"]["include_children"] = include_children
+    handler.job["config"]["paths"] = roots(["tank"] if select_pool else ["tank/data/photos", "tank/data"])
     controls["datasets"].extend([*reversed(children), "tank"])
     report = AgentReport.command_report()
     handler.run_backup(report)
-    expected = ["tank/data", "tank/data/photos"] + (["tank/data/photos/new"] if include_children else [])
+    expected = ["tank/data", "tank/data/photos", "tank/data/photos/new"]
     if select_pool:
-        expected = sorted(controls["datasets"]) if include_children else ["tank"]
+        expected = sorted(controls["datasets"])
     created = [params[0]["dataset"] for method, params in calls if method == "pool.snapshot.create"]
     assert created == expected
     assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
@@ -258,9 +260,8 @@ def test_recursive_selection_rejects_unavailable_sources_before_snapshots(nas, s
     datasets.append({"id": "tank/data/locked", "available": False, "error": "Dataset is locked"})
     monkeypatch.setattr(api, "datasets", lambda: datasets)
     handler, artifacts = make_handler(api, SimpleNamespace())
-    handler.job["config"]["include_children"] = True
     if missing_parent:
-        handler.job["config"]["datasets"] = ["tank/missing"]
+        handler.job["config"]["paths"] = roots(["tank/missing"])
     message = "tank/missing: not found" if missing_parent else "tank/data/locked: Dataset is locked"
     with pytest.raises(TrueNASError, match=message):
         handler.run_backup(AgentReport.command_report())
@@ -268,8 +269,7 @@ def test_recursive_selection_rejects_unavailable_sources_before_snapshots(nas, s
     assert not artifacts and not snapshots and state["snapshots"].count() == 0
 
 
-@pytest.mark.parametrize("include_children", [False, True])
-def test_dataset_exclusions_skip_whole_subtrees_before_validation_and_snapshots(nas, state, monkeypatch, include_children):
+def test_dataset_exclusions_skip_whole_subtrees_before_validation_and_snapshots(nas, state, monkeypatch):
     api, controls, calls, snapshots, _ = nas
     names = ["tank", "tank/data/photos", "tank/data/photos/new", "tank/database", "tank/locked"]
     for name in names:
@@ -286,13 +286,85 @@ def test_dataset_exclusions_skip_whole_subtrees_before_validation_and_snapshots(
     monkeypatch.setattr(api, "datasets", datasets)
     handler, artifacts = make_handler(api, SimpleNamespace(
         operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=lambda **_: {"snapshot_id": "saved"}))
-    handler.job["config"] = {"datasets": ["tank", "tank/data/photos"], "include_children": include_children,
-                             "exclude_datasets": ["tank/data", "tank/locked", "tank/missing"]}
+    handler.job["config"] = {"paths": roots(["tank", "tank/data/photos"]),
+                             "exclude_paths": roots(["tank/data", "tank/locked", "tank/missing"])}
     handler.run_backup(AgentReport.command_report())
-    expected = ["tank", "tank/database"] if include_children else ["tank"]
+    expected = ["tank", "tank/database"]
     assert [params[0]["dataset"] for method, params in calls if method == "pool.snapshot.create"] == expected
     assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
     assert not snapshots and state["snapshots"].count() == 0
+
+
+def test_selected_snapshot_paths_restore_with_literal_exclusions(nas, state, tmp_path, monkeypatch):
+    binary = shutil.which("restic")
+    if not binary:
+        pytest.skip("restic is required (scripts/ci/install-restic.sh)")
+    api, _, _, snapshots, _ = nas
+    call = api.call
+
+    def snapshot_contents(method, *params):
+        result = call(method, *params)
+        if method == "pool.snapshot.create":
+            root = api.local_path("/mnt/tank/data") / ".zfs/snapshot" / params[0]["name"]
+            (root / "docs/private").mkdir(parents=True)
+            for name in ["docs/keep.txt", "docs/private/secret.txt", "docs/[draft]*?.txt", "docs/draftABC.txt", "other.txt"]:
+                (root / name).write_text(name)
+        return result
+
+    monkeypatch.setattr(api, "call", snapshot_contents)
+    restic = ResticApi(binary, ResticRepository(location=str(tmp_path / "repo"), password="test-password"))
+    restic.init()
+    handler, artifacts = make_handler(api, restic)
+    def entry(path, group):
+        return {"dataset": "tank/data", "path": path, "group": group}
+    handler.job["config"] = {
+        "paths": [entry("docs", "folder"), entry("example.txt", "file")],
+        "exclude_paths": [entry("docs/private", "folder"), entry("docs/[draft]*?.txt", "file")],
+    }
+    handler.run_backup(AgentReport.command_report())
+    target = tmp_path / "restored"
+    restic.restore(artifacts[0]["snapshot_id"], str(target), include_paths=["/"])
+    assert {str(path.relative_to(target)) for path in target.rglob("*") if path.is_file()} == {
+        "docs/keep.txt", "docs/draftABC.txt", "example.txt",
+    }
+    assert (target / "example.txt").read_text() == "snapshot content"
+    assert not snapshots and not state["snapshots"].count()
+
+
+def test_folder_selection_projects_to_child_dataset_mounts():
+    names = {"tank/data": "/mnt/tank/data", "tank/data/child": "/mnt/tank/data/photos/child",
+             "tank/data/other": "/mnt/tank/data/other", "tank/data/child/nested": "/mnt/tank/data/photos/child/nested"}
+    available = {name: {"id": name, "mountpoint": mount, "available": True} for name, mount in names.items()}
+    config = TrueNASBackupConfigSchema().load({
+        "paths": [{"dataset": "tank/data", "path": "photos", "group": "folder"}],
+        "exclude_paths": [{"dataset": "tank/data", "path": "photos/child/nested", "group": "folder"}],
+    })
+    selected = backup_module.backup_selection(config, available)
+    assert [(dataset["id"], paths, excluded) for dataset, paths, excluded in selected] == [
+        ("tank/data", ["photos"], ["photos/child/nested"]),
+        ("tank/data/child", ["."], ["nested"]),
+    ]
+
+
+@pytest.mark.parametrize("relative", ["missing.txt", "escape/example.txt"])
+def test_invalid_snapshot_path_fails_and_cleans_up(nas, state, monkeypatch, relative):
+    api, _, _, snapshots, live = nas
+    call = api.call
+
+    def snapshot_contents(method, *params):
+        result = call(method, *params)
+        if method == "pool.snapshot.create":
+            root = live / ".zfs/snapshot" / params[0]["name"]
+            (root / "escape").symlink_to(live, target_is_directory=True)
+        return result
+
+    monkeypatch.setattr(api, "call", snapshot_contents)
+    handler, artifacts = make_handler(api, SimpleNamespace())
+    handler.job["config"] = {"paths": [{"dataset": "tank/data", "path": relative, "group": "file"}]}
+    with pytest.raises(TrueNASError, match="Backup failed"):
+        handler.run_backup(AgentReport.command_report())
+    assert artifacts[0]["state"] == AgentOperationState.failed
+    assert not snapshots and not state["snapshots"].count()
 
 
 @pytest.mark.parametrize("failure", [None, "before_scan", "after_summary"])
@@ -342,7 +414,7 @@ def test_dataset_progress_keeps_final_summaries_and_publishes_artifacts(nas, sta
     handler, _ = make_handler(api, restic)
     del handler.start_artifact, handler.finish_artifact
     handler.operation = {"id": 1}
-    handler.job["config"]["datasets"] = controls["datasets"]
+    handler.job["config"]["paths"] = roots(controls["datasets"])
     with pytest.raises(TrueNASError, match="tank/data") if failure else nullcontext():
         handler.run_backup(report)
     assert report.data["bytes_processed"] == (15 if failure == "before_scan" else 1010)

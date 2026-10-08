@@ -37,27 +37,41 @@ class TrueNASSettingsSchema(Schema):
         return data
 
 
+class TrueNASPathSchema(Schema):
+    dataset = fields.String(required=True, validate=validate_dataset)
+    path = fields.String(required=True)
+    group = fields.String(required=True, validate=validate.OneOf(["dataset", "folder", "file"]))
+
+    @validates_schema
+    def validate_path(self, data, **kwargs):
+        path = data["path"]
+        if (not path or re.search(r"[\x00-\x1f]", path)
+                or (path != "." and any(part in {"", ".", "..", ".zfs"} for part in path.split("/")))
+                or (data["group"] == "dataset") != (path == ".")):
+            raise ValidationError({"path": ["Select a path relative to the dataset root"]})
+
+
+def path_is_within(entry, parent):
+    if entry["dataset"] != parent["dataset"]:
+        return parent["path"] == "." and entry["dataset"].startswith(parent["dataset"] + "/")
+    return (parent["path"] == "." or entry["path"] == parent["path"]
+            or (parent["group"] != "file" and entry["path"].startswith(parent["path"] + "/")))
+
+
 class TrueNASBackupConfigSchema(Schema):
-    datasets = fields.List(fields.String(validate=validate_dataset), required=True, validate=validate.Length(min=1))
-    include_children = fields.Boolean(load_default=False)
-    exclude_datasets = fields.List(fields.String(validate=validate_dataset), load_default=list)
+    paths = fields.List(fields.Nested(TrueNASPathSchema), required=True, validate=validate.Length(min=1))
+    exclude_paths = fields.List(fields.Nested(TrueNASPathSchema), load_default=list)
     exclude_patterns = fields.List(fields.String(validate=validate.Length(min=1)), load_default=list)
 
     @validates_schema
-    def unique_datasets(self, data, **kwargs):
-        for field in ("datasets", "exclude_datasets"):
-            if len(data[field]) != len(set(data[field])):
-                raise ValidationError({field: ["Duplicate datasets are not allowed"]})
-        if not any(not any(name == excluded or name.startswith(f"{excluded}/")
-                           for excluded in data["exclude_datasets"]) for name in data["datasets"]):
-            raise ValidationError({"datasets": ["Select at least one dataset that is not excluded"]})
-
-    @post_load
-    def omit_empty_exclusions(self, data, **kwargs):
-        # Older agents reject unknown fields, even when the list is empty.
-        if not data["exclude_datasets"]:
-            data.pop("exclude_datasets")
-        return data
+    def validate_selection(self, data, **kwargs):
+        for field in ("paths", "exclude_paths"):
+            keys = [(entry["dataset"], entry["path"]) for entry in data[field]]
+            if len(keys) != len(set(keys)):
+                raise ValidationError({field: ["Duplicate paths are not allowed"]})
+        if not any(not any(path_is_within(entry, excluded) for excluded in data["exclude_paths"])
+                   for entry in data["paths"]):
+            raise ValidationError({"paths": ["Select at least one path that is not excluded"]})
 
 
 class ConnectionStatusSchema(Schema):

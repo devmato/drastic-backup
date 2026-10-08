@@ -1,126 +1,100 @@
 <template>
-  <SelectionLayout class="q-mt-md" available-title="Available Datasets" selected-title="Selection"
-    :available-entries="availableRows" :selected-entries="selectedRows"
-    :available-message="agentOnline ? '' : 'Bring the agent online to discover datasets.'"
-    :available-error="error" :loading="loading" loading-label="Loading datasets…"
-    empty-available-label="No supported datasets found." empty-selected-label="No datasets selected yet."
-    @select="addDataset" @exclude="excludeDataset" @remove="removeRule">
+  <PathSelectionPanel class="q-mt-md" browser-title="Pools, Datasets and Files" selected-title="Selection"
+    :selection="selection" :load-entries="loadEntries" :entry-options="entryOptions" :reload-key="reloadKey"
+    :available-message="availableMessage" empty-selected-label="No paths selected yet."
+    @update:selection="value => update(selectionConfig(value))">
     <template #header>
-      <div class="text-subtitle1">Dataset Selection</div>
+      <div class="text-subtitle1">TrueNAS Selection</div>
       <q-space />
-      <q-badge color="grey-7" :label="scopeLabel" />
-      <div class="row q-gutter-xs">
-        <q-btn flat dense no-caps no-wrap icon="settings" label="Connection" :to="`/agents/${agentId}?tab=connections`" target="_blank">
-          <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
-        </q-btn>
-        <q-btn flat dense no-caps no-wrap icon="refresh" label="Refresh" :loading="loading" :disable="!agentOnline" @click="loadDatasets" />
-      </div>
-    </template>
-    <template #options>
-      <q-toggle :model-value="modelValue.include_children ?? false" label="Include child datasets" @update:model-value="value => update({ include_children: value })" />
-      <div class="text-caption">{{ modelValue.include_children ? 'Child datasets, including newly created ones, are included automatically.' : 'Only explicitly selected datasets are included.' }} Exclusions omit a dataset and all its children.</div>
-      <div v-if="!supportsExclusions" class="text-caption q-mt-xs">Update the agent to exclude datasets (protocol 13 required).</div>
+      <q-btn flat dense no-caps no-wrap icon="settings" label="Connection" :to="`/agents/${agentId}?tab=connections`" target="_blank">
+        <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
+      </q-btn>
+      <q-btn flat dense no-caps no-wrap icon="refresh" label="Refresh" :disable="!!availableMessage" @click="refresh" />
     </template>
     <template #advanced>
       <q-input outlined dense type="textarea" autogrow label="Exclude patterns (one per line, relative to each dataset)" :model-value="(modelValue.exclude_patterns || []).join('\n')" @update:model-value="value => update({ exclude_patterns: value.split('\n').filter(Boolean) })" />
     </template>
-  </SelectionLayout>
+  </PathSelectionPanel>
 </template>
 
 <script setup>
 import { computed, ref, watch } from 'vue'
-import SelectionLayout from 'components/SelectionLayout.vue'
+import PathSelectionPanel from 'components/PathSelectionPanel.vue'
 import { useAgentStore } from 'stores/agent'
-import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
-import { hasTrueNASSelection, isDatasetWithin } from 'src/utils/truenas-selection'
+import { useJobStore } from 'stores/job'
+import { browserKey, browserPath, browserSelection, isPathWithin, selectionConfig } from 'src/utils/truenas-selection'
 
 const props = defineProps({ modelValue: { type: Object, required: true }, agentId: { type: [Number, String], default: null }, agentOnline: Boolean })
 const emit = defineEmits(['update:modelValue'])
 const agentStore = useAgentStore()
-const datasets = ref([])
-const loading = ref(false)
-const error = ref('')
-let loadVersion = 0
-const selectedIds = computed(() => props.modelValue.datasets || [])
-const excludedIds = computed(() => props.modelValue.exclude_datasets || [])
-const supportsExclusions = computed(() => (agentStore.agents.find(agent => String(agent.id) === String(props.agentId))?.protocol_version || 0) >= 13)
-const selectedDatasets = computed(() => selectedIds.value.map(id => datasets.value.find(dataset => dataset.id === id) || { id }))
-function includedVia(id) {
-  return selectedIds.value.find(parent => parent === id)
-    || (props.modelValue.include_children ? selectedIds.value.find(parent => isDatasetWithin(id, parent)) : undefined)
-}
-function excludedVia(id) { return excludedIds.value.find(parent => isDatasetWithin(id, parent)) }
-function canExclude(id) {
-  return supportsExclusions.value && !!includedVia(id) && !excludedVia(id)
-    && hasTrueNASSelection({ ...props.modelValue, exclude_datasets: [...excludedIds.value, id] })
-}
-const scopeLabel = computed(() => {
-  const count = datasets.value.filter(dataset => includedVia(dataset.id) && !excludedVia(dataset.id)).length
-  const known = props.agentOnline && !loading.value && !error.value
-  return `${known ? `${count} included` : `${selectedIds.value.length} selected · scope unavailable`} · ${excludedIds.value.length} ${excludedIds.value.length === 1 ? 'exclusion' : 'exclusions'}`
-})
-function datasetRow(dataset) {
-  return { ...dataset, label: dataset.id, caption: dataset.error || dataset.path || 'Details unavailable' }
-}
-const availableRows = computed(() => datasets.value.map(dataset => {
-  const included = includedVia(dataset.id)
-  const excluded = excludedVia(dataset.id)
-  return {
-    ...datasetRow(dataset),
-    state: excluded ? 'exclude' : included ? 'include' : undefined,
-    note: excluded ? `Excluded via ${excluded}` : included ? `Included via ${included}` : '',
-    actions: [
-      { name: 'select', icon: 'add', color: 'positive', label: 'Select dataset',
-        disable: !dataset.available || (!!included && !excluded) || (!!excluded && excluded !== dataset.id) },
-      { name: 'exclude', icon: 'remove', color: 'negative', label: 'Exclude dataset and children',
-        disable: !canExclude(dataset.id), tooltip: supportsExclusions.value ? 'Exclude dataset and children' : 'Update the agent (protocol 13 required)' },
-    ],
+const jobStore = useJobStore()
+const datasets = ref(null)
+const reloadKey = ref(0)
+const selection = computed(() => browserSelection(props.modelValue))
+const availableMessage = computed(() => {
+  if (!props.agentOnline) return 'Bring the agent online to browse datasets and files.'
+  if ((agentStore.agents.find(agent => String(agent.id) === String(props.agentId))?.protocol_version || 0) < 14) {
+    return 'Update the agent to use TrueNAS path selection (protocol 14 required).'
   }
-}))
-const selectedRows = computed(() => [
-  ...selectedDatasets.value.map(dataset => ({
-    ...datasetRow(dataset), id: `include:${dataset.id}`, datasetId: dataset.id, state: 'include',
-    note: excludedVia(dataset.id) ? `Excluded via ${excludedVia(dataset.id)}` : props.modelValue.include_children ? 'Includes child datasets' : 'Include',
-  })),
-  ...excludedIds.value.map(id => ({
-    ...datasetRow(datasets.value.find(dataset => dataset.id === id) || { id }),
-    id: `exclude:${id}`, datasetId: id, state: 'exclude',
-    note: includedVia(id) || selectedIds.value.some(name => isDatasetWithin(name, id))
-      ? 'Excluded with child datasets' : 'Excluded with child datasets · outside current selection',
-  })),
-])
+  return ''
+})
+
 function update(patch) { emit('update:modelValue', { ...props.modelValue, ...patch }) }
-function addDataset(dataset) {
-  const excluded = excludedVia(dataset.id)
-  if (!dataset.available || (excluded && excluded !== dataset.id)) return
-  update({
-    datasets: includedVia(dataset.id) ? [...selectedIds.value] : [...selectedIds.value, dataset.id],
-    exclude_datasets: excludedIds.value.filter(id => id !== dataset.id),
-  })
-}
-function excludeDataset(dataset) {
-  if (canExclude(dataset.id)) update({ exclude_datasets: [...excludedIds.value, dataset.id] })
-}
-function removeRule(entry) {
-  const field = entry.state === 'exclude' ? 'exclude_datasets' : 'datasets'
-  update({ [field]: (props.modelValue[field] || []).filter(id => id !== entry.datasetId) })
+function refresh() { datasets.value = null; reloadKey.value++ }
+watch(() => [props.agentId, props.agentOnline], refresh)
+
+function entryOptions(entry) {
+  const rule = { dataset: entry.selectionEntry.dataset, path: entry.selectionEntry.relativePath, group: entry.group }
+  const excluded = (props.modelValue.exclude_paths || []).find(parent => isPathWithin(rule, parent, datasets.value || []))
+  const included = (props.modelValue.paths || []).find(parent => isPathWithin(rule, parent, datasets.value || []))
+  return {
+    state: excluded ? 'exclude' : included ? 'include' : null,
+    note: excluded ? `Excluded via ${browserPath(excluded)}` : included ? `Included via ${browserPath(included)}` : '',
+    includeDisabled: !entry.readable || (!!excluded && browserKey(excluded) !== entry.path),
+    excludeDisabled: false,
+  }
 }
 
-async function loadDatasets() {
-  const version = ++loadVersion
-  error.value = ''
-  datasets.value = []
-  loading.value = false
-  if (!props.agentId || !props.agentOnline) return
-  loading.value = true
-  try {
-    const result = await agentStore.getTrueNASDatasets(props.agentId)
-    if (version === loadVersion) datasets.value = result
-  } catch (e) {
-    if (version === loadVersion && !shouldIgnoreApiError(e)) error.value = getApiErrorMessage(e)
-  } finally {
-    if (version === loadVersion) loading.value = false
+function browserEntry(dataset, relativePath = '.', group = 'dataset', details = {}) {
+  return {
+    ...details,
+    name: relativePath === '.' ? dataset.id.split('/').pop() : relativePath.split('/').pop(),
+    path: browserKey({ dataset: dataset.id, path: relativePath }),
+    group, icon: group === 'dataset' ? 'storage' : group === 'file' ? 'description' : 'folder',
+    file: group === 'file', readable: dataset.available && details.readable !== false,
+    navigable: group === 'dataset' || (group === 'folder' && details.readable !== false),
+    caption: group === 'dataset' ? dataset.error || 'Includes child datasets' : '',
+    selectionEntry: { dataset: dataset.id, relativePath },
   }
 }
-watch(() => [props.agentId, props.agentOnline], loadDatasets, { immediate: true })
+
+async function loadEntries(path) {
+  const agentId = props.agentId
+  const version = reloadKey.value
+  const known = datasets.value || await agentStore.getTrueNASDatasets(agentId)
+  if (version === reloadKey.value) datasets.value = known
+  const [datasetId, relativePath] = path === '/' ? ['', '.'] : JSON.parse(path)
+  const dataset = known.find(item => item.id === datasetId)
+  const children = relativePath === '.' ? known.filter(item => item.id.split('/').slice(0, -1).join('/') === datasetId) : []
+  let entries = []
+  if (dataset?.available) {
+    const relative = relativePath === '.' ? '' : relativePath
+    const local = `${dataset.path}${relative ? `/${relative}` : ''}`
+    const listing = await jobStore.getDirlist(agentId, local)
+    entries = listing.directories.filter(entry => entry.name !== '.zfs').map(entry => {
+      const child = known.find(item => item.path === `${local}/${entry.name}`)
+      return child ? browserEntry(child) : browserEntry(dataset, `${relative ? `${relative}/` : ''}${entry.name}`, entry.file ? 'file' : 'folder', entry)
+    })
+  }
+  // Dataset discovery also exposes children whose parent isn't mounted in the agent.
+  for (const child of children) {
+    entries = entries.filter(entry => entry.path !== browserKey({ dataset: child.id, path: '.' }))
+    entries.push(browserEntry(child))
+  }
+  const parentDataset = datasetId.split('/').slice(0, -1).join('/')
+  const parent = relativePath === '.'
+    ? (parentDataset ? browserKey({ dataset: parentDataset, path: '.' }) : '/')
+    : browserKey({ dataset: datasetId, path: relativePath.split('/').slice(0, -1).join('/') || '.' })
+  return { path, entries, parent_directory: parent, path_label: datasetId ? browserPath({ dataset: datasetId, path: relativePath }) : '/' }
+}
 </script>

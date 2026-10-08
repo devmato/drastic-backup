@@ -45,63 +45,52 @@ def test_truenas_settings_authorization_encryption_and_connection_status(api_cli
     assert client.get(url).status_code == 400
 
 
-def test_truenas_job_validation_preserves_existing_jobs_and_rejects_unready_agent(api_client):
+def test_truenas_job_validation_and_agent_protocol(api_client):
     client, agent, _, _ = api_client
     with pytest.raises(ValueError, match="Update the agent"):
         ensure_job_connection(agent, "truenas")
-    agent.protocol_version = 3
+    agent.protocol_version = 14
     agent.connections = {"truenas": {"configured": False, "available": True}}
     db.session.commit()
-    payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": {"datasets": ["tank/data"]}}
+    config = {"paths": [{"dataset": "tank/data", "path": ".", "group": "dataset"}], "exclude_paths": [], "exclude_patterns": []}
+    payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": config}
     assert client.post("/api/jobs/", json=payload).status_code == 400
     # Use assignment because JSON columns do not track nested mutations.
     agent.connections = {"truenas": {"configured": True, "available": True}}
     db.session.commit()
-    assert client.post("/api/jobs/", json={**payload, "config": {"datasets": ["tank/../etc"]}}).status_code == 422
+    assert client.post("/api/jobs/", json={**payload, "config": {"paths": [{"dataset": "tank/../etc", "path": ".", "group": "dataset"}]}}).status_code == 422
     response = client.post("/api/jobs/", json=payload)
     assert response.status_code == 201
     job_id = response.json["id"]
-    assert client.put(f"/api/jobs/{job_id}", json={"config": {"datasets": []}}).status_code == 400
-    assert client.get(f"/api/jobs/{job_id}").json["config"]["datasets"] == ["tank/data"]
-    assert client.get(f"/api/jobs/{job_id}").json["config"]["include_children"] is False
-    config = {"datasets": ["tank"], "include_children": True}
-    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 200
-    assert client.get(f"/api/jobs/{job_id}").json["config"]["include_children"] is True
-    response = client.post("/api/jobs/", json={**payload, "config": config})
-    assert response.status_code == 201
-    assert client.get(f"/api/jobs/{response.json['id']}").json["config"]["include_children"] is True
-    assert client.post("/api/jobs/", json={**payload, "config": {**config, "include_children": "invalid"}}).status_code == 422
-
-
-def test_dataset_exclusions_validate_round_trip_and_require_capable_agents(api_client):
-    client, agent, _, _ = api_client
-    agent.protocol_version = 12
-    agent.connections = {"truenas": {"configured": True, "available": True}}
-    db.session.commit()
-    config = {"datasets": ["tank"], "include_children": True, "exclude_datasets": ["tank/data"]}
-    payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": config}
-    response = client.post("/api/jobs/", json=payload)
-    assert response.status_code == 400
-    assert "protocol 13" in response.json["message"]
-    response = client.post("/api/jobs/", json={**payload, "config": {**config, "exclude_datasets": []}})
-    assert response.status_code == 201
-    job_id = response.json["id"]
-    assert "exclude_datasets" not in client.get(f"/api/jobs/{job_id}").json["config"]
-    assert "exclude_datasets" not in AgentRequestService(agent).sync()["jobs"][0]["config"]
-    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 400
-
+    assert client.put(f"/api/jobs/{job_id}", json={"config": {"paths": []}}).status_code == 400
+    assert client.get(f"/api/jobs/{job_id}").json["config"] == config
     agent.protocol_version = 13
     db.session.commit()
+    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 400
+    with pytest.raises(AgentException, match="protocol 14"):
+        AgentRequestService(agent).sync()
+
+
+def test_path_selection_validation_and_round_trip(api_client):
+    client, agent, _, _ = api_client
+    agent.protocol_version = 14
+    agent.connections = {"truenas": {"configured": True, "available": True}}
+    db.session.commit()
+    root = {"dataset": "tank", "path": ".", "group": "dataset"}
+    folder = {"dataset": "tank", "path": "photos", "group": "folder"}
+    excluded = {"dataset": "tank", "path": "photos/private", "group": "folder"}
+    config = {"paths": [folder], "exclude_paths": [excluded], "exclude_patterns": ["*.tmp"]}
+    payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": config}
+    response = client.post("/api/jobs/", json=payload)
+    assert response.status_code == 201
+    job_id = response.json["id"]
     assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 200
-    assert client.get(f"/api/jobs/{job_id}").json["config"]["exclude_datasets"] == ["tank/data"]
-    assert AgentRequestService(agent).sync()["jobs"][0]["config"]["exclude_datasets"] == ["tank/data"]
-    for excluded in (["tank/../data"], ["tank/data", "tank/data"], ["tank"], ["tank", "tank/data"]):
-        invalid = {**config, "exclude_datasets": excluded}
+    assert client.get(f"/api/jobs/{job_id}").json["config"] == config
+    assert AgentRequestService(agent).sync()["jobs"][0]["config"] == config
+    invalid_configs = [
+        {**config, "exclude_paths": entries} for entries in ([root], [folder], [excluded, excluded])
+    ] + [{**config, "paths": [{**folder, "path": path}]} for path in ("", "/etc", "../etc", "a/../b", ".zfs/snapshot", "a//b", "a/./b", "a\x00b")]
+    for invalid in invalid_configs:
         assert client.post("/api/jobs/", json={**payload, "config": invalid}).status_code == 422
         assert client.put(f"/api/jobs/{job_id}", json={"config": invalid}).status_code == 400
-        assert client.get(f"/api/jobs/{job_id}").json["config"]["exclude_datasets"] == ["tank/data"]
-
-    agent.protocol_version = 12
-    db.session.commit()
-    with pytest.raises(AgentException, match="protocol 13"):
-        AgentRequestService(agent).sync()
+        assert client.get(f"/api/jobs/{job_id}").json["config"] == config
