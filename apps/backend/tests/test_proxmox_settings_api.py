@@ -1,5 +1,6 @@
 import bcrypt
 import pytest
+from flask import has_request_context
 
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.secret_envelope import decrypt_with_private_key, generate_agent_keypair
@@ -8,9 +9,13 @@ from drastic_common.version import get_version
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.app import create_app
 from drastic_server.extensions import db, socketio
+from drastic_server.integrations import agent as agent_command
 from drastic_server.models.agent import Agent, AgentOperationState, AgentSession
+from drastic_server.models.job import Job
 from drastic_server.models.user import User
-from drastic_server.services.agent import command as agent_command
+from drastic_server.services.agent.request import AgentRequestService
+from drastic_server.services.exceptions import ResourceNotFound
+from drastic_server.services.jobs import management as job_management
 
 SETTINGS = {
     "api_url": "https://127.0.0.1:8006/api2/json",
@@ -52,6 +57,27 @@ def api_client(monkeypatch):
         finally:
             db.session.remove()
             db.drop_all()
+
+
+def test_job_services_enforce_ownership_and_commit_without_an_http_request(api_client, monkeypatch):
+    _, agent, foreign_agent, _ = api_client
+    assert not has_request_context()
+    monkeypatch.setattr(agent_command.AgentService, "sync", lambda *args, **kwargs: None)
+    data = {"agent_id": agent.id, "name": "Files", "type": "file", "config": {"paths": []}}
+    with pytest.raises(ResourceNotFound):
+        job_management.create_job(foreign_agent.user_id, data)
+    job = job_management.create_job(agent.user_id, data)
+    job_id = job.id
+    with pytest.raises(ResourceNotFound):
+        job_management.update_job(foreign_agent.user_id, job_id, {"name": "Denied"})
+    assert db.session.get(Job, job_id).name == "Files"
+    job_management.update_job(agent.user_id, job_id, {"name": "Updated"})
+    db.session.expire_all()
+    assert db.session.get(Job, job_id).name == "Updated"
+    with pytest.raises(ResourceNotFound):
+        job_management.delete_job(foreign_agent.user_id, job_id)
+    job_management.delete_job(agent.user_id, job_id)
+    assert db.session.get(Job, job_id) is None
 
 
 def test_agent_alias_can_be_set_offline_and_cleared_with_validated_owner_access(api_client):
@@ -166,6 +192,32 @@ def test_agent_failures_and_timeouts_are_reported(api_client, monkeypatch):
         lambda *_args, **_kwargs: {"data": {"timeout": True}},
     )
     assert client.put(url, json=SETTINGS).status_code == 504
+
+
+def test_failed_socket_request_rolls_back_unfinished_service_work(api_client, monkeypatch):
+    client, agent, _, _ = api_client
+    db.session.delete(agent.session)
+    agent.secret = bcrypt.hashpw(b"agent-secret", bcrypt.gensalt()).decode()
+    agent.alias = "Saved alias"
+    db.session.commit()
+
+    def failed_sync(service):
+        service.agent.alias = "Uncommitted alias"
+        db.session.flush()
+        raise ValueError("injected service failure")
+
+    monkeypatch.setattr(AgentRequestService, "sync", failed_sync)
+    connection = socketio.test_client(client.application, namespace="/agent", auth={
+        "agent_id": agent.id, "agent_secret": "agent-secret", "agent_os": "Linux",
+        "agent_hostname": "test-host", "agent_version": "test",
+    })
+    try:
+        response = connection.emit("request", {"action": "sync", "args": {}}, namespace="/agent", callback=True)
+        assert response == {"success": False, "result": {"error": "ValueError"}}
+        db.session.refresh(agent)
+        assert agent.alias == "Saved alias"
+    finally:
+        connection.disconnect(namespace="/agent")
 
 
 def test_agent_handshake_persists_protocol_and_rejects_unknown_versions(api_client):

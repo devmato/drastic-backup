@@ -14,6 +14,7 @@ from drastic_common.agent.schemas import AgentJobScheduleSchema
 from drastic_common.diagnostics import bounded, redact, source_fingerprint, system_snapshot
 from drastic_common.version import get_version
 from drastic_server.extensions import db
+from drastic_server.integrations.agent import AgentService
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
@@ -33,7 +34,6 @@ from drastic_server.schemas.agent import (
 from drastic_server.schemas.job import JobResponseSchema
 from drastic_server.schemas.repository import RepositoryResponseSchema
 from drastic_server.schemas.retention import RetentionResponseSchema
-from drastic_server.services.agent.command import AgentService
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.services.diagnostics import MAX_USER_EVENTS, RETENTION_DAYS, record, utcnow
 from drastic_server.utils.urls import public_server_url

@@ -5,7 +5,7 @@ __all__ = ["Agent", "AgentExeption"]
 
 def __getattr__(name):
     if name == "Agent":
-        from drastic_agent.agent.agent import Agent
+        from drastic_agent.runtime.agent import Agent
 
         return Agent
 

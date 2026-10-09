@@ -6,14 +6,14 @@ from datetime import datetime, timezone
 
 import pytest
 
-from drastic_agent.agent.database import (
+from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.agent.report import AgentReport
+from drastic_agent.storage.database import (
     agent_operation_artifacts,
     agent_operation_queue,
     agent_operations,
 )
-from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.operation_store import operation_store
-from drastic_agent.agent.report import AgentReport
+from drastic_agent.storage.operation_store import operation_store
 from drastic_common.agent.schemas import AgentOperationSchema
 
 
@@ -90,7 +90,7 @@ def test_running_report_is_failed_during_recovery():
 
 @pytest.mark.parametrize("outcome", ["success", "failed", "interrupted"])
 def test_update_report_survives_restart_and_retries_delivery(tmp_path, monkeypatch, outcome):
-    import drastic_agent.agent.agent as agent_module
+    import drastic_agent.runtime.agent as agent_module
 
     root = tmp_path / "installation"
     root.mkdir()

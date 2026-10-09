@@ -13,12 +13,13 @@ from unittest.mock import Mock
 import pytest
 import socketio
 
-import drastic_agent.agent.agent as agent_module
-from drastic_agent.agent.agent import Agent
+import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
-from drastic_agent.agent.execution import ExecutionManager
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.runtime.execution import ExecutionManager
+from drastic_agent.services import secrets as repository_secrets_service
 
 
 def build_agent(server="http://server.test", identifier=None, secret=None):
@@ -132,7 +133,7 @@ def test_update_uses_installer_and_keeps_work_paused_until_unit_finishes(managed
             raise subprocess.TimeoutExpired(command, 10)
         return SimpleNamespace(returncode=0, stdout=state, stderr="")
 
-    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     assert agent.cmd_update().state == AgentReportState.success
     assert calls[0][0] == [str(agent_module.AGENT_COMMAND), "status"]
     assert calls[1][0] == [
@@ -174,7 +175,7 @@ def test_update_rejects_busy_and_unmanaged_agents(managed_agent, monkeypatch, fa
         calls.append(command)
         if failure in {"preflight", "docker"}:
             raise subprocess.CalledProcessError(1, command)
-    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     release = Event()
     if failure == "busy":
         agent._Agent__execution_manager().submit(lambda: release.wait(2))
@@ -206,7 +207,7 @@ def test_container_update_reuses_installer_and_pauses_until_launcher_finishes(ma
             request.write_text("{}")
         return SimpleNamespace(returncode=0, stdout="", stderr="")
 
-    monkeypatch.setattr(agent_module.subprocess, "run", run)
+    monkeypatch.setattr(subprocess, "run", run)
     assert agent.cmd_update().state == AgentReportState.success
     assert calls == [[str(agent_module.AGENT_COMMAND), "status"], [str(agent_module.AGENT_COMMAND), "update"]]
     assert agent.cmd_update().state == AgentReportState.failed
@@ -273,8 +274,8 @@ def test_set_repository_initializes_before_agent_key_provisioning(monkeypatch):
 
     monkeypatch.setattr(agent_module, "repositories", FakeRepositories())
     monkeypatch.setattr(agent_module, "repository_secrets", FakeRepositorySecrets())
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
-    monkeypatch.setattr(agent_module, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
+    monkeypatch.setattr(repository_secrets_service, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
     monkeypatch.setattr(agent_module.secrets, "token_urlsafe", lambda length: "agent-password")
     monkeypatch.setattr(
         agent,
@@ -347,7 +348,7 @@ def test_set_repository_uses_agent_key_envelope_without_persisting_secret(monkey
 
     monkeypatch.setattr(agent_module, "repositories", FakeRepositories())
     monkeypatch.setattr(agent_module, "repository_secrets", FakeRepositorySecrets())
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "agent-password")
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "agent-password")
     agent._Agent__resticapi = FakeResticApi()
 
     Agent._Agent__set_repository(agent, 1)
@@ -390,8 +391,8 @@ def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch
 
     monkeypatch.setattr(agent_module, "repository_secrets", FakeRepositorySecrets())
     monkeypatch.setattr(agent_module, "repositories", FakeRepositories())
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
-    monkeypatch.setattr(agent_module, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
+    monkeypatch.setattr(repository_secrets_service, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
     monkeypatch.setattr(
         agent,
         "_Agent__send_request",
@@ -456,8 +457,8 @@ def test_set_repository_ignores_already_initialized_during_provisioning(monkeypa
 
     monkeypatch.setattr(agent_module, "repositories", FakeRepositories())
     monkeypatch.setattr(agent_module, "repository_secrets", FakeRepositorySecrets())
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
-    monkeypatch.setattr(agent_module, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "recovery-password")
+    monkeypatch.setattr(repository_secrets_service, "encrypt_for_public_key", lambda plaintext, key: {"sealed": plaintext})
     monkeypatch.setattr(agent_module.secrets, "token_urlsafe", lambda length: "agent-password")
     monkeypatch.setattr(agent, "_Agent__send_request", lambda action, **kwargs: {"success": True, "result": {}})
     agent._Agent__resticapi = FakeResticApi()
@@ -848,7 +849,7 @@ def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
     monkeypatch.setattr(agent_module, "jobs", FakeTable())
     monkeypatch.setattr(agent_module, "schedules", FakeTable())
     monkeypatch.setattr(agent_module, "actions", FakeTable())
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "agent-password")
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "agent-password")
 
     report = Agent.cmd_sync(agent)
 
@@ -1232,7 +1233,7 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
     monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
     monkeypatch.setattr(agent_module.requests, "get", fake_get)
-    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(agent_module.os, "replace", fake_replace)
 
     agent = Agent.__new__(Agent)
@@ -1296,7 +1297,7 @@ def test_existing_restic_binary_requires_expected_version_without_download(tmp_p
     monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
     monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
-    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
     monkeypatch.setattr(
         agent_module.requests,
         "get",
@@ -1344,7 +1345,7 @@ def test_existing_restic_binary_with_wrong_version_is_replaced(tmp_path, monkeyp
     monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
     monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
     monkeypatch.setattr(agent_module.requests, "get", fake_get)
-    monkeypatch.setattr(agent_module.subprocess, "run", fake_run)
+    monkeypatch.setattr(subprocess, "run", fake_run)
 
     Agent._Agent__check_restic_binary(Agent.__new__(Agent))
 
@@ -1373,7 +1374,7 @@ def test_failed_restic_smoke_test_preserves_existing_binary(tmp_path, monkeypatc
     monkeypatch.setattr(agent_module.Agent, "arch", property(lambda self: "amd64"))
     monkeypatch.setattr(agent_module.requests, "get", lambda url, timeout: Response())
     monkeypatch.setattr(
-        agent_module.subprocess,
+        subprocess,
         "run",
         lambda command, **kwargs: SimpleNamespace(
             returncode=1, stdout="", stderr="invalid executable"

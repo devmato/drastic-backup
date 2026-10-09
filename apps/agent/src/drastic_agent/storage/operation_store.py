@@ -3,13 +3,13 @@ import logging
 from datetime import datetime, timezone
 from threading import RLock
 
-from drastic_agent.agent.database import agent_operation_queue
 from drastic_agent.agent.enums import (
     AgentOperationLogLevel,
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
 )
+from drastic_agent.storage.database import agent_operation_queue
 
 
 def _enum_value(value):

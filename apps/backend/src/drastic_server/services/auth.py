@@ -4,12 +4,14 @@ import hashlib
 import hmac
 from datetime import UTC, datetime
 
-from flask import request
+import bcrypt
 from flask_jwt_extended import create_access_token, create_refresh_token, decode_token
 
 from drastic_server.extensions import db
 from drastic_server.models.user import User
 from drastic_server.models.user_session import UserSession
+from drastic_server.services.exceptions import AuthenticationFailed
+from drastic_server.services.repository import RepositorySecretError, ensure_user_recovery_key
 
 
 def utcnow() -> datetime:
@@ -17,14 +19,43 @@ def utcnow() -> datetime:
 
 
 class SessionAuthService:
+    """Session lifecycle; callers pass request metadata and set response cookies."""
+
     @classmethod
-    def create_session(cls, user: User) -> tuple[UserSession, str, str]:
+    def login(cls, username, password, *, user_agent=""):
+        user = User.query.filter_by(name=username.lower()).first()
+        if not user or not bcrypt.checkpw(password.encode("UTF-8"), user.password.encode("UTF-8")):
+            raise AuthenticationFailed("Wrong username or password")
+        try:
+            recovery_key = ensure_user_recovery_key(user, password)
+        except RepositorySecretError as exc:
+            raise AuthenticationFailed("Wrong username or password") from exc
+        _, access, refresh = cls.create_session(user, user_agent=user_agent)
+        db.session.commit()
+        return recovery_key, access, refresh
+
+    @classmethod
+    def refresh(cls, public_id, token, *, user_agent=""):
+        session = cls.get_active_session_by_public_id(public_id)
+        if not cls.verify_refresh_token(session, token):
+            raise AuthenticationFailed("Invalid session")
+        tokens = cls.rotate_refresh_token(session, user_agent=user_agent)
+        db.session.commit()
+        return tokens
+
+    @classmethod
+    def logout(cls, public_id):
+        cls.revoke_session_by_public_id(public_id)
+        db.session.commit()
+
+    @classmethod
+    def create_session(cls, user: User, *, user_agent: str = "") -> tuple[UserSession, str, str]:
         session = UserSession(
             user=user,
             refresh_token_hash="",
             expires_at=utcnow(),
             last_seen_at=utcnow(),
-            user_agent=str(request.user_agent.string or "").strip() or None,
+            user_agent=user_agent.strip() or None,
         )
         db.session.add(session)
         db.session.flush()
@@ -35,12 +66,12 @@ class SessionAuthService:
         return session, access_token, refresh_token
 
     @classmethod
-    def rotate_refresh_token(cls, session: UserSession) -> tuple[str, str]:
+    def rotate_refresh_token(cls, session: UserSession, *, user_agent: str = "") -> tuple[str, str]:
         access_token, refresh_token, refresh_expires_at = cls._issue_tokens(session.user, session)
         session.refresh_token_hash = cls.hash_token(refresh_token)
         session.expires_at = refresh_expires_at
         session.last_seen_at = utcnow()
-        session.user_agent = str(request.user_agent.string or "").strip() or session.user_agent
+        session.user_agent = user_agent.strip() or session.user_agent
         return access_token, refresh_token
 
     @classmethod

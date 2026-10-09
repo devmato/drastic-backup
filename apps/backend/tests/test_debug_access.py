@@ -7,6 +7,7 @@ from flask_jwt_extended import create_access_token
 
 from drastic_server.app import create_app
 from drastic_server.extensions import db
+from drastic_server.integrations import agent as agent_command
 from drastic_server.models.agent import Agent, AgentOperation, AgentOperationLog, AgentSession
 from drastic_server.models.diagnostic import DiagnosticEvent
 from drastic_server.models.job import Job, JobAction, JobSchedule
@@ -14,7 +15,6 @@ from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
 from drastic_server.models.user import User
 from drastic_server.services import diagnostics
-from drastic_server.services.agent import command as agent_command
 from drastic_server.services.agent.request import AgentRequestService
 
 

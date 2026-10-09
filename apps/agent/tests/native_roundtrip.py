@@ -30,12 +30,12 @@ try:
         '--machine','q35','--scsihw','virtio-scsi-single','--scsi0','local-lvm:0.032',
         '--efidisk0','local-lvm:0,efitype=4m,pre-enrolled-keys=1','--tpmstate0','local-lvm:0,version=v2.0')
     run('qm','start',str(VMID))
-    from drastic_agent.agent.database import proxmox_checkpoints, proxmox_native_runs
     from drastic_agent.agent.report import AgentReport
     from drastic_agent.jobs.proxmox_backup import ProxmoxBackupJobHandler
     from drastic_agent.jobs.proxmox_native import run_native
     from drastic_agent.services.guest_linux import LinuxGuestFileBackend
     from drastic_agent.services.proxmox_restore import run_proxmox_restore
+    from drastic_agent.storage.database import proxmox_checkpoints, proxmox_native_runs
     from drastic_common.restic.client import ResticApi
     from drastic_common.restic.repository import ResticRepository
     api=ResticApi(str(BASE/'restic'),repository=ResticRepository(location=str(ROOT/'repo'),password='isolated-native-evaluation'))

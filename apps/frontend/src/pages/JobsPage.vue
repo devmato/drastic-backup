@@ -168,7 +168,7 @@ import JobManageDialog from 'components/jobs/JobManageDialog.vue'
 import BackupChainsPanel from 'components/jobs/BackupChainsPanel.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
-import { sameSchedule } from 'src/utils/schedule'
+import { useJobEditor } from 'src/composables/useJobEditor'
 import { backupStates, filterAgentJobs, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const router = useRouter()
@@ -201,7 +201,7 @@ const editingJob = ref(null)
 const currentAgentId = ref(null)
 const currentAgentOnline = ref(false)
 const currentAgentRepositories = ref([])
-const jobDialogSubmitting = ref(false)
+const { submitting: jobDialogSubmitting, saveJob } = useJobEditor(jobStore, agentStore, userStore)
 
 const showRunJobDialog = ref(false)
 const showRestoreDialog = ref(false)
@@ -262,111 +262,14 @@ function getJobTargetRepositories(job) {
 }
 
 async function onJobSubmit(data) {
-  jobDialogSubmitting.value = true
   try {
-    const relatedConfig = {
-      actions: data.actions || [],
-      schedules: data.schedules || [],
-    }
-    const originalSchedules = new Map((editingJob.value?.schedules || []).map(schedule => [schedule.id, schedule]))
-    const changedTypedSchedule = relatedConfig.schedules.some(schedule => schedule.timing && !sameSchedule(schedule, originalSchedules.get(schedule.id)))
-    const agent = agentStore.agents.find(item => String(item.id) === String(currentAgentId.value))
-    if (changedTypedSchedule && (agent?.protocol_version || 0) < 12) {
-      throw new Error('Update the agent to change schedule types (protocol 12 required)')
-    }
-    delete data.actions
-    delete data.schedules
-
-    if (editingJob.value) {
-      await jobStore.updateJob(editingJob.value.id, data)
-      const updatedJob = await reloadJob(editingJob.value.id)
-      await syncJobRelatedConfig(updatedJob, relatedConfig)
-      $q.notify({ message: 'Job updated', color: 'green', position: 'top' })
-    } else {
-      data.agent_id = currentAgentId.value
-      const createdJob = await jobStore.createJob(data)
-      const updatedJob = await reloadJob(createdJob.id)
-      await syncJobRelatedConfig(updatedJob, relatedConfig)
-      $q.notify({ message: 'Job created', color: 'green', position: 'top' })
-    }
-    await jobStore.loadJobs()
-    await agentStore.loadAgents()
+    await saveJob(data, editingJob.value, currentAgentId.value)
+    $q.notify({ message: editingJob.value ? 'Job updated' : 'Job created', color: 'green', position: 'top' })
     showJobDialog.value = false
   } catch (e) {
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, e.message || 'Could not save job'), color: 'red', position: 'top' })
-  } finally {
-    jobDialogSubmitting.value = false
   }
-}
-
-async function reloadJob(jobId) {
-  return jobStore.getJob(jobId)
-}
-
-function mapSchedulePayload(schedule, recoveryKey = userStore.recoveryKey) {
-  return {
-    timing: schedule.timing,
-    repository_id: schedule.repository_id,
-    retention_id: schedule.retention_id || null,
-    enabled: schedule.enabled,
-    config: schedule.config || {},
-    recovery_key: recoveryKey,
-  }
-}
-
-async function createScheduleWithRecovery(jobId, schedule) {
-  await userStore.withRecoveryKey(recoveryKey => jobStore.createSchedule(jobId, mapSchedulePayload(schedule, recoveryKey)))
-}
-
-async function updateScheduleWithRecovery(scheduleId, schedule) {
-  await userStore.withRecoveryKey(recoveryKey => jobStore.updateSchedule(scheduleId, mapSchedulePayload(schedule, recoveryKey)))
-}
-
-async function syncJobRelatedConfig(job, config) {
-  if (!editingJob.value) {
-    for (const action of config.actions) {
-      await jobStore.createAction(job.id, action)
-    }
-
-    for (const schedule of config.schedules) {
-      await createScheduleWithRecovery(job.id, schedule)
-    }
-
-    return
-  }
-
-  const scheduleIds = new Set(config.schedules.map(schedule => schedule.id))
-  const actionIds = new Set(config.actions.map(action => action.id))
-
-  for (const action of config.actions) {
-    if (String(action.id).startsWith('draft-')) {
-      await jobStore.createAction(job.id, action)
-    } else {
-      await jobStore.updateAction(action.id, action)
-    }
-  }
-
-  for (const action of job.actions) {
-    if (!actionIds.has(action.id)) {
-      await jobStore.deleteAction(action.id)
-    }
-  }
-
-  for (const schedule of config.schedules) {
-    if (String(schedule.id).startsWith('draft-')) {
-      await createScheduleWithRecovery(job.id, schedule)
-    } else if (!sameSchedule(schedule, job.schedules.find(original => original.id === schedule.id))) {
-      await updateScheduleWithRecovery(schedule.id, schedule)
-    }
-  }
-
-  for (const schedule of job.schedules) {
-    if (!scheduleIds.has(schedule.id)) {
-      await jobStore.deleteSchedule(schedule.id)
-    }
-  }
-
 }
 
 function showRunDialog(job) {

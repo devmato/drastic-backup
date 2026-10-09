@@ -2,6 +2,8 @@
 
 dRastic Backup is a monorepo with separate backend, frontend, agent, and shared library code.
 
+See [Architecture](architecture.md) for module responsibilities, dependency direction and transaction/recovery rules.
+
 ```text
 drastic-backup/
 ├── apps/
@@ -25,6 +27,11 @@ drastic-backup/
 Important paths:
 
 - `apps/backend/src/drastic_server` -- Backend package.
+- `apps/backend/src/drastic_server/views/api` -- HTTP contracts and application-error mapping.
+- `apps/backend/src/drastic_server/services` -- Business use cases, grouped by responsibility.
+- `apps/backend/src/drastic_server/services/jobs` -- Job configuration, queries, management and execution.
+- `apps/backend/src/drastic_server/services/operations` -- Durable operation lifecycle, history and report ingestion.
+- `apps/backend/src/drastic_server/integrations` -- External transport adapters.
 - `apps/backend/tests` -- Backend test suite.
 - `apps/backend/scripts/run.sh` -- Container startup script.
 - `apps/backend/storage` -- Local backend storage path.
@@ -41,6 +48,8 @@ Important paths:
 - `apps/frontend/src/pages` -- Route pages.
 - `apps/frontend/src/components` -- Reusable UI components.
 - `apps/frontend/src/stores` -- Pinia stores.
+- `apps/frontend/src/api` -- HTTP endpoint calls without UI or store dependencies.
+- `apps/frontend/src/composables` -- Reactive workflows such as job editing.
 - `apps/frontend/quasar.config.js` -- Quasar and development proxy configuration.
 
 ## Agent
@@ -50,14 +59,19 @@ Important paths:
 Important paths:
 
 - `apps/agent/src/drastic_agent/jobs` -- Backup job handlers.
-- `apps/agent/src/drastic_agent/agent` -- Agent state, commands, actions, and reporting.
-- `apps/agent/src/drastic_agent/resticapi` -- Restic integration helpers.
+- `apps/agent/src/drastic_agent/runtime` -- Composition root, transport, command admission, scheduling, reporting, execution and updates.
+- `apps/agent/src/drastic_agent/storage` -- SQLite tables, migrations, synced configuration and durable operation queue.
+- `apps/agent/src/drastic_agent/agent` -- Operation/report state, action execution and protocol-facing schemas.
+- `apps/agent/src/drastic_agent/services` -- Restore, retention, connection settings, repository access and credentials.
+- `apps/agent/src/drastic_agent/integrations` -- Host-tool adapters, including verified restic installation.
 - `apps/agent/src/drastic_agent/proxmox.py` -- Proxmox guest discovery and backup streaming.
 - `apps/agent/data` -- Local development agent state.
 
 ## Shared Library
 
 `libs/python/common` contains shared Python code used by backend and agent.
+
+`libs/python/common/src/drastic_common/restic` contains the shared restic client. Common also owns the shared agent protocol, scheduling rules, secret envelopes, process utilities and product version generation; it does not import application packages.
 
 ## Compose Files
 

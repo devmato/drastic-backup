@@ -9,12 +9,12 @@ from threading import Lock
 from time import monotonic, time
 from uuid import UUID
 
-from drastic_agent.agent.database import proxmox_native_runs, proxmox_snapshots
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.config import env_int
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.proxmox import ProxmoxError, QemuVolumeGuestDriver, ensure_proxmox_available
 from drastic_agent.proxmox_snapshot import snapshot_info
+from drastic_agent.storage.database import proxmox_native_runs, proxmox_snapshots
 from drastic_common.process import run_process
 from drastic_common.restic.exceptions import ResticCancelledError
 

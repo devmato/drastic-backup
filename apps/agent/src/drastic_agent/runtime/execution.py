@@ -1,3 +1,5 @@
+"""Bounded execution and atomic admission shared by schedules and commands."""
+
 from concurrent.futures import Future, ThreadPoolExecutor
 from threading import Lock
 

@@ -7,7 +7,7 @@ from drastic_common.agent.schemas import AgentJobSchema
 from drastic_server.models.job import Job, JobType
 from drastic_server.schemas.job import JobCreateInputSchema, ScheduleCreateInputSchema
 from drastic_server.schemas.repository import CheckInputSchema
-from drastic_server.services.job import (
+from drastic_server.services.jobs.configuration import (
     build_schedule_cron_string,
     create_job_instance,
     ensure_job_connection,

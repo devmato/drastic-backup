@@ -12,11 +12,11 @@ from functools import cache
 from pathlib import Path
 from uuid import UUID
 
-from drastic_agent.agent.database import proxmox_checkpoints, proxmox_native_runs
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.config import DefaultConfig, env_value
 from drastic_agent.proxmox import ProxmoxError
 from drastic_agent.proxmox_blocks import check_manifest_entry, validate_manifest, view_metadata
+from drastic_agent.storage.database import proxmox_checkpoints, proxmox_native_runs
 from drastic_common.process import run_process
 from drastic_common.restic.exceptions import ResticCancelledError
 

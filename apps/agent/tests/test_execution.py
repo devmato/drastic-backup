@@ -1,6 +1,6 @@
 from threading import Event, Thread
 
-from drastic_agent.agent.execution import ExecutionManager
+from drastic_agent.runtime.execution import ExecutionManager
 
 
 def test_execution_admission_is_bounded():

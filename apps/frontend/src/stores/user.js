@@ -1,6 +1,6 @@
 import { ref, computed } from 'vue'
 import { defineStore } from 'pinia'
-import { api } from 'boot/axios'
+import * as userApi from 'src/api/user'
 import { disconnectAppSocket } from 'src/utils/socket'
 import { isAuthError, isRecoveryKeyError } from 'src/utils/auth'
 import { setDiagnosticRecording } from 'src/utils/diagnostics'
@@ -35,28 +35,6 @@ function getRecoveryExportFilename(contentDisposition) {
   return filename.toLowerCase().endsWith('.zip') ? filename : `${filename}.zip`
 }
 
-async function normalizeBlobApiError(error) {
-  const data = error?.response?.data
-  if (typeof Blob === 'undefined' || !(data instanceof Blob)) {
-    return
-  }
-
-  try {
-    const text = await data.text()
-    if (!text.trim()) {
-      return
-    }
-
-    try {
-      error.response.data = JSON.parse(text)
-    } catch {
-      error.response.data = { msg: text }
-    }
-  } catch {
-    // Keep the original error when the response body cannot be read.
-  }
-}
-
 export const useUserStore = defineStore('user', () => {
 
   const user = ref(null)
@@ -76,70 +54,61 @@ export const useUserStore = defineStore('user', () => {
   const hasRecoveryKey = computed(() => Boolean(recoveryKey.value))
 
   async function login(username, password) {
-    const response = await api.post('/auth/login', { username, password })
-    recoveryKey.value = response.data.recovery_key || null
-    return response.data
+    const data = await userApi.login(username, password)
+    recoveryKey.value = data.recovery_key || null
+    return data
   }
 
   async function refreshSession() {
-    await api.post('/auth/refresh', null, { _skipAuthRefresh: true })
+    await userApi.refreshSession()
     return true
   }
 
   async function fetchNeedsInit() {
-    const response = await api.get('/user/needs_init')
-    needsInit.value = Boolean(response.data.needs_init)
+    const data = await userApi.getInitializationStatus()
+    needsInit.value = Boolean(data.needs_init)
     return needsInit.value
   }
 
   async function fetchAuthStatus() {
-    const response = await api.get('/auth/status', { _skipAuthRefresh: true })
-    environment.value = response.data.environment || 'dev'
-    user.value = response.data.authenticated ? response.data.user : null
+    const data = await userApi.getAuthStatus()
+    environment.value = data.environment || 'dev'
+    user.value = data.authenticated ? data.user : null
     setDiagnosticRecording(user.value?.debug_enabled)
-    if (!response.data.authenticated) {
+    if (!data.authenticated) {
       recoveryKey.value = null
     }
-    return response.data
+    return data
   }
 
   async function initializeUser(username, password) {
-    const response = await api.post('/user/init', { username, password })
+    const data = await userApi.initializeUser(username, password)
     needsInit.value = false
-    return response.data
+    return data
   }
 
   async function changePassword(currentPassword, newPassword) {
-    const response = await api.put('/user/password', {
-      current_password: currentPassword,
-      new_password: newPassword,
-    })
+    const data = await userApi.changePassword(currentPassword, newPassword)
     clearSessionState()
-    return response.data
+    return data
   }
 
   async function getDebugAccess() {
-    const { data } = await api.get('/user/debug')
+    const data = await userApi.getDebugAccess()
     if (user.value) user.value.debug_enabled = data.enabled
     setDiagnosticRecording(data.enabled)
     return data
   }
 
   async function setDebugAccess(enabled) {
-    const { data } = await api[enabled ? 'post' : 'delete']('/user/debug')
+    const data = await userApi.setDebugAccess(enabled)
     if (user.value) user.value.debug_enabled = data.enabled
     setDiagnosticRecording(data.enabled)
     return data
   }
 
   async function downloadRecoveryExport(password) {
-    let response
-    try {
-      response = await api.post('/user/recovery-export', { password }, { responseType: 'blob' })
-    } catch (error) {
-      await normalizeBlobApiError(error)
-      throw error
-    }
+    const response = await userApi.recoveryExport(password)
 
     const filename = getRecoveryExportFilename(response.headers?.['content-disposition'])
     const objectUrl = URL.createObjectURL(response.data)
@@ -247,9 +216,7 @@ export const useUserStore = defineStore('user', () => {
 
   async function logout() {
     try {
-      await api.post('/auth/logout', null, {
-        validateStatus: (status) => (status >= 200 && status < 300) || [401, 422].includes(status)
-      })
+      await userApi.logout()
     } finally {
       clearSessionState()
     }

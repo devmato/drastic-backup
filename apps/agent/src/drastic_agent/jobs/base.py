@@ -1,13 +1,13 @@
 from uuid import uuid4
 
-from drastic_agent.agent.database import (
+from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
+from drastic_agent.agent.report import AgentReport
+from drastic_agent.storage.database import (
     actions,
     agent_operation_artifacts,
     retentions,
 )
-from drastic_agent.agent.database import agent as agent_settings
-from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
-from drastic_agent.agent.report import AgentReport
+from drastic_agent.storage.database import agent as agent_settings
 from drastic_common import diagnostics
 from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_common.restic.exceptions import ResticCancelledError, ResticError

@@ -4,17 +4,17 @@ from threading import Event
 
 import pytest
 
-from drastic_agent.agent.agent import Agent
-from drastic_agent.agent.database import (
+from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.runtime.execution import ExecutionManager
+from drastic_agent.storage.database import (
     agent_operation_artifacts,
     agent_operation_queue,
     agent_operations,
     jobs,
     repositories,
 )
-from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.execution import ExecutionManager
-from drastic_agent.agent.report import AgentReport
 
 
 @pytest.fixture

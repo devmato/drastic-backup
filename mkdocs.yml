@@ -41,6 +41,7 @@ nav:
   - Development:
     - Development Setup: development.md
     - Project Structure: project-structure.md
+    - Architecture: architecture.md
     - CI and Releases: ci-and-releases.md
     - Release Checklist: release-checklist.md
     - Building the Docs: docs-site.md

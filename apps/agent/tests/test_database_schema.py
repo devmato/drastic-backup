@@ -6,15 +6,15 @@ from concurrent.futures import ThreadPoolExecutor
 import dataset
 import pytest
 
-import drastic_agent.agent.agent as agent_module
-import drastic_agent.agent.database as database_module
 import drastic_agent.agent.operation as operation_module
-import drastic_agent.agent.operation_store as store_module
 import drastic_agent.jobs.base as job_module
-from drastic_agent.agent.agent import Agent, _encode_config_secret
+import drastic_agent.runtime.agent as agent_module
+import drastic_agent.storage.database as database_module
+import drastic_agent.storage.operation_store as store_module
 from drastic_agent.agent.enums import AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
+from drastic_agent.runtime.agent import Agent, _encode_config_secret
 from drastic_common.agent.schemas import AgentSyncSchema
 from drastic_common.secret_envelope import encrypt_for_public_key, generate_agent_keypair
 

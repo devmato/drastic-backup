@@ -1,3 +1,5 @@
+"""Validate and mutate job configuration; callers own the transaction."""
+
 from croniter import croniter
 from marshmallow import ValidationError
 
@@ -8,6 +10,7 @@ from drastic_server.extensions import db
 from drastic_server.models.job import Job, JobSchedule, JobType
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
+from drastic_server.services.queries import require_result
 from drastic_server.services.repository import ensure_agent_envelopes_from_user_recovery_key
 
 
@@ -52,10 +55,10 @@ def normalize_schedule_config(config):
 
 
 def assign_agent_repository(user_id, agent, repository_id, user_recovery_key=None):
-    repository = Repository.query.filter(
+    repository = require_result(Repository.query.filter(
         Repository.id == repository_id,
         Repository.user_id == user_id,
-    ).first_or_404()
+    ))
     ensure_agent_envelopes_from_user_recovery_key(
         agent=agent,
         repositories=[repository],
@@ -73,9 +76,9 @@ def validate_retention(user_id, retention_id):
     if retention_id is None:
         return None
 
-    return Retention.query.filter(
+    return require_result(Retention.query.filter(
         Retention.id == retention_id, Retention.user_id == user_id
-    ).first_or_404()
+    ))
 
 
 def build_schedule_cron_string(minute, hour, day_of_week):

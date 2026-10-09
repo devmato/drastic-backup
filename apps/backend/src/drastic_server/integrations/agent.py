@@ -1,3 +1,5 @@
+"""Socket.IO command transport, including protocol and timeout handling."""
+
 from flask import current_app
 from flask_socketio import call, emit
 from socketio.exceptions import TimeoutError

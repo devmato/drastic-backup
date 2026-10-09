@@ -2,6 +2,8 @@
 
 This page describes local development workflows. For production operation, use the [Deployment](deployment.md) guide.
 
+Before changing application structure, read [Architecture](architecture.md) and [Project Structure](project-structure.md).
+
 ## Prerequisites
 
 - Docker with Docker Compose v2.
@@ -164,6 +166,8 @@ Install and build the frontend:
 cd apps/frontend
 corepack enable
 yarn install --immutable
+yarn lint
+yarn test
 yarn build
 ```
 

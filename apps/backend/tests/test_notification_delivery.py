@@ -15,8 +15,8 @@ from drastic_server.models.agent import (
 from drastic_server.models.notification import NotificationConfig, NotificationDelivery
 from drastic_server.models.user import User
 from drastic_server.services.agent import AgentRequestService
-from drastic_server.services.agent import operations as agent_operations
-from drastic_server.services.agent.operations import INGEST_NOTIFICATION_RETRY_LIMIT
+from drastic_server.services.operations import reports as agent_operations
+from drastic_server.services.operations.reports import INGEST_NOTIFICATION_RETRY_LIMIT
 
 
 def _build_app():

@@ -3,9 +3,9 @@ import test_proxmox_settings_api
 
 from drastic_common.secret_envelope import decrypt_with_private_key
 from drastic_server.extensions import db
-from drastic_server.services.agent import command as agent_command
+from drastic_server.integrations import agent as agent_command
 from drastic_server.services.agent.request import AgentException, AgentRequestService
-from drastic_server.services.job import ensure_job_connection
+from drastic_server.services.jobs.configuration import ensure_job_connection
 
 api_client = test_proxmox_settings_api.api_client
 

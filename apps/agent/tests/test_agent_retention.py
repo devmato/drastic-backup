@@ -4,12 +4,12 @@ from types import SimpleNamespace
 import dataset
 import pytest
 
-import drastic_agent.agent.agent as agent_module
 import drastic_agent.jobs.base as base_module
-from drastic_agent.agent.agent import Agent
+import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime.agent import Agent
 from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.exceptions import ResticError
 
@@ -544,7 +544,7 @@ def test_cmd_get_repository_stats_returns_after_repository_error(monkeypatch):
 
 
 def test_operation_queue_is_persisted_in_database():
-    from drastic_agent.agent.database import agent_operation_queue
+    from drastic_agent.storage.database import agent_operation_queue
 
     agent_operation_queue.delete()
     AgentReport.pending_reports = []

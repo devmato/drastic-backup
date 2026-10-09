@@ -64,7 +64,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { getApiErrorMessage } from 'src/utils/api-error'
 import { describeTiming, scheduleTiming } from 'src/utils/schedule'
-import { api } from 'boot/axios'
+import { previewSchedule } from 'src/api/jobs'
 
 const props = defineProps({
   schedule: { type: Object, default: null },
@@ -222,7 +222,7 @@ watch([dialogVisible, timing, () => props.agentId], () => {
   previewError.value = ''
   previewTimer = setTimeout(async () => {
     try {
-      const { data } = await api.post('/jobs/schedules/preview', { timing: timing.value, agent_id: props.timeOnly ? null : Number(props.agentId) })
+      const data = await previewSchedule({ timing: timing.value, agent_id: props.timeOnly ? null : Number(props.agentId) })
       if (request === previewRequest) previewData.value = data
     } catch (error) {
       if (request === previewRequest) previewError.value = getApiErrorMessage(error, 'Preview unavailable')

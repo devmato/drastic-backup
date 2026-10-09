@@ -77,6 +77,9 @@ jobs:
       - name: Build
         working-directory: apps/frontend
         run: yarn build
+      - name: Lint and test frontend
+        working-directory: apps/frontend
+        run: yarn lint && yarn test
 
   docs:
     name: Documentation

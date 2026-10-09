@@ -1,3 +1,5 @@
+"""Ingest replayable agent reports and reconcile operation artifacts and logs."""
+
 from datetime import datetime, timezone
 
 from apprise import Apprise

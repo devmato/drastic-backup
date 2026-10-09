@@ -1,3 +1,5 @@
+"""Agent-local SQLite tables and additive schema migrations."""
+
 import os
 
 import dataset

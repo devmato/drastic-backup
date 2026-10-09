@@ -1,5 +1,15 @@
 # Contributing
 
+## Architecture And Code Style
+
+Read [Architecture](docs/architecture.md) for module responsibilities, dependency direction and durable backup flows, and [Project Structure](docs/project-structure.md) for their locations.
+
+- Implement complete use cases in business services, keeping HTTP/Socket.IO handlers focused on their transport contracts.
+- Keep shared state in frontend stores, HTTP calls in API modules and multi-step editor logic in composables.
+- Reuse existing services and libraries before introducing abstractions. Small modules can remain single files.
+- Add concise English comments/docstrings for purpose, surprising constraints and failure/recovery behavior. Prefer explaining **why** rather than narrating the code.
+- Treat public API payloads, agent protocol compatibility and persisted backup state as contracts during refactors. Update affected tests and documentation together with the code.
+
 ## Branches
 
 - `develop` is the integration branch for ongoing development.

@@ -5,10 +5,10 @@ from threading import Event, Thread
 
 import pytest
 
-from drastic_agent.agent.agent import Agent
 from drastic_agent.agent.enums import AgentReportType
-from drastic_agent.agent.execution import ExecutionManager
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.runtime.execution import ExecutionManager
 from drastic_agent.services import diagnostics as live
 from drastic_common import diagnostics
 

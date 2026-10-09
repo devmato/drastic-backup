@@ -7,26 +7,30 @@ import { sameSchedule, scheduleTiming } from '../src/utils/schedule.js'
 
 const source = readFileSync(new URL('../src/pages/JobsPage.vue', import.meta.url), 'utf8')
   .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+const editorSource = readFileSync(new URL('../src/composables/useJobEditor.js', import.meta.url), 'utf8')
+  .replace(/^import .*$/gm, '').replace('export function', 'function')
 
 function setup(protocol) {
   const original = { id: 7, enabled: true, cron_string: '0 2 * * 1,5', repository_id: 2, retention_id: 3,
     config: { repository_check: { enabled: true, read_data: '100%' } } }
   const job = { id: 1, agent_id: 1, name: 'Original', config: {}, schedules: [original], actions: [] }
   const writes = [], notices = []
+  const loads = { jobs: 0, agents: 0 }
   const agent = { id: 1, protocol_version: protocol }
   const jobStore = {
     updateJob: async (id, data) => { writes.push(['job', id, data]); job.name = data.name },
-    getJob: async () => job, loadJobs: async () => {},
+    getJob: async () => job, loadJobs: async () => { loads.jobs++ },
     updateSchedule: async (id, data) => { writes.push(['schedule', id, data]) },
     createSchedule: async (id, data) => { writes.push(['create-schedule', id, data]) },
     deleteSchedule: async id => { writes.push(['delete-schedule', id]) },
   }
   const page = runInNewContext(`${source}
-    ;({ onJobSubmit, editingJob, currentAgentId, showJobDialog })`, {
-    ref, computed, sameSchedule, backupStates: [], watch: () => {}, onMounted: () => {}, defineOptions: () => {},
+    ;({ onJobSubmit, editingJob, currentAgentId, showJobDialog, jobDialogSubmitting })`, {
+    ref, computed, backupStates: [], watch: () => {}, onMounted: () => {}, defineOptions: () => {},
+    useJobEditor: runInNewContext(`${editorSource}\n;useJobEditor`, { ref, sameSchedule, jobsApi: jobStore }),
     useRoute: () => ({ query: {} }), useRouter: () => ({}),
     useQuasar: () => ({ notify: notice => notices.push(notice) }),
-    useJobStore: () => jobStore, useAgentStore: () => ({ agents: [agent], loadAgents: async () => {} }),
+    useJobStore: () => jobStore, useAgentStore: () => ({ agents: [agent], loadAgents: async () => { loads.agents++ } }),
     useRepositoryStore: () => ({ repositories: [] }), useOperationStore: () => ({}),
     useUserStore: () => ({ withRecoveryKey: operation => operation(null) }),
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
@@ -37,7 +41,7 @@ function setup(protocol) {
   const payload = () => ({ name: 'Renamed', config: {}, actions: [], schedules: [
     { ...original, timing: scheduleTiming(original), config: JSON.parse(JSON.stringify(original.config)) },
   ] })
-  return { page, payload, writes, notices, original }
+  return { page, payload, writes, notices, original, jobStore, loads }
 }
 
 test('renaming a job on protocol 11 does not resubmit unchanged legacy schedules', async () => {
@@ -80,4 +84,22 @@ test('protocol 12 sends actual schedule changes but ignores presentation and wee
   await page.onJobSubmit(changed)
   assert.deepEqual(writes.map(item => item[0]), ['job', 'schedule'])
   assert.deepEqual(JSON.parse(JSON.stringify(writes[1][2].timing)), { type: 'periodic', interval: 90, offset: 5 })
+})
+
+test('job editing preserves drafts and refreshes once after success or a partially saved failure', async () => {
+  const { page, payload, notices, jobStore, loads } = setup(12)
+  const draft = payload()
+  const before = JSON.stringify(draft)
+  await page.onJobSubmit(draft)
+  assert.equal(JSON.stringify(draft), before)
+  assert.deepEqual(loads, { jobs: 1, agents: 1 })
+  page.showJobDialog.value = true
+  draft.schedules[0].timing.hour = 5
+  jobStore.updateSchedule = async () => { throw new Error('Schedule save failed') }
+  await page.onJobSubmit(draft)
+  assert.equal(notices.at(-1).message, 'Schedule save failed')
+  assert.equal(page.showJobDialog.value, true)
+  assert.equal(page.jobDialogSubmitting.value, false)
+  assert.deepEqual(loads, { jobs: 2, agents: 2 })
+  assert.equal(draft.schedules[0].timing.hour, 5)
 })

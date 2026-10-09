@@ -2,11 +2,12 @@ import configparser
 
 import pytest
 
-import drastic_agent.agent.agent as agent_module
-from drastic_agent.agent.agent import Agent
-from drastic_agent.agent.database import agent_operation_queue, agent_operations
+import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime import reporting
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.storage.database import agent_operation_queue, agent_operations
 
 
 @pytest.fixture(autouse=True)
@@ -319,7 +320,7 @@ def test_finished_outbox_sends_offline_backup_before_triggered_retention(monkeyp
         lambda action, **kwargs: sent.append(kwargs["operation_json"]["uuid"])
         or {"success": True},
     )
-    monkeypatch.setattr(agent_module.operation_store, "delete", lambda uuid: None)
+    monkeypatch.setattr(reporting.operation_store, "delete", lambda uuid: None)
 
     Agent._Agent__flush_report_queue(agent)
     Agent._Agent__flush_report_queue(agent)
@@ -349,7 +350,7 @@ def test_failed_finished_report_rotates_behind_next_report(monkeypatch):
         return {"success": operation_uuid == second.uuid}
 
     monkeypatch.setattr(agent, "_Agent__send_request", send_request)
-    monkeypatch.setattr(agent_module.operation_store, "delete", lambda uuid: None)
+    monkeypatch.setattr(reporting.operation_store, "delete", lambda uuid: None)
 
     Agent._Agent__flush_report_queue(agent)
     Agent._Agent__flush_report_queue(agent)

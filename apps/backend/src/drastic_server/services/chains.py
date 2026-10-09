@@ -1,3 +1,5 @@
+"""Backup-chain configuration and durable, lease-fenced execution transitions."""
+
 from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
@@ -27,17 +29,65 @@ from drastic_server.services.agent import (
     is_agent_conflict_response,
     is_agent_timeout_response,
 )
-from drastic_server.services.job import (
+from drastic_server.services.exceptions import ResourceConflict
+from drastic_server.services.jobs.configuration import (
     assign_agent_repository,
     ensure_job_connection,
     normalize_schedule_config,
     schedule_trigger,
     validate_retention,
 )
+from drastic_server.services.queries import require_result
 
 CHAIN_PROTOCOL = 11
 CHAIN_DISPATCH_WORKERS = 4
 TERMINAL_STEPS = {"success", "warning", "failed", "cancelled", "skipped"}
+
+
+def get_chain(user_id, chain_id):
+    return require_result(BackupChain.query.filter_by(id=chain_id, user_id=user_id))
+
+
+def list_chains(user_id):
+    return [chain_payload(chain) for chain in BackupChain.query.filter_by(user_id=user_id).order_by(BackupChain.name)]
+
+
+def persist_chain(user_id, data, chain_id=None):
+    chain = get_chain(user_id, chain_id) if chain_id is not None else BackupChain()
+    save_chain(chain, user_id, data)
+    return chain_payload(chain)
+
+
+def delete_chain(user_id, chain_id):
+    chain = get_chain(user_id, chain_id)
+    if BackupChainRun.query.filter_by(active_chain_id=chain.id).first():
+        raise ResourceConflict("Cancel and finish the active chain run before deleting the chain")
+    db.session.delete(chain)
+    db.session.commit()
+
+
+def start_owned_chain(user_id, chain_id):
+    try:
+        run = start_chain(get_chain(user_id, chain_id))
+    except ValueError as exc:
+        raise ResourceConflict(str(exc)) from exc
+    return run_payload(run)
+
+
+def list_runs(user_id, chain_id, before_id=None):
+    get_chain(user_id, chain_id)
+    query = BackupChainRun.query.filter_by(chain_id=chain_id)
+    if before_id:
+        query = query.filter(BackupChainRun.id < before_id)
+    return [run_payload(run) for run in query.order_by(BackupChainRun.id.desc()).limit(25)]
+
+
+def cancel_run(user_id, chain_id, run_id):
+    get_chain(user_id, chain_id)
+    run = require_result(BackupChainRun.query.filter_by(id=run_id, chain_id=chain_id))
+    if run.state == "running":
+        run.cancel_requested = True
+        db.session.commit()
 
 
 def utcnow():
@@ -47,7 +97,7 @@ def utcnow():
 def save_chain(chain, user_id, data):
     steps = []
     for step in data["steps"]:
-        job = Job.query.join(Agent).filter(Job.id == step["job_id"], Agent.user_id == user_id).first_or_404()
+        job = require_result(Job.query.join(Agent).filter(Job.id == step["job_id"], Agent.user_id == user_id))
         if not CHAIN_PROTOCOL <= (job.agent.protocol_version or 0) <= AGENT_PROTOCOL_VERSION:
             raise ValueError(f"Update agent {job.agent.display_name} for backup chains (protocol {CHAIN_PROTOCOL})")
         assign_agent_repository(user_id, job.agent, step["repository_id"], data.get("recovery_key"))

@@ -16,7 +16,6 @@ from drastic_server.models.retention import Retention
 from drastic_server.models.user import User
 from drastic_server.schemas.chain import ChainInputSchema
 from drastic_server.services.agent import AgentService
-from drastic_server.services.agent.operations import AgentOperationService
 from drastic_server.services.chains import (
     advance_run,
     chain_payload,
@@ -24,6 +23,7 @@ from drastic_server.services.chains import (
     submit_pending_runs,
     tick,
 )
+from drastic_server.services.operations.reports import AgentOperationService
 
 NOW = datetime(2026, 10, 7, 2, 0)
 

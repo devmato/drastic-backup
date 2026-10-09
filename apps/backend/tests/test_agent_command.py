@@ -3,8 +3,8 @@ from types import SimpleNamespace
 from flask import Flask
 
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION, AgentCommandName
+from drastic_server.integrations import agent as agent_command
 from drastic_server.models.agent import AgentOperationState
-from drastic_server.services.agent import command as agent_command
 
 
 def _agent():

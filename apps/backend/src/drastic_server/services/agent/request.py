@@ -1,6 +1,6 @@
 from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.schemas.repository import RepositorySchema
-from drastic_server.services.agent.operations import AgentOperationService
+from drastic_server.services.operations.reports import AgentOperationService
 from drastic_server.services.repository import (
     agent_repository_assignment,
     repository_password_envelope,

@@ -8,14 +8,14 @@ from types import SimpleNamespace
 import dataset
 import pytest
 
-import drastic_agent.agent.agent as agent_module
 import drastic_agent.jobs.base as base_module
 import drastic_agent.jobs.truenas_backup as backup_module
+import drastic_agent.runtime.agent as agent_module
 import drastic_agent.truenas as truenas_module
-from drastic_agent.agent.agent import Agent, _encode_config_secret
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.truenas_backup import TrueNASBackupJobHandler, cleanup_snapshots
+from drastic_agent.runtime.agent import Agent, _encode_config_secret
 from drastic_agent.truenas import TrueNASClient, TrueNASError
 from drastic_common.restic import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError

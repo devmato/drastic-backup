@@ -1,3 +1,5 @@
+"""Persist operation transitions before publishing them or dispatching work."""
+
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -27,6 +29,7 @@ def start_agent_operation(
     data=None,
     log_message=None,
 ):
+    """Commit the operation before dispatch so late reports can resolve timeouts."""
     operation = AgentOperation(
         uuid=str(uuid4()),
         agent=agent,

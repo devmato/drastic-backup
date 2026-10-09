@@ -18,7 +18,7 @@ from drastic_server.models.job import Job, JobType
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.services.agent import AgentRequestService, AgentService
-from drastic_server.services.agent.operation_start import (
+from drastic_server.services.operations.lifecycle import (
     DISPATCH_STATUS_UPDATED_AT_KEY,
 )
 from drastic_server.services.restore import RESTORE_MODE_PLAIN_FILE, RestoreService
@@ -112,7 +112,7 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
             db.session.commit()
 
             monkeypatch.setattr(
-                "drastic_server.views.api.jobs.assign_agent_repository",
+                "drastic_server.services.jobs.execution.assign_agent_repository",
                 lambda *_args, **_kwargs: (repository, False),
             )
 
@@ -193,7 +193,7 @@ def test_explicit_backup_admission_rejection_is_failed_conflict(monkeypatch):
             db.session.commit()
 
             monkeypatch.setattr(
-                "drastic_server.views.api.jobs.assign_agent_repository",
+                "drastic_server.services.jobs.execution.assign_agent_repository",
                 lambda *_args, **_kwargs: (repository, False),
             )
 

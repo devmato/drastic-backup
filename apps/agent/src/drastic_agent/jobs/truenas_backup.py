@@ -3,9 +3,9 @@ import re
 from pathlib import PurePosixPath
 from time import time
 
-from drastic_agent.agent.database import truenas_snapshots
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.jobs.base import BackupJobHandler
+from drastic_agent.storage.database import truenas_snapshots
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASError
 from drastic_common.restic.exceptions import ResticCancelledError
 from drastic_common.truenas import TrueNASBackupConfigSchema, path_is_within

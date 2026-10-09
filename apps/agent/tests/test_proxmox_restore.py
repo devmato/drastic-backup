@@ -234,7 +234,7 @@ def test_vm_stream_maps_efi_tpm_firewall_with_small_workspace(monkeypatch, tmp_p
 
 
 def test_agent_status_reports_cached_guest_tools_error(monkeypatch):
-    from drastic_agent.agent.agent import Agent
+    from drastic_agent.services.connections import ConnectionSettings
     from drastic_common.truenas import AgentConnectionsSchema
 
     calls = []
@@ -244,18 +244,18 @@ def test_agent_status_reports_cached_guest_tools_error(monkeypatch):
         raise ValueError("GuestFS dependencies missing")
 
     monkeypatch.setattr(restore, "guest_tools_available", probe)
-    monkeypatch.setattr("drastic_agent.agent.agent.shutil.which", lambda _: "/usr/sbin/vzdump")
+    monkeypatch.setattr("drastic_agent.services.connections.shutil.which", lambda _: "/usr/sbin/vzdump")
     client = SimpleNamespace(public_settings={"configured": True})
-    agent = SimpleNamespace(get_proxmox_client=lambda: client, get_truenas_client=lambda: client, os_clean="linux")
+    settings = SimpleNamespace(proxmox_client=lambda: client, truenas_client=lambda: client, platform="linux")
     restore.guest_tools_error.cache_clear()
     try:
-        status = Agent.connection_status(agent)
+        status = ConnectionSettings.status(settings)
         assert AgentConnectionsSchema().load(status)["proxmox"]["guest_files_error"] == "GuestFS dependencies missing"
-        assert Agent.connection_status(agent) == status
+        assert ConnectionSettings.status(settings) == status
         assert len(calls) == 1
         monkeypatch.setattr(restore, "guest_tools_available", lambda: None)
         restore.guest_tools_error.cache_clear()  # A new agent process rechecks after installation.
-        assert Agent.connection_status(agent)["proxmox"]["guest_files_error"] is None
+        assert ConnectionSettings.status(settings)["proxmox"]["guest_files_error"] is None
     finally:
         restore.guest_tools_error.cache_clear()
 
@@ -311,7 +311,7 @@ def test_on_demand_prepare_failure_cleans_session(monkeypatch, tmp_path):
 
 
 def test_file_browser_options_do_not_require_proxmox_host_tools(monkeypatch):
-    from drastic_agent.agent.agent import Agent
+    from drastic_agent.runtime.agent import Agent
 
     def no_host_tools(*args):
         pytest.fail("Guest file options must not query Proxmox VM import tools")

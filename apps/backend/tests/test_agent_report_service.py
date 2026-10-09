@@ -22,8 +22,9 @@ from drastic_server.models.secret import AgentSecretEnvelope, UserSecret
 from drastic_server.models.user import User
 from drastic_server.schemas.agent import AgentOperationResponseSchema
 from drastic_server.schemas.job import JobLastOperationSchema, JobStatusResponseSchema
-from drastic_server.services.agent import AgentRequestService, operation_start
-from drastic_server.services.agent import operations as agent_operations
+from drastic_server.services.agent import AgentRequestService
+from drastic_server.services.operations import lifecycle as operation_start
+from drastic_server.services.operations import reports as agent_operations
 
 
 def _build_app():

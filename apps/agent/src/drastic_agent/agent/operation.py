@@ -5,14 +5,14 @@ from datetime import datetime, timezone
 from threading import Event, RLock
 from uuid import uuid4
 
-from drastic_agent.agent.database import agent_operation_artifacts, agent_operations, db
 from drastic_agent.agent.enums import (
     AgentOperationLogLevel,
     AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
 )
-from drastic_agent.agent.operation_store import operation_store
+from drastic_agent.storage.database import agent_operation_artifacts, agent_operations, db
+from drastic_agent.storage.operation_store import operation_store
 from drastic_common import diagnostics
 
 _PID_UNSET = object()

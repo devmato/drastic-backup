@@ -16,8 +16,10 @@ from drastic_server.schemas.restore import (
 )
 from drastic_server.services.exceptions import RestoreServiceException
 from drastic_server.services.restore import RestoreService
+from drastic_server.views.api.errors import register_service_errors
 
 blp = Blueprint("restores", __name__, url_prefix="/api/restores", description="Restore operations")
+register_service_errors(blp)
 
 
 def _handle_restore_error(exc):

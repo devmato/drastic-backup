@@ -4,8 +4,9 @@ from datetime import datetime, timedelta, timezone
 
 import dataset
 
-import drastic_agent.agent.agent as agent_module
-from drastic_agent.agent.agent import Agent
+import drastic_agent.runtime.agent as agent_module
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.services import secrets as repository_secrets_service
 
 
 def build_agent():
@@ -146,7 +147,7 @@ def test_persisted_agent_key_unlocks_repository_after_restart(monkeypatch, tmp_p
     restarted_agent._Agent__resticapi = FakeResticApi()
     monkeypatch.setattr(agent_module, "repositories", repository_table)
     monkeypatch.setattr(
-        agent_module,
+        repository_secrets_service,
         "decrypt_with_private_key",
         lambda envelope, private_key: (
             "agent-password"

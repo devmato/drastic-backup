@@ -5,10 +5,11 @@ from types import SimpleNamespace
 import dataset
 import pytest
 
-import drastic_agent.agent.agent as agent_module
-from drastic_agent.agent.agent import Agent, _encode_config_secret, _redact_secrets
+import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.proxmox import ProxmoxError
+from drastic_agent.runtime.agent import Agent, _encode_config_secret
+from drastic_agent.services import connections
 from drastic_common.secret_envelope import encrypt_for_public_key, generate_agent_keypair
 
 SETTINGS = {
@@ -73,7 +74,7 @@ def test_saved_settings_survive_restart_override_environment_and_never_return_se
 def test_test_and_discovery_use_effective_settings_without_saving(agent, monkeypatch):
     monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_ID", SETTINGS["token_id"])
     monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_SECRET", "legacy-secret")
-    monkeypatch.setattr(agent_module, "ensure_proxmox_available", lambda: None)
+    monkeypatch.setattr(connections, "ensure_proxmox_available", lambda: None)
     clients = []
 
     def guests(api):
@@ -82,7 +83,7 @@ def test_test_and_discovery_use_effective_settings_without_saving(agent, monkeyp
         return [{"vmid": 101}]
 
     monkeypatch.setattr(
-        agent_module, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=guests)
+        connections, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=guests)
     )
     response = agent.cmd_test_proxmox_settings(
         SETTINGS, encrypt_for_public_key("unsaved-secret", agent.public_key)
@@ -130,20 +131,17 @@ def test_connection_test_checks_host_tools_and_redacts_errors(agent, monkeypatch
     def unavailable():
         raise ProxmoxError("qm is not available")
 
-    monkeypatch.setattr(agent_module, "ensure_proxmox_available", unavailable)
+    monkeypatch.setattr(connections, "ensure_proxmox_available", unavailable)
     assert agent.cmd_test_proxmox_settings(SETTINGS, envelope).state == AgentReportState.failed
 
-    monkeypatch.setattr(agent_module, "ensure_proxmox_available", lambda: None)
+    monkeypatch.setattr(connections, "ensure_proxmox_available", lambda: None)
 
     def fail(api):
         raise ProxmoxError(f"API rejected {api.token_secret}")
 
     monkeypatch.setattr(
-        agent_module, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=fail)
+        connections, "QemuVolumeGuestDriver", lambda: SimpleNamespace(list_supported_guests=fail)
     )
     report = agent.cmd_test_proxmox_settings(SETTINGS, envelope)
     assert report.state == AgentReportState.failed
     assert "test-secret" not in str(report.logs)
-    assert _redact_secrets({"token_secret": "test-secret", "encrypted_value": envelope}) == {
-        "token_secret": "<redacted>", "encrypted_value": "<redacted>"
-    }

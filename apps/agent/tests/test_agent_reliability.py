@@ -7,9 +7,13 @@ from datetime import datetime, timezone
 import dataset
 import pytest
 
-import drastic_agent.agent.agent as agent_module
-from drastic_agent.agent.agent import Agent
-from drastic_agent.agent.database import (
+from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.agent.report import AgentReport
+from drastic_agent.jobs.file_backup import FileBackupJobHandler
+from drastic_agent.runtime.agent import Agent
+from drastic_agent.services import secrets as repository_secrets_service
+from drastic_agent.services.retention import RetentionService
+from drastic_agent.storage.database import (
     actions,
     agent_operation_artifacts,
     agent_operation_queue,
@@ -21,10 +25,6 @@ from drastic_agent.agent.database import (
     schedule_runs,
     schedules,
 )
-from drastic_agent.agent.enums import AgentOperationState
-from drastic_agent.agent.report import AgentReport
-from drastic_agent.jobs.file_backup import FileBackupJobHandler
-from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
 
@@ -206,7 +206,7 @@ def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
     execution = _SynchronousExecution()
     agent._Agent__execution = execution
 
-    monkeypatch.setattr(agent_module, "decrypt_with_private_key", lambda envelope, key: "repo-key")
+    monkeypatch.setattr(repository_secrets_service, "decrypt_with_private_key", lambda envelope, key: "repo-key")
     monkeypatch.setattr(
         agent,
         "_Agent__send_request",

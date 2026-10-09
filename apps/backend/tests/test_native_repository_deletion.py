@@ -16,11 +16,11 @@ from drastic_server.models.agent import (
 )
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
+from drastic_server.services.repository import management as repository_views
 from drastic_server.services.repository import (
     quarantine_native_repository,
     reconcile_native_repository_quarantine,
 )
-from drastic_server.views.api import repositories as repository_views
 
 
 def _build_app(monkeypatch, data_directory, database_uri="sqlite:///:memory:"):

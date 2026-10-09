@@ -9,10 +9,10 @@ from sqlalchemy.exc import IntegrityError
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.models.user import User
-from drastic_server.services.agent.operation_start import (
+from drastic_server.services.operations.lifecycle import (
     reconcile_unknown_agent_operation_dispatches,
 )
-from drastic_server.services.agent.operations import (
+from drastic_server.services.operations.reports import (
     STARTUP_NOTIFICATION_RETRY_LIMIT,
     AgentOperationService,
 )

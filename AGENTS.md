@@ -14,6 +14,29 @@
 - `develop` is the integration branch. `main` contains released versions only.
 - `docs/changelog/UNRELEASED.md` is kept on `develop` for optional user-facing release notes and is removed from `main` by the release script.
 
+## Architecture
+
+- Follow [Architecture](docs/architecture.md) and keep [Project Structure](docs/project-structure.md) accurate when moving responsibilities or entry points.
+- Keep the backend, agent, frontend and common library as separate application boundaries. `drastic_common` must not import either application.
+- Organize services by business responsibility. Prefer functions; use classes for real state or a cohesive set of dependencies. Split modules by responsibility, not a fixed line count.
+- Backend HTTP and Socket.IO handlers adapt validated inputs, authentication and responses. Application services own workflows, resource ownership checks and commit points. Do not import request state, call `abort`, or use `first_or_404` inside services; pass identity and request metadata explicitly.
+- Use the existing SQLAlchemy models directly. Extract recurring complex queries near their feature; do not add generic repositories, service base classes, dependency-injection containers or event buses.
+- Commit durable state before sending commands or publishing updates. The HTTP error boundary rolls back unfinished transactions; background/CLI callers must also roll back failed work. Document intentional intermediate commits and recovery behavior.
+- Keep backend agent-command transport in `integrations/agent.py`, operation lifecycle/report handling in `services/operations/`, and job workflows in `services/jobs/`.
+- The agent composition root is `runtime/agent.py`. Put scheduling, command admission, reporting, updates and transport in their respective runtime modules; local persistence belongs in `storage/`, business workflows in `services/` and backup handlers in `jobs/`.
+- Pass explicit capabilities to workers (`BackupContext`, `RestoreContext`) and focused dependencies to runtime helpers. Do not turn the whole Agent object into a service locator or split it using mixins.
+- Preserve operation UUID deduplication, durable schedule claims, admission/cancellation fences, report replay, integrity-check retention blocks and recoverable repository deletion when refactoring. A dispatch timeout is an unknown outcome, not proof that execution failed.
+- Frontend endpoint calls belong in `src/api/`; stores own shared state and refreshes, composables own multi-step reactive workflows, and pages/components own presentation. API modules must not import stores or display dialogs/notifications. Existing stateless store entry points may delegate to API modules.
+- Preserve the external API, agent protocol and on-disk formats during structural refactors. Changes to these contracts need explicit migration/compatibility work and focused tests.
+
+## Comments And Readability
+
+- Write code comments and docstrings in English, consistent with identifiers and existing documentation.
+- Give responsibility-bearing modules a short purpose docstring. Document non-obvious public service contracts, side effects, transaction boundaries and failure behavior; do not repeat obvious signatures.
+- Explain why code exists, especially ordering, concurrency, retries, recovery, protocol restrictions and data-protection rules. Keep the explanation next to the relevant code.
+- Prefer descriptive names and readable control flow over compressed expressions. Do not impose comment quotas or comment every statement.
+- Remove commented-out code when touching its area. Update comments alongside behavior changes; use actionable TODOs with a reason rather than vague reminders.
+
 ## Tests And Verification
 
 - Match verification effort to the risk and changed behavior, not a fixed checklist. These rules apply to all tests and checks.

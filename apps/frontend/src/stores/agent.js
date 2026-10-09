@@ -1,6 +1,6 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api } from 'boot/axios'
+import * as agentApi from 'src/api/agents'
 
 export const useAgentStore = defineStore('agent', () => {
   const agents = ref([])
@@ -9,106 +9,47 @@ export const useAgentStore = defineStore('agent', () => {
   async function loadAgents() {
     loading.value = true
     try {
-      const response = await api.get('/agents/')
-      agents.value = response.data
+      agents.value = await agentApi.listAgents()
     } finally {
       loading.value = false
     }
   }
 
-  async function deleteAgent(agentId) {
-    await api.delete(`/agents/${agentId}`)
+  async function deleteAgent(id) {
+    await agentApi.deleteAgent(id)
     await loadAgents()
   }
 
-  async function updateAgent(agentId, alias) {
-    const response = await api.put(`/agents/${agentId}`, { alias })
-    agents.value = agents.value.map(agent => agent.id === agentId ? response.data : agent)
+  async function updateAgent(id, alias) {
+    const updated = await agentApi.updateAgent(id, alias)
+    agents.value = agents.value.map(agent => agent.id === id ? updated : agent)
   }
 
-  async function updateAgentRepositories(agentId, repositoryIds, recoveryKey = null) {
-    const payload = { repository_ids: repositoryIds }
-    if (recoveryKey) {
-      payload.recovery_key = recoveryKey
-    }
-    await api.put(`/agents/${agentId}/repositories`, payload)
+  async function updateAgentRepositories(id, repositoryIds, recoveryKey = null) {
+    await agentApi.updateAgentRepositories(id, repositoryIds, recoveryKey)
     await loadAgents()
   }
 
-  async function syncAgent(agentId, recoveryKey = null) {
-    const payload = {}
-    if (recoveryKey) {
-      payload.recovery_key = recoveryKey
-    }
-    await api.post(`/agents/${agentId}/sync`, payload)
+  async function syncAgent(id, recoveryKey = null) {
+    await agentApi.syncAgent(id, recoveryKey)
     await loadAgents()
   }
 
-  async function runAction(agentId, action) {
-    const response = await api.post(`/agents/${agentId}/actions/${action}`)
+  async function runAction(id, action) {
+    const result = await agentApi.runAction(id, action)
+    // Updates are one-shot dispatches; a list reload would unnecessarily delay batch actions.
     if (action === 'rotate-ssh-key') await loadAgents()
-    return response.data
+    return result
   }
 
-  async function getAgentOperations(agentId, params = {}) {
-    const query = new URLSearchParams(params).toString()
-    const response = await api.get(`/agents/${agentId}/operations?${query}`)
-    return response.data
-  }
-
-  async function getProxmoxSettings(agentId) {
-    const response = await api.get(`/agents/${agentId}/proxmox-settings`)
-    return response.data
-  }
-
-  async function updateProxmoxSettings(agentId, settings) {
-    const response = await api.put(`/agents/${agentId}/proxmox-settings`, settings)
-    return response.data
-  }
-
-  async function testProxmoxSettings(agentId, settings) {
-    const response = await api.post(`/agents/${agentId}/proxmox-settings/test`, settings)
-    return response.data
-  }
-
-  async function deleteOperation(operationId) {
-    await api.delete(`/agents/operations/${operationId}`)
-  }
-
-  async function deleteConnection(agentId, kind) {
-    await api.delete(`/agents/${agentId}/connections/${kind}`)
+  async function deleteConnection(id, kind) {
+    await agentApi.deleteConnection(id, kind)
     await loadAgents()
   }
 
-  async function getTrueNASSettings(agentId) {
-    return (await api.get(`/agents/${agentId}/truenas-settings`)).data
+  return {
+    ...agentApi,
+    agents, loading, loadAgents, deleteAgent, updateAgent, updateAgentRepositories,
+    syncAgent, runAction, deleteConnection,
   }
-
-  async function updateTrueNASSettings(agentId, settings) {
-    return (await api.put(`/agents/${agentId}/truenas-settings`, settings)).data
-  }
-
-  async function testTrueNASSettings(agentId, settings) {
-    return (await api.post(`/agents/${agentId}/truenas-settings/test`, settings)).data
-  }
-
-  async function cleanupTrueNAS(agentId) {
-    return (await api.post(`/agents/${agentId}/truenas-settings/cleanup`)).data
-  }
-
-  async function getTrueNASDatasets(agentId) {
-    return (await api.get(`/agents/${agentId}/truenas-datasets`)).data.datasets
-  }
-
-  async function getOperation(operationId) {
-    const response = await api.get(`/agents/operations/${operationId}`)
-    return response.data
-  }
-
-  async function getInstallOptions() {
-    const response = await api.get('/agents/install-options')
-    return response.data
-  }
-
-  return { agents, loading, loadAgents, deleteAgent, updateAgent, updateAgentRepositories, syncAgent, runAction, getAgentOperations, deleteOperation, getOperation, getInstallOptions, getProxmoxSettings, updateProxmoxSettings, testProxmoxSettings, deleteConnection, getTrueNASSettings, updateTrueNASSettings, testTrueNASSettings, cleanupTrueNAS, getTrueNASDatasets }
 })

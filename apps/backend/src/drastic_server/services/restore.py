@@ -15,13 +15,14 @@ from drastic_server.services.agent import (
     is_agent_conflict_response,
     is_agent_timeout_response,
 )
-from drastic_server.services.agent.operation_start import (
+from drastic_server.services.exceptions import RestoreServiceException
+from drastic_server.services.operations.lifecycle import (
     agent_operation_start_response,
     fail_started_agent_operation,
     start_agent_operation,
     unknown_agent_operation_dispatch_response,
 )
-from drastic_server.services.exceptions import RestoreServiceException
+from drastic_server.services.queries import require_result
 from drastic_server.services.repository import agent_repository_assignment
 
 RESTORE_MODE_PLAIN_FILE = "plain_file"
@@ -51,18 +52,18 @@ class RestoreService:
 
     @staticmethod
     def _get_job(user_id, job_id):
-        return Job.query.join(Agent).filter(Job.id == job_id, Agent.user_id == user_id).first_or_404()
+        return require_result(Job.query.join(Agent).filter(Job.id == job_id, Agent.user_id == user_id))
 
     @staticmethod
     def _get_agent(user_id, agent_id):
-        return Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id).first_or_404()
+        return require_result(Agent.query.filter(Agent.id == agent_id, Agent.user_id == user_id))
 
     @staticmethod
     def _get_repository(user_id, repository_id):
-        return Repository.query.filter(
+        return require_result(Repository.query.filter(
             Repository.id == repository_id,
             Repository.user_id == user_id,
-        ).first_or_404()
+        ))
 
     @staticmethod
     def _repository_payload(repository, agent=None):
@@ -257,10 +258,9 @@ class RestoreService:
 
     @classmethod
     def cancel_restore(cls, user_id, operation_id):
-        operation = (
+        operation = require_result(
             AgentOperation.query.join(Agent)
             .filter(AgentOperation.id == operation_id, Agent.user_id == user_id)
-            .first_or_404()
         )
         if operation.type != AgentOperationType.restore:
             raise RestoreServiceException("Operation is not a restore operation")

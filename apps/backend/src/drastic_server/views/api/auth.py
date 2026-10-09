@@ -1,4 +1,3 @@
-import bcrypt
 from flask import current_app, make_response, request
 from flask.views import MethodView
 from flask_jwt_extended import (
@@ -9,9 +8,8 @@ from flask_jwt_extended import (
     set_refresh_cookies,
     unset_jwt_cookies,
 )
-from flask_smorest import Blueprint, abort
+from flask_smorest import Blueprint
 
-from drastic_server.extensions import db
 from drastic_server.models.user import User
 from drastic_server.schemas.auth import (
     AuthStatusResponseSchema,
@@ -19,9 +17,10 @@ from drastic_server.schemas.auth import (
     LoginResponseSchema,
 )
 from drastic_server.services.auth import SessionAuthService
-from drastic_server.services.repository import RepositorySecretError, ensure_user_recovery_key
+from drastic_server.views.api.errors import register_service_errors
 
 blp = Blueprint("auth", __name__, url_prefix="/api/auth", description="Authentication")
+register_service_errors(blp)
 
 
 @blp.route("/login")
@@ -29,25 +28,13 @@ class AuthLogin(MethodView):
     @blp.arguments(LoginInputSchema)
     @blp.response(200, LoginResponseSchema)
     def post(self, data):
-        username = data["username"].lower()
-        password = data["password"]
-
-        user = User.query.filter_by(name=username).first()
-
-        if user and bcrypt.checkpw(password.encode("UTF-8"), user.password.encode("UTF-8")):
-            try:
-                recovery_key = ensure_user_recovery_key(user, password)
-            except RepositorySecretError:
-                abort(401, message="Wrong username or password")
-
-            _session, access_token, refresh_token = SessionAuthService.create_session(user)
-            response = make_response({"ok": True, "recovery_key": recovery_key})
-            set_access_cookies(response, access_token)
-            set_refresh_cookies(response, refresh_token)
-            db.session.commit()
-            return response
-
-        abort(401, message="Wrong username or password")
+        recovery_key, access_token, refresh_token = SessionAuthService.login(
+            data["username"], data["password"], user_agent=request.user_agent.string or "",
+        )
+        response = make_response({"ok": True, "recovery_key": recovery_key})
+        set_access_cookies(response, access_token)
+        set_refresh_cookies(response, refresh_token)
+        return response
 
 
 @blp.route("/refresh")
@@ -59,17 +46,13 @@ class AuthRefresh(MethodView):
         refresh_cookie_name = current_app.config.get(
             "JWT_REFRESH_COOKIE_NAME", "refresh_token_cookie"
         )
-        session = SessionAuthService.get_active_session_by_public_id(session_public_id)
         refresh_token = request.cookies.get(str(refresh_cookie_name))
-
-        if not SessionAuthService.verify_refresh_token(session, refresh_token):
-            abort(401, message="Invalid session")
-
-        access_token, refresh_token = SessionAuthService.rotate_refresh_token(session)
+        access_token, refresh_token = SessionAuthService.refresh(
+            session_public_id, refresh_token, user_agent=request.user_agent.string or "",
+        )
         response = make_response({"ok": True})
         set_access_cookies(response, access_token)
         set_refresh_cookies(response, refresh_token)
-        db.session.commit()
         return response
 
 
@@ -78,8 +61,7 @@ class AuthLogout(MethodView):
     @blp.response(200, LoginResponseSchema)
     def post(self):
         session_public_id = _extract_session_public_id_from_request()
-        SessionAuthService.revoke_session_by_public_id(session_public_id)
-        db.session.commit()
+        SessionAuthService.logout(session_public_id)
 
         response = make_response({"ok": True})
         unset_jwt_cookies(response)

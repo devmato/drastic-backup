@@ -1,10 +1,21 @@
+"""Restore validation and execution using an explicitly configured repository client."""
+
 import os
 import posixpath
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.agent.report import AgentReport
 from drastic_common.process import ProcessCancelledError
+from drastic_common.restic import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError
+
+
+@dataclass(frozen=True)
+class RestoreContext:
+    resticapi: ResticApi
+    configure_repository: Callable
 
 
 class RestoreService:

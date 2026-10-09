@@ -1,40 +1,34 @@
 import { ref } from 'vue'
 import { defineStore } from 'pinia'
-import { api } from 'boot/axios'
+import * as chainApi from 'src/api/chains'
 
 export const useChainStore = defineStore('chain', () => {
   const chains = ref([])
 
   async function loadChains() {
-    const { data } = await api.get('/chains/')
-    chains.value = data
+    chains.value = await chainApi.listChains()
   }
 
   async function saveChain(id, payload) {
-    const { data } = id ? await api.put(`/chains/${id}`, payload) : await api.post('/chains/', payload)
+    const data = await chainApi.saveChain(id, payload)
     await loadChains()
     return data
   }
 
   async function deleteChain(id) {
-    await api.delete(`/chains/${id}`)
+    await chainApi.deleteChain(id)
     await loadChains()
   }
 
   async function startChain(id) {
-    await api.post(`/chains/${id}/run`)
+    await chainApi.startChain(id)
     await loadChains()
   }
 
   async function cancelRun(chainId, runId) {
-    await api.post(`/chains/${chainId}/runs/${runId}/cancel`)
+    await chainApi.cancelRun(chainId, runId)
     await loadChains()
   }
 
-  async function getRuns(chainId, beforeId) {
-    const { data } = await api.get(`/chains/${chainId}/runs`, { params: { before_id: beforeId } })
-    return data
-  }
-
-  return { chains, loadChains, saveChain, deleteChain, startChain, cancelRun, getRuns }
+  return { chains, loadChains, saveChain, deleteChain, startChain, cancelRun, getRuns: chainApi.getRuns }
 })
