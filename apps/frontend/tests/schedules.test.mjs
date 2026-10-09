@@ -65,7 +65,7 @@ test('shared schedule list updates its preview immediately and omits job columns
   assert.equal(original.cron_string, '0 2 * * 1')
 })
 
-test('chain edits clone multiple schedules and save only their time settings', async () => {
+test('chain edits preserve schedules and allow the same job on another repository', async () => {
   const original = { id: 3, name: 'Nightly', start_timeout_minutes: 60,
     schedules: [{ enabled: true, cron_string: '0 2 * * 1,2,3,4,5' },
       { enabled: false, cron_string: '0 4 * * 0,6' }],
@@ -73,9 +73,11 @@ test('chain edits clone multiple schedules and save only their time settings', a
   const before = JSON.stringify(original)
   let saved
   const panel = runInNewContext(`${script('jobs/BackupChainsPanel')}
-    ;({ editChain, save, form })`, {
+    ;({ editChain, save, form, newStep, jobOptions })`, {
     computed, reactive, ref, scheduleTiming, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
-    defineProps: () => ({ agentJobs: [], repositories: [], agents: [] }), defineEmits: () => () => {},
+    defineProps: () => ({ agentJobs: [{ display_name: 'Agent', jobs: [{ id: 1, name: 'Files', agent_id: 1 }] }],
+      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 11 }] }),
+    defineEmits: () => () => {},
     useRoute: () => ({ query: {} }), useRouter: () => ({}), useQuasar: () => ({ notify: () => {} }),
     useChainStore: () => ({ saveChain: async (id, payload) => { assert.equal(id, 3); saved = payload } }),
     useRetentionStore: () => ({ retentions: [] }),
@@ -83,6 +85,9 @@ test('chain edits clone multiple schedules and save only their time settings', a
     getApiErrorMessage: error => error.message, shouldIgnoreApiError: () => false,
   })
   panel.editChain(original)
+  assert.equal(panel.jobOptions.value.length, 1, 'a selected job remains available for another target')
+  assert.equal(panel.jobOptions.value[0].disable, false)
+  panel.form.steps.push(panel.newStep({ job_id: 1, repository_id: 3, retention_id: 8 }))
   panel.form.schedules[0].timing.hour = 6
   panel.form.schedules[0].timing.weekdays.push(6)
   assert.equal(JSON.stringify(original), before)
@@ -91,7 +96,7 @@ test('chain edits clone multiple schedules and save only their time settings', a
   assert.equal(saved.schedules[0].timing.hour, 6)
   assert.equal(saved.schedules[1].enabled, false)
   assert.deepEqual(Object.keys(saved.schedules[0]).sort(), ['enabled', 'timing'])
-  assert.equal(saved.steps[0].repository_id, 2)
-  assert.equal(saved.steps[0].retention_id, 7)
+  assert.deepEqual(Array.from(saved.steps, step => [step.job_id, step.repository_id, step.retention_id]),
+    [[1, 2, 7], [1, 3, 8]])
   assert.equal(JSON.stringify(original), before)
 })

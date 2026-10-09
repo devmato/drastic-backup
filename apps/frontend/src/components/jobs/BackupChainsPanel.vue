@@ -36,7 +36,7 @@
       </q-card-section>
       <q-separator />
       <q-list dense separator>
-        <q-item v-for="(step, index) in chain.steps" :key="step.job_id">
+        <q-item v-for="(step, index) in chain.steps" :key="`${step.job_id}:${step.repository_id}`">
           <q-item-section side>{{ index + 1 }}.</q-item-section>
           <q-item-section>
             <q-item-label>{{ step.job_name }} · {{ step.agent_name }}</q-item-label>
@@ -65,8 +65,8 @@
                     <q-btn flat round dense icon="delete" color="negative" :aria-label="`Remove step ${index + 1}`" @click="form.steps.splice(index, 1)" />
                   </div>
                   <div class="row q-col-gutter-md">
-                    <div class="col-12"><q-select v-model="step.job_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="jobOptions(step)" label="Backup Job / Agent" emit-value map-options :rules="[value => !!value || 'Required']" @update:model-value="selectJob(step)" /></div>
-                    <div class="col-12 col-sm-6"><q-select v-model="step.repository_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="repositoryOptions" label="Repository" emit-value map-options :rules="[value => !!value || 'Required']" /></div>
+                    <div class="col-12"><q-select v-model="step.job_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="jobOptions" label="Backup Job / Agent" emit-value map-options :rules="[value => !!value || 'Required']" @update:model-value="selectJob(step)" /></div>
+                    <div class="col-12 col-sm-6"><q-select v-model="step.repository_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="repositoryOptions" label="Repository" emit-value map-options :rules="[value => !!value || 'Required', value => !form.steps.some(other => other.key !== step.key && other.job_id === step.job_id && other.repository_id === value) || 'This job already has a step for this repository']" /></div>
                     <div class="col-12 col-sm-6"><q-select v-model="step.retention_id" outlined :dense="!$q.platform.has.touch" :options="retentionOptions" label="Retention Policy" emit-value map-options /></div>
                     <div class="col-12"><q-toggle v-model="step.config.repository_check.enabled" label="Check repository after successful backup" /></div>
                     <div v-if="step.config.repository_check.enabled" class="col-12"><q-input v-model="step.config.repository_check.read_data" outlined :dense="!$q.platform.has.touch" label="Read data" hint="Leave empty for a basic check; e.g. 1/10, 5% or 100%." /></div>
@@ -74,7 +74,7 @@
                   </div>
                 </q-card-section>
               </q-card>
-              <q-btn outline no-caps icon="add" color="primary" label="Add Job" :disable="form.steps.length >= jobs.length" @click="form.steps.push(newStep())" />
+              <q-btn outline no-caps icon="add" color="primary" label="Add Job" :disable="!jobs.length || form.steps.length >= 100" @click="form.steps.push(newStep())" />
               <div class="text-caption">Jobs require agent protocol 11 or newer. Retention applies to this job's backups in the selected repository, including backups made outside this chain.</div>
               <q-separator class="q-my-md" />
               <div class="text-subtitle1">Schedules</div>
@@ -181,12 +181,10 @@ function selectJob(step) {
   const job = selectedJob(step)
   step.repository_id = job?.agent_repositories?.[0]?.id || null
 }
-function jobOptions(step) {
-  return jobs.value.filter(job => job.id === step.job_id || !form.steps.some(item => item.job_id === job.id)).map(job => {
-    const protocol = props.agents.find(agent => agent.id === job.agent_id)?.protocol_version || 0
-    return { label: `${job.name} · ${job.agent_name}${protocol < 11 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 11 }
-  })
-}
+const jobOptions = computed(() => jobs.value.map(job => {
+  const protocol = props.agents.find(agent => agent.id === job.agent_id)?.protocol_version || 0
+  return { label: `${job.name} · ${job.agent_name}${protocol < 11 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 11 }
+}))
 function moveStep(index, offset) {
   const [step] = form.steps.splice(index, 1)
   form.steps.splice(index + offset, 0, step)

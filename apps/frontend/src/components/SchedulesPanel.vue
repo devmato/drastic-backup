@@ -31,7 +31,7 @@
     <template v-if="chains.length">
       <div class="text-subtitle1 q-mt-lg q-mb-sm">Backup Chains</div>
       <q-list bordered separator>
-        <q-item v-for="chain in chains" :key="chain.id">
+        <q-item v-for="chain in chains" :key="`${chain.id}:${chain.position}`">
           <q-item-section>
             <q-item-label>{{ chain.name }} <q-badge :color="chain.enabled ? 'positive' : 'grey'" text-color="black" :label="chain.enabled ? 'Scheduled' : 'Manual only'" /></q-item-label>
             <q-item-label caption>Step {{ chain.position }} of {{ chain.step_count }}{{ chain.previous_job_name ? ` · after ${chain.previous_job_name}` : '' }}</q-item-label>

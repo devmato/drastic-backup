@@ -68,7 +68,7 @@
           <template v-slot:body-cell-name="props">
             <q-td :props="props">
               <div>{{ props.row.name }}</div>
-              <div v-for="chain in props.row.chains || []" :key="chain.id">
+              <div v-for="chain in props.row.chains || []" :key="`${chain.id}:${chain.position}`">
                 <q-btn flat dense no-caps size="sm" color="primary" icon="playlist_play" :label="`${chain.name} · ${chain.position}/${chain.step_count}`" @click="openChain(chain.id)" />
               </div>
             </q-td>

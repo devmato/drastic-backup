@@ -1,3 +1,5 @@
+"""Validate backup chain schedules and per-repository job steps."""
+
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
 from drastic_server.schemas.job import ScheduleConfigSchema
@@ -26,8 +28,8 @@ class ChainInputSchema(Schema):
 
     @validates_schema
     def validate_steps(self, data, **kwargs):
-        ids = [step["job_id"] for step in data.get("steps", [])]
-        if len(ids) != len(set(ids)):
-            raise ValidationError({"steps": ["A job can occur only once in a chain"]})
+        targets = [(step["job_id"], step["repository_id"]) for step in data.get("steps", [])]
+        if len(targets) != len(set(targets)):
+            raise ValidationError({"steps": ["A job can occur only once per repository in a chain"]})
         if not data.get("name", "").strip():
             raise ValidationError({"name": ["Enter a chain name"]})

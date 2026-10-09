@@ -78,8 +78,18 @@ def finish_step(run, jobs, index, state="success", data=None):
     })
 
 
-def test_serial_order_retention_and_failure_continuation_survive_sessions(setup):
+@pytest.mark.parametrize("same_job", [False, True])
+def test_serial_order_retention_and_failure_continuation_survive_sessions(setup, same_job):
     _, chain, jobs, calls = setup
+    if same_job:
+        jobs = [jobs[0], jobs[0]]
+        repository = Repository(user=jobs[0].agent.user, name="Offsite", kind="custom", location="/offsite")
+        db.session.add(repository)
+        jobs[0].agent.repositories.append(repository)
+        db.session.flush()
+        chain.steps = [chain.steps[0], {**chain.steps[0], "repository_id": repository.id, "retention_id": None}]
+        db.session.commit()
+    expected_targets = [(step["repository_id"], step["retention_id"]) for step in chain.steps]
     run = start_chain(chain, now=NOW)
     run_id = run.id
     advance_run(run_id, now=NOW)
@@ -94,6 +104,7 @@ def test_serial_order_retention_and_failure_continuation_survive_sessions(setup)
     advance_run(run_id, now=NOW)
     advance_run(run_id, now=NOW)
     assert [call[1] for call in calls] == [job.id for job in jobs]
+    assert [(call[2], call[3]["retention_id"]) for call in calls] == expected_targets
     finish_step(db.session.get(BackupChainRun, run_id), jobs, 1)
     advance_run(run_id, now=NOW)
     advance_run(run_id, now=NOW)
@@ -276,12 +287,14 @@ def test_api_membership_ownership_and_active_deletion(setup):
     assert outsider.post(f"/api/chains/{chain.id}/run").status_code == 404
 
 
-def test_chain_input_rejects_duplicate_jobs_and_invalid_times():
+def test_chain_input_rejects_duplicate_targets_and_invalid_times():
     data = {"name": "Nightly", "schedules": [{"enabled": True, "hour": "2", "minute": "0", "day_of_week": [1]}],
             "steps": [{"job_id": 1, "repository_id": 2}]}
     assert ChainInputSchema().load(data)["start_timeout_minutes"] == 60
-    with pytest.raises(ValidationError):
+    with pytest.raises(ValidationError, match="once per repository"):
         ChainInputSchema().load({**data, "steps": data["steps"] * 2})
+    steps = data["steps"] + [{"job_id": 1, "repository_id": 3}]
+    assert len(ChainInputSchema().load({**data, "steps": steps})["steps"]) == 2
     with pytest.raises(ValidationError):
         ChainInputSchema().load({**data, "schedules": [{**data["schedules"][0], "hour": "25"}]})
     with pytest.raises(ValidationError):
