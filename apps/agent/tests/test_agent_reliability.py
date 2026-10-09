@@ -1,8 +1,11 @@
 import configparser
 import json
 import shutil
-from concurrent.futures import Future
+import subprocess
+import sys
+from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event
 
 import dataset
 import pytest
@@ -133,6 +136,9 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
     source = tmp_path / "source"
     source.mkdir()
     repository = ResticRepository(location=str(tmp_path / "repository"), password="test-password")
+    selected_folder = source / "selected"
+    selected_folder.mkdir()
+    (selected_folder / "keep.txt").write_text("unchanged content", encoding="utf-8")
     resticapi = ResticApi(binary_path=restic_binary, repository=repository, timeout=10)
     resticapi.init()
     retentions.insert({"id": 73, "name": "Latest only", "keep_last": 1})
@@ -151,21 +157,88 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
 
     agent = RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location})
     latest = []
+    parents = {}
     try:
         for cycle in range(2):
+            repository.backup_host = f"installation-{cycle}"
+            repository.env["RESTIC_HOST"] = repository.backup_host
             latest = []
             for job_id in (83, 84):
                 (source / "payload.txt").write_text(f"job {job_id}, cycle {cycle}", encoding="utf-8")
+                selection = selected_folder if cycle == 1 and job_id == 83 else source
                 report = FileBackupJobHandler(agent=agent, job={"id": job_id, "uuid": f"job-{job_id}",
-                    "type": "file", "config": {"paths": [{"path": str(source)}], "exclude_patterns": []}},
+                    "type": "file", "config": {"paths": [{"path": str(selection)}], "exclude_patterns": []}},
                     repository_id=73, retention_id=73, operation_uuid=f"chain-{cycle}-{job_id}").run()
                 assert report.final_state == AgentOperationState.success
-                latest.append(report.artifacts[0]["snapshot_id"])
+                snapshot_id = report.artifacts[0]["snapshot_id"]
+                snapshot = next(item for item in resticapi.snapshots() if item["id"] == snapshot_id)
+                assert snapshot.get("parent") == parents.get(job_id)
+                if cycle == 1 and job_id == 83:
+                    assert report.data["files_unmodified"] == 1
+                parents[job_id] = snapshot_id
+                latest.append(snapshot_id)
         assert {snapshot["id"] for snapshot in resticapi.snapshots()} == set(latest)
+        target = tmp_path / "restore"
+        resticapi.restore(parents[83], str(target), ["/"])
+        restored_source = target.joinpath(*source.parts[1:])
+        assert (restored_source / "selected/keep.txt").read_text() == "unchanged content"
+        assert not (restored_source / "payload.txt").exists()
         assert not list(settings.all())
         resticapi.check()
     finally:
         settings_db.engine.dispose()
+
+
+def test_cancel_during_parent_lookup_terminates_process_and_never_starts_backup(
+    tmp_path, restic_binary, clean_agent_state, monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "payload.txt").write_text("must not be backed up")
+    repository = ResticRepository(str(tmp_path / "repo"), "password")
+    api = ResticApi(restic_binary, repository, timeout=10, terminate_grace=0.1)
+    api.init()
+    started = Event()
+    processes, commands = [], []
+    original_popen = api._ResticApi__popen
+
+    def popen(command, **kwargs):
+        commands.append(command)
+        if "snapshots" not in command:
+            return original_popen(command, **kwargs)
+        # Stall enumeration while exercising ResticApi's real process supervision.
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], **kwargs)
+        processes.append(process)
+        started.set()
+        return process
+
+    monkeypatch.setattr(api, "_ResticApi__popen", popen)
+    handler = FileBackupJobHandler(
+        _OfflineAgent(api, {"id": 71, "location": repository.location}),
+        {"id": 81, "uuid": "file-job-81", "config": {"paths": [{"path": str(source)}]}},
+        71, operation_uuid="cancel-parent-81",
+    )
+    runtime = Agent.__new__(Agent)
+    with ThreadPoolExecutor(max_workers=1, initializer=api.set_repository, initargs=(repository,)) as executor:
+        worker = executor.submit(handler.run)
+        try:
+            assert started.wait(5)
+            running = AgentReport.get_report(uuid="cancel-parent-81")
+            assert "pid" not in running.data
+            response = runtime.cmd_cancel_job(81, operation_uuid=running.uuid)
+            assert response.final_state == AgentOperationState.success
+            finished = worker.result(timeout=5)
+            assert finished.final_state == AgentOperationState.cancelled
+            assert finished.ended is not None
+            assert agent_operations.find_one(uuid=finished.uuid)["state"] == "cancelled"
+            assert all("backup" not in command for command in commands)
+            assert processes[0].poll() is not None
+            assert api.diagnostic_processes() == []
+        finally:
+            if handler.report is not None:
+                handler.report.cancel_event.set()
+            if hasattr(runtime, "_Agent__execution"):
+                runtime._Agent__execution.shutdown()
 
 
 class _SynchronousExecution:
@@ -213,6 +286,7 @@ def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
         lambda action: {
             "success": True,
             "result": {
+                "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
                 "repositories": [
                     {
                         "id": 72,

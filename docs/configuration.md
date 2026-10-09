@@ -77,7 +77,7 @@ The test environment uses `/opt/drastic-test/db`, `/opt/drastic-test/restic`, an
 | `DRASTIC_COMMAND_TIMEOUT_SECONDS` | Interactive backend-agent command timeout. |
 | `DRASTIC_TASK_TIMEOUT_SECONDS` | Longer agent task timeout. |
 
-The agent defaults to 2 workers, 8 pending jobs, 60 seconds for commands, 600 seconds for tasks, 86400 seconds for restic and 30 seconds to wait on cancellation. Override these with `DRASTIC_AGENT_MAX_WORKERS`, `DRASTIC_AGENT_MAX_PENDING`, `DRASTIC_COMMAND_TIMEOUT_SECONDS`, `DRASTIC_TASK_TIMEOUT_SECONDS`, `DRASTIC_RESTIC_TIMEOUT_SECONDS` and `DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS` when needed. Development overrides in `.env.dev.override` are passed to the Docker agent; the default `./scripts/dev.sh up` needs no override file.
+The agent defaults to 2 workers, 8 pending jobs, 60 seconds for commands, 600 seconds for tasks and 86400 seconds for restic. Override these with `DRASTIC_AGENT_MAX_WORKERS`, `DRASTIC_AGENT_MAX_PENDING`, `DRASTIC_COMMAND_TIMEOUT_SECONDS`, `DRASTIC_TASK_TIMEOUT_SECONDS` and `DRASTIC_RESTIC_TIMEOUT_SECONDS` when needed. Cancellation requests set the operation's cancellation event immediately, including during parent lookup or between processes; the worker reports the final state after cleanup. Development overrides in `.env.dev.override` are passed to the Docker agent; the default `./scripts/dev.sh up` needs no override file.
 
 ## Agent Credentials
 

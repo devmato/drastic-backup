@@ -22,6 +22,7 @@ __all__ = ["AgentOperationSchema"]
 
 class AgentResponseSchema(Schema):
     id = fields.Integer(required=True)
+    uuid = fields.UUID(required=True)
     hostname = fields.String(allow_none=True)
     alias = fields.String(allow_none=True)
     display_name = fields.String(required=True)
@@ -204,6 +205,7 @@ class AgentRegisterInputSchema(Schema):
 
 class AgentRegisterResponseSchema(Schema):
     identifier = fields.Integer(required=True)
+    uuid = fields.UUID(required=True)
     secret = fields.String(required=True)
     server_url = fields.String(required=True)
 

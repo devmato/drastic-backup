@@ -8,8 +8,10 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from threading import Event, RLock
-from time import monotonic, sleep
+from time import monotonic
+from uuid import UUID
 
 import requests
 from docker import DockerClient
@@ -403,6 +405,7 @@ class Agent:
         return repository
 
     def configure_repository(self, repository):
+        backup_host = f"drastic-{self.uuid}"
         location, env = self.__repository_location_env(repository)
         password = self.__repository_password(repository, location, env)
 
@@ -414,6 +417,7 @@ class Agent:
                 env=env,
                 ssh_private_key=self.__repository_ssh_private_key(repository),
                 ssh_known_hosts_path=self.__ssh_known_hosts_path(),
+                backup_host=backup_host,
             )
         )
         return repository
@@ -544,6 +548,7 @@ class Agent:
                 env=env,
                 ssh_private_key=self.__repository_ssh_private_key(repository),
                 ssh_known_hosts_path=self.__ssh_known_hosts_path(),
+                backup_host=f"drastic-{self.uuid}",
             ),
             agent_password, repository_id=repository_id, initialize=initialize,
         )
@@ -561,6 +566,7 @@ class Agent:
                 env=env,
                 ssh_private_key=self.__repository_ssh_private_key(repository),
                 ssh_known_hosts_path=self.__ssh_known_hosts_path(),
+                backup_host=f"drastic-{self.uuid}",
             )
         )
         return agent_password
@@ -592,16 +598,6 @@ class Agent:
 
     def execute_actions(self, actions, report):
         return self.__execute_actions(actions=actions, report=report)
-
-    def __wait_for_report_pid(self, report):
-        timeout = env_int(
-            "DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS", DefaultConfig.CANCEL_WAIT_TIMEOUT_SECONDS
-        )
-        deadline = monotonic() + timeout
-        while "pid" not in report.data and monotonic() < deadline:
-            sleep(1)
-
-        return report.data.get("pid")
 
     def __create_client(self):
         return connection.create_client(execute=self.__handle_execute_command,
@@ -814,8 +810,14 @@ class Agent:
 
         if response.status_code in {200, 201}:
             agentdata = response.json()
+            try:
+                agent_uuid = str(UUID(agentdata["uuid"]))
+            except (KeyError, TypeError, ValueError, AttributeError):
+                logging.error("Registration requires a valid server-issued agent UUID; update the server")
+                return False
             self.__config["AGENT"] = {
                 "identifier": str(agentdata["identifier"]),
+                "uuid": agent_uuid,
                 "secret": agentdata["secret"],
                 "private_key": _encode_config_secret(private_key),
                 "public_key": _encode_config_secret(public_key),
@@ -910,12 +912,27 @@ class Agent:
         logging.info("Saving config file")
         _ensure_agent_data_dir()
         config_path = _agent_data_path("config.ini")
-        with open(config_path, "w") as configfile:
-            self.__config.write(configfile)
+        temporary = None
         try:
-            os.chmod(config_path, 0o600)
-        except PermissionError:
-            logging.warning("Could not set permissions on agent config file %s", config_path)
+            # Sync can add identity to an existing configuration containing credentials.
+            # Replace it only after the complete, private file has reached disk.
+            with NamedTemporaryFile("w", dir=_agent_data_dir(), encoding="utf-8", delete=False) as configfile:
+                temporary = Path(configfile.name)
+                self.__config.write(configfile)
+                configfile.flush()
+                os.fsync(configfile.fileno())
+            os.replace(temporary, config_path)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+
+    @property
+    def uuid(self):
+        """Server-owned identity; a sync is required before using an upgraded agent."""
+        try:
+            return str(UUID(self.__config.get("AGENT", "uuid")))
+        except (configparser.Error, TypeError, ValueError, AttributeError) as exc:
+            raise AgentExeption("Missing or invalid agent UUID; synchronize with an updated server") from exc
 
     @property
     def has_docker(self):
@@ -1141,6 +1158,20 @@ class Agent:
 
         try:
             server_data = request["result"]
+            agent_uuid = str(UUID(server_data["agent_uuid"]))
+            previous_uuid = self.__config.get("AGENT", "uuid", fallback=None)
+            if previous_uuid != agent_uuid:
+                self.__config["AGENT"]["uuid"] = agent_uuid
+                try:
+                    self.save_config()
+                except Exception:
+                    if previous_uuid is None:
+                        self.__config.remove_option("AGENT", "uuid")
+                    else:
+                        self.__config["AGENT"]["uuid"] = previous_uuid
+                    raise
+            # Identity is independently durable before replacing the SQLite configuration;
+            # a failed database sync can safely retry without changing identity.
             if "diagnostic_enabled" in server_data:
                 self.__configure_diagnostics(server_data["diagnostic_enabled"])
             synced_repositories = [
@@ -1332,49 +1363,10 @@ class Agent:
 
         if job_report:
             job_report.log_message(f"Canceling job {job_id} by user request")
-
-            if cancel_if_missing:
-                job_report.cancel_event.set()
-                job_report.final_state = AgentReportState.cancelled
-                pid = job_report.data.get("pid")
-                if pid:
-                    self.__resticapi.cancel_process(pid)
-                report.log_message("Chain job cancellation requested")
-                return report.finish()
-
-            job = jobs.find_one(id=job_id)
-            if job and job.get("type") == "truenas":
-                job_report.cancel_event.set()
-                job_report.final_state = AgentReportState.cancelled
-                report.log_message(f"Cancellation requested for TrueNAS job {job_id}")
-                return report.finish()
-
-            pid = self.__wait_for_report_pid(job_report)
-            if not pid:
-                report.log_message(
-                    f"Failed to cancel job {job_id}. No restic process became available",
-                    final_state=AgentReportState.failed,
-                )
-                return report.finish()
-
-            # Cancel restic process
-            try:
-                cancelled = self.__resticapi.cancel_process(pid)
-            except Exception as exc:
-                logging.exception("Failed to cancel restic process %s", pid)
-                cancelled = False
-                cancel_reason = str(exc)
-            else:
-                cancel_reason = f"Restic process {pid} is no longer running"
-            if not cancelled:
-                report.log_message(
-                    f"Failed to cancel job {job_id}. {cancel_reason}",
-                    final_state=AgentReportState.failed,
-                )
-                return report.finish()
-            job_report.final_state = AgentReportState.cancelled
-
-            report.log_message(f"Canceled job {job_id}")
+            # Parent searches and preparation may have no reported PID. The worker
+            # observes this fence, terminates its processes and reports after cleanup.
+            job_report.cancel_event.set()
+            report.log_message(f"Cancellation requested for job {job_id}")
         else:
             report.log_message(
                 f"Failed to cancel job {job_id}. No running job found",

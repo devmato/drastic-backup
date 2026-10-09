@@ -2,6 +2,16 @@
 
 Agents execute backups and restores. They authenticate against the server with a generated agent identifier and secret after registration.
 
+## Agent identity and protocol 15
+
+Update the backend (including its database migration) before updating agents. Backup, restore and repository statistics require agent protocol 15. Older connected agents can still deliver reports, be diagnosed and use the supported update action, but the backend rejects those execution commands until they are updated.
+
+Each registered agent has a server-issued UUID, persisted in the backend and the agent's `config.ini`. Existing agents acquire it on their first successful sync after upgrading. Missing or invalid UUIDs fail rather than falling back to a numerical ID or container hostname. Keep the agent data directory when recreating containers or restoring an installation; a new registration creates a new UUID.
+
+New Restic snapshots use `drastic-<full-agent-UUID>` as their hostname, passed explicitly to every backup command. `RESTIC_HOST` is no longer a supported override and is removed from Restic's child-process environment so it cannot hide historical snapshots or restrict repository statistics. Numerical IDs remain local database/authentication identifiers; the agent name and real hostname remain display metadata.
+
+File backups select a parent by job UUID and artifact key; TrueNAS backups use job UUID and dataset. Native Proxmox/CBT backups retain their confirmed checkpoint and source checks. Parent searches do not filter by hostname, so older snapshots remain available without rewriting their metadata. If no matching file/TrueNAS parent exists, Restic is forced to read the files instead of automatically selecting another job's snapshot. Operation logs identify the selected parent or the absence of a matching one.
+
 Agents are high-trust components. A native agent usually runs as `root`, and a Docker agent with Docker socket access can effectively control the Docker host. Install agents only on hosts you trust with backup and restore access.
 
 ## Docker Agent

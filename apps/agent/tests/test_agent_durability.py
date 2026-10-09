@@ -16,7 +16,8 @@ def build_agent():
     agent._Agent__secret = "secret-17"
     agent._Agent__server = "http://server.test"
     agent._Agent__config = configparser.ConfigParser()
-    agent._Agent__config["AGENT"] = {"private_key": "private-key", "public_key": "public-key"}
+    agent._Agent__config["AGENT"] = {"uuid": "550e8400-e29b-41d4-a716-446655440000",
+                                      "private_key": "private-key", "public_key": "public-key"}
     agent._Agent__repository_passwords = {}
     agent._Agent__secret_values = {}
     return agent
@@ -86,6 +87,7 @@ def test_sync_rolls_back_all_tables_on_write_failure(monkeypatch, tmp_path):
         lambda action: {
             "success": True,
             "result": {
+                "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
                 "repositories": [
                     {
                         "id": 2,

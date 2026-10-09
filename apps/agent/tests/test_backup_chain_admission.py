@@ -111,7 +111,8 @@ def test_deadline_is_checked_again_when_an_admitted_job_leaves_the_queue(agent, 
 
 
 @pytest.mark.parametrize("reading_command", ["list_restore_entries", "proxmox_restore"])
-def test_stalled_read_does_not_block_admission_sync_status_or_cancellation(agent, monkeypatch, reading_command):
+@pytest.mark.parametrize("cancel_if_missing", [False, True])
+def test_stalled_read_does_not_block_admission_sync_status_or_cancellation(agent, monkeypatch, reading_command, cancel_if_missing):
     reading, release, backup_started = Event(), Event(), Event()
 
     def slow_read(**kwargs):
@@ -141,36 +142,10 @@ def test_stalled_read_does_not_block_admission_sync_status_or_cancellation(agent
             assert status.data["known"] is True
             assert clients.submit(agent._Agent__handle_execute_command, {"command": "sync"}).result(timeout=2).final_state == AgentOperationState.success
             cancelled = clients.submit(agent._Agent__handle_execute_command, {
-                "command": "cancel_job", "args": {"job_id": 17, "operation_uuid": "chain-step", "cancel_if_missing": True},
+                "command": "cancel_job", "args": {"job_id": 17, "operation_uuid": "chain-step", "cancel_if_missing": cancel_if_missing},
             }).result(timeout=2)
             assert cancelled.final_state == AgentOperationState.success
             assert not slow.done()
         finally:
             release.set()
         slow.result(timeout=2)
-
-
-def test_waiting_for_cancel_pid_does_not_hold_admission_lock(agent, monkeypatch):
-    report = AgentReport.backup_operation(job_id=17, repository_id=27, operation_uuid="running-job")
-    waiting, release = Event(), Event()
-
-    def wait_for_pid(report):
-        waiting.set()
-        assert release.wait(5)
-        return None
-
-    monkeypatch.setattr(agent, "_Agent__wait_for_report_pid", wait_for_pid)
-    with ThreadPoolExecutor(max_workers=2) as clients:
-        cancelling = clients.submit(agent._Agent__handle_execute_command, {
-            "command": "cancel_job", "args": {"job_id": 17, "operation_uuid": report.uuid},
-        })
-        try:
-            assert waiting.wait(2)
-            status = clients.submit(agent._Agent__handle_execute_command, {
-                "command": "get_operation_status", "args": {"operation_uuid": report.uuid},
-            }).result(timeout=2)
-            assert status.data["known"] is True
-            assert not cancelling.done()
-        finally:
-            release.set()
-        cancelling.result(timeout=2)

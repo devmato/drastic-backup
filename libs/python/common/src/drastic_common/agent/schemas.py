@@ -216,6 +216,7 @@ class AgentJobScheduleSchema(Schema):
 
 
 class AgentSyncSchema(Schema):
+    agent_uuid = fields.UUID(required=True)
     diagnostic_enabled = fields.Boolean(load_default=False, dump_default=False)
     repositories = fields.List(fields.Nested(AgentRepositorySchema), required=True)
     secret_envelopes = fields.List(fields.Nested(AgentSecretEnvelopeSchema), load_default=list)

@@ -102,6 +102,7 @@ Runtime helpers receive focused dependencies: the scheduler gets tables and the 
 
 ### Durability And Concurrency
 
+- The backend owns each agent's UUID; registration and sync persist it in the existing agent configuration. Numerical IDs remain authentication/database identifiers. Restic uses `drastic-<UUID>` only as explicit backup metadata, never as an implicit snapshot filter. File/TrueNAS parents are selected by job/artifact tags; native CBT retains its confirmed source/checkpoint checks. Retention deletes only reconciled snapshot IDs.
 - Manual commands and schedules share the bounded executor and job/repository resource admission.
 - Asynchronous commands reserve operation history before submission and deduplicate repeated UUIDs. Cancellation and admission retain their shared fence.
 - Schedule slots are claimed persistently before execution. One-shot claims survive history cleanup, restarts and clock changes.

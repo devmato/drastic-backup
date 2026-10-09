@@ -91,6 +91,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
             "agents": [
                 {
                     "id": agent.id,
+                    "uuid": agent.uuid,
                     "hostname": agent.hostname,
                     "alias": agent.alias,
                     "display_name": agent.display_name,

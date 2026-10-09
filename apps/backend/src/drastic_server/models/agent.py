@@ -36,6 +36,7 @@ agent_repositories = db.Table(
 
 class Agent(IdMixin, TimeMixin, db.Model):
     __tablename__ = "agents"
+    uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     user_id = db.Column(
         db.Integer,
         db.ForeignKey("users.id", ondelete="CASCADE"),

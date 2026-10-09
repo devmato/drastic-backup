@@ -1,3 +1,5 @@
+from uuid import UUID
+
 import bcrypt
 import pytest
 from flask import has_request_context
@@ -106,6 +108,23 @@ def test_agent_alias_can_be_set_offline_and_cleared_with_validated_owner_access(
     agent.hostname = None
     db.session.commit()
     assert client.get(url).json["display_name"] == f"Agent #{agent.id}"
+
+
+def test_registration_sync_and_agent_api_share_server_owned_uuid(api_client):
+    client, existing, _, _ = api_client
+    response = client.post("/api/agents/register", json={
+        "username": "admin", "password": "account-password", "hostname": "container",
+        "os": "Linux", "version": "test", "uuid": existing.uuid,
+    })
+    assert response.status_code == 201
+    data = response.json
+    registered = db.session.get(Agent, data["identifier"])
+    assert data["uuid"] == registered.uuid != existing.uuid
+    assert UUID(registered.uuid).version == 4
+    assert AgentRequestService(registered).sync()["agent_uuid"] == registered.uuid
+    registered.hostname = "replacement-container"
+    db.session.commit()
+    assert client.get(f"/api/agents/{registered.id}").json["uuid"] == data["uuid"]
 
 
 def test_settings_commands_encrypt_tokens_and_return_only_public_settings(api_client, monkeypatch):

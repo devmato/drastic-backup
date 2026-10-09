@@ -67,10 +67,12 @@ import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { createQueuedReload } from 'src/utils/queued-reload'
+import { useSessionKeepAlive } from 'src/composables/useSessionKeepAlive'
 
 const router = useRouter()
 const $q = useQuasar()
 const userStore = useUserStore()
+useSessionKeepAlive(userStore)
 const agentStore = useAgentStore()
 const jobStore = useJobStore()
 const leftDrawerOpen = ref(false)

@@ -101,6 +101,8 @@ class ResticApi:
             for key, value in self.repository.env.items():
                 env[key] = str(value)
 
+        # Host identity is explicit backup metadata, never an implicit snapshot filter.
+        env.pop("RESTIC_HOST", None)
         diagnostics.remember_secrets(env)
         return env
 
@@ -424,7 +426,8 @@ class ResticApi:
         monitor_callback=None,
         force=False,
     ):
-        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent, verbose=True, force=force)
+        cmd = self.__make_command("backup", paths, exclude=exclude_patterns, tag=tags, parent=parent, verbose=True, force=force,
+                                  host=self.repository.backup_host if self.repository else None)
 
         return self.__execute_command(
             cmd,
@@ -454,6 +457,7 @@ class ResticApi:
             tag=tags,
             verbose=True,
             no_scan=True,
+            host=self.repository.backup_host if self.repository else None,
         )
 
         return self.__execute_command(
@@ -486,6 +490,7 @@ class ResticApi:
             tag=tags,
             verbose=True,
             no_scan=True,
+            host=self.repository.backup_host if self.repository else None,
         )
         callback_args = dict(callback_args or {})
         deadline = self.__deadline()
@@ -704,36 +709,8 @@ class ResticApi:
             callback_throttle=callback_throttle,
         )
 
-    def forget(
-        self,
-        keep_last=None,
-        keep_hourly=None,
-        keep_daily=None,
-        keep_weekly=None,
-        keep_monthly=None,
-        keep_yearly=None,
-        keep_tags=None,
-        dry_run=False,
-        prune=True,
-    ):
-        keep_tags = keep_tags or []
-        prune = bool(prune) and not dry_run
-        cmd = self.__make_command(
-            "forget",
-            keep_last=keep_last,
-            keep_hourly=keep_hourly,
-            keep_daily=keep_daily,
-            keep_weekly=keep_weekly,
-            keep_monthly=keep_monthly,
-            keep_yearly=keep_yearly,
-            keep_tag=keep_tags,
-            dry_run=dry_run,
-            prune=prune,
-        )
-
-        return self.__execute_command(cmd)
-
     def forget_snapshots(self, snapshot_ids, dry_run=False, prune=True):
+        """Delete explicit snapshot IDs; callers own retention selection and ownership checks."""
         snapshot_ids = [str(snapshot_id) for snapshot_id in (snapshot_ids or []) if snapshot_id]
         if not snapshot_ids:
             return []

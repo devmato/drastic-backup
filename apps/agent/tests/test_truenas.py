@@ -149,7 +149,7 @@ def test_snapshot_backup_restores_original_files_and_reuses_parent(nas, state, t
         pytest.skip("restic is required (scripts/ci/install-restic.sh)")
     api, _, calls, snapshots, live = nas
     monkeypatch.chdir(tmp_path)
-    restic = ResticApi(binary, ResticRepository(location="repo", password="test-password"))
+    restic = ResticApi(binary, ResticRepository(location="repo", password="test-password", backup_host="old-container"))
     restic.init()
     handler, artifacts = make_handler(api, restic)
     handler.run_backup(AgentReport.command_report())
@@ -159,9 +159,13 @@ def test_snapshot_backup_restores_original_files_and_reuses_parent(nas, state, t
     target = tmp_path / "restore"
     restic.restore(first, str(target), include_paths=["/"])
     assert (target / "example.txt").read_text() == "snapshot content"
+    restic.repository.backup_host = "drastic-550e8400-e29b-41d4-a716-446655440000"
+    restic.repository.env["RESTIC_HOST"] = restic.repository.backup_host
     handler.run_backup(AgentReport.command_report())
     saved = sorted(restic.snapshots(), key=lambda item: item["time"])
     assert saved[-1]["parent"].startswith(first)
+    assert saved[0]["hostname"] == "old-container"
+    assert saved[-1]["hostname"] == restic.repository.backup_host
     assert len([call for call in calls if call[0] == "pool.snapshot.create"]) == 2
 
 

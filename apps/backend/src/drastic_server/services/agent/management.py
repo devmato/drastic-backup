@@ -57,7 +57,7 @@ def register_agent(data):
     db.session.add(agent)
     db.session.commit()
     emit_agents_update(user.id)
-    return {"identifier": agent.id, "secret": secret}
+    return {"identifier": agent.id, "uuid": agent.uuid, "secret": secret}
 
 
 def update_agent(user_id, agent_id, data):

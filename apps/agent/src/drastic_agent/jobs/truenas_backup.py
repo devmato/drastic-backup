@@ -1,5 +1,8 @@
+"""Back up verified ZFS snapshots with dataset-scoped Restic parents."""
+
 import logging
 import re
+from datetime import datetime
 from pathlib import PurePosixPath
 from time import time
 
@@ -156,9 +159,12 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                             raise TrueNASError(f"Selected path is missing from the snapshot: {relative}")
                     with self.agent.resticapi.operation_cancellation(report.cancel_event):
                         previous = self.agent.resticapi.snapshots(tags=[f"job_uuid:{self.job['uuid']},dataset:{dataset['id']}"])
-                        parent = max(previous, key=lambda item: item["time"])["id"] if previous else None
+                        parent = max(previous, key=lambda item: datetime.fromisoformat(item["time"]))["id"] if previous else None
+                        report.log_message(f"Dataset {dataset['id']}: Restic parent {parent}" if parent else
+                                           f"Dataset {dataset['id']}: no matching Restic parent; reading all files")
                         status = self.agent.resticapi.backup(
                             paths=["." if relative == "." else f"./{relative}" for relative in included], cwd=str(path), parent=parent,
+                            force=parent is None,
                             exclude_patterns=[literal_pattern(path / relative) for relative in excluded]
                             + [f"{literal_pattern(path)}/{pattern.lstrip('/')}" for pattern in [".zfs", *config["exclude_patterns"]]],
                             tags=[f"job_uuid:{self.job['uuid']}", f"operation_uuid:{report.uuid}", "source:truenas",

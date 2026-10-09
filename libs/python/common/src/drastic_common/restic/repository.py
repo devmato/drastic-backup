@@ -1,3 +1,6 @@
+"""Restic endpoint, credentials and backup-only hostname metadata."""
+
+
 class ResticRepository:
     location = None
     password = None
@@ -12,6 +15,7 @@ class ResticRepository:
         env=None,
         ssh_private_key=None,
         ssh_known_hosts_path=None,
+        backup_host=None,
     ):
         self.location = location
         self.password = password
@@ -19,3 +23,4 @@ class ResticRepository:
         self.env = env or {}
         self.ssh_private_key = ssh_private_key
         self.ssh_known_hosts_path = ssh_known_hosts_path
+        self.backup_host = backup_host

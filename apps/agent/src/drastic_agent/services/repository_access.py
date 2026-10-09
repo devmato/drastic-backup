@@ -1,6 +1,5 @@
 """Repository endpoint resolution and recovery-key provisioning."""
 
-import os
 from urllib.parse import urlparse, urlunparse
 
 from drastic_agent.agent.exceptions import AgentExeption
@@ -22,8 +21,6 @@ def _rewrite_location(location, server_url):
 
 def location_environment(repository, *, identifier, server_url, agent_secret, rewrite_managed=False):
     env = dict(repository.get("environment") or {})
-    if identifier:
-        env.setdefault("RESTIC_HOST", os.environ.get("RESTIC_HOST") or f"drastic-{identifier}")
     location = repository["location"]
     if repository.get("kind") == AgentRepositoryKind.native.value:
         if str(location).startswith("rest:"):

@@ -78,6 +78,7 @@ class AgentRequestService:
 
         return SyncSchema().dump(
             {
+                "agent_uuid": self.agent.uuid,
                 "diagnostic_enabled": bool(self.agent.user.debug_token_hash),
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),

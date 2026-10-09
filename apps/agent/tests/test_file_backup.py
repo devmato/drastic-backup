@@ -1,3 +1,5 @@
+from contextlib import nullcontext
+
 import pytest
 
 from drastic_agent.agent.enums import AgentOperationType
@@ -7,6 +9,9 @@ from drastic_common.restic.exceptions import ResticFailedError
 
 
 class _FailingResticApi:
+    operation_cancellation = staticmethod(lambda _: nullcontext())
+    snapshots = staticmethod(lambda **_: [])
+
     @staticmethod
     def backup(**kwargs):
         raise ResticFailedError("backup failed", snapshot_id="partial-snap")

@@ -62,6 +62,8 @@
       <div class="item">
         <h3>{{ agent.display_name }} <small>(ID {{ agent.id }})</small></h3>
         <table>
+          <tr><th>Agent UUID</th><td><code>{{ agent.uuid }}</code></td></tr>
+          <tr><th>Restic hostname</th><td><code>drastic-{{ agent.uuid }}</code></td></tr>
           <tr><th>Hostname</th><td>{{ agent.hostname or "Not set" }}</td></tr>
           <tr><th>Install type</th><td>{{ agent.install_type or "Not set" }}</td></tr>
           <tr><th>Operating system</th><td>{{ agent.os or "Not set" }}</td></tr>

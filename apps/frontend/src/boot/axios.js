@@ -76,8 +76,11 @@ export default boot(({ app, router }) => {
               ...requestConfig,
               _retryAuth: true
             })
-          } catch {
-            // Continue below as a regular auth failure.
+          } catch (refreshError) {
+            // A network/server failure does not invalidate the refresh session.
+            if (refreshError?.response?.status !== 401) {
+              return Promise.reject(refreshError)
+            }
           }
         }
 

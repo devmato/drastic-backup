@@ -175,6 +175,7 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         assert "repository-password&lt;&amp;&gt;" in html
         assert "provider-secret" in html
         assert "agent &lt;primary&gt;" in html
+        assert f"drastic-{agent.uuid}" in html
         assert "Repo &lt;script&gt;alert(1)&lt;/script&gt;" in html
         assert "ssh-ed25519 included-public-key" in html
         assert "Files &lt;nightly&gt;" in html

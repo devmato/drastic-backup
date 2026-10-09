@@ -1,5 +1,9 @@
 # Unreleased
 
+- Backup cancellation now signals the worker immediately, including during parent lookup and between processes, and waits for worker cleanup before terminal reporting. Session keepalive now clears the session/socket and redirects protected views to login when `/auth/status` returns `authenticated: false`, including HTTP 200 responses.
+
+- **Agent protocol 15 required for backup, restore and repository statistics.** Update the backend/database first, then agents. Agents now receive a durable server-issued UUID and use `drastic-<full-UUID>` as their explicit Restic backup hostname. Removed implicit `RESTIC_HOST` filtering and hostname overrides; historical snapshots remain visible and reusable through job/artifact tags. File and TrueNAS backups explicitly select their own parent or force a fresh read, avoiding cross-job automatic parents. Recovery exports include agent UUIDs.
+
 - Backend, Docker agents and native agents now share one source version: `YYYY-MM-DD-<8-character SHA>` (UTC commit date), with `-dirty` for local changes. Agent properties show both agent and backend versions. New release/image tags use the same format; package-version bumps are no longer needed. Existing protocol compatibility checks still apply.
 
 - Backup selections share default split-view lists, actions and discovery states, with custom browser slots retained. File selections remain visible while the agent is offline. TrueNAS selections show inherited dataset scope and support exclusions of entire dataset subtrees, including future children; dataset exclusions require agent protocol 13.
@@ -24,7 +28,7 @@
 
 - User settings now have a dedicated page for password changes, Recovery Export, and opt-in Debug MCP; light/dark mode remains directly in the user menu. One diagnostic switch applies to all agents in the account. The read-only, owner-bound endpoint exposes operations and bounded diagnostic timelines, including agent/process samples and Proxmox output. Update the backend first (new migration), then agents for protocol 5 recording support. Recording and MCP access are disabled by default.
 
-- Restic backups now use a stable agent-based hostname across container recreations unless `RESTIC_HOST` is explicitly configured. The first file backup after this change may reread unchanged files; repository deduplication is preserved. Retention skips redundant prune runs and persists pending cleanup for retry after failure or restart.
+- Restic backups use a stable UUID-based hostname across container recreations; historical parents are selected by job/artifact tags without hostname filters. Retention skips redundant prune runs and persists pending cleanup for retry after failure or restart.
 
 - Operation start/end times, logs and last-run timestamps now include an explicit UTC offset, fixing incorrect local times and running durations for UTC containers viewed from another timezone. Update both server and agent. Existing naive database timestamps are interpreted as UTC; historical values from other timezones are not automatically shifted.
 

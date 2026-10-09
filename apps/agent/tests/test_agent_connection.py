@@ -21,6 +21,8 @@ from drastic_agent.runtime.agent import Agent
 from drastic_agent.runtime.execution import ExecutionManager
 from drastic_agent.services import secrets as repository_secrets_service
 
+AGENT_UUID = "550e8400-e29b-41d4-a716-446655440000"
+
 
 def build_agent(server="http://server.test", identifier=None, secret=None):
     agent = Agent.__new__(Agent)
@@ -30,6 +32,8 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__server = server
     agent._Agent__config = configparser.ConfigParser()
     agent._Agent__config["SERVER"] = {"url": server}
+    if identifier:
+        agent._Agent__config["AGENT"] = {"identifier": str(identifier), "secret": secret or "", "uuid": AGENT_UUID}
     agent._Agent__not_configured_logged = False
     agent._Agent__managed_repo_rewrite_warning_logged = False
     agent._Agent__next_register_attempt_at = datetime.min
@@ -238,7 +242,7 @@ class FakeRepositorySecrets:
 
 def test_set_repository_initializes_before_agent_key_provisioning(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
-    agent._Agent__config["AGENT"] = {"private_key": "private-key", "public_key": "public-key"}
+    agent._Agent__config["AGENT"] = {"uuid": AGENT_UUID, "private_key": "private-key", "public_key": "public-key"}
     calls = []
 
     class FakeRepositories:
@@ -322,9 +326,40 @@ def test_save_config_restricts_agent_state_permissions(monkeypatch, tmp_path):
     assert file_mode(tmp_path / "config.ini") == 0o600
 
 
+def test_sync_persists_uuid_once_and_rejects_missing_invalid_or_unwritable_identity(monkeypatch, tmp_path):
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
+    agent = build_agent(identifier="agent-17", secret="secret-17")
+    agent._Agent__config.remove_option("AGENT", "uuid")
+    agent.save_config()
+    payload = {"agent_uuid": AGENT_UUID, "repositories": [], "retentions": [], "jobs": [], "schedules": [], "actions": []}
+    monkeypatch.setattr(agent, "_Agent__send_request", lambda _: {"success": True, "result": payload})
+    monkeypatch.setattr(agent_module, "replace_configuration", lambda *args, **kwargs: None)
+    save = Mock(wraps=agent.save_config)
+    monkeypatch.setattr(agent, "save_config", save)
+    assert agent.cmd_sync().state == AgentReportState.success
+    restarted = build_agent(identifier="agent-17")
+    restarted._Agent__config.read(tmp_path / "config.ini")
+    assert restarted.uuid == agent.uuid == AGENT_UUID
+    assert agent.cmd_sync().state == AgentReportState.success
+    assert save.call_count == 1
+    original = (tmp_path / "config.ini").read_bytes()
+    for invalid in (None, "invalid"):
+        payload["agent_uuid"] = invalid
+        assert agent.cmd_sync().state == AgentReportState.failed
+        assert agent.uuid == AGENT_UUID
+    payload.pop("agent_uuid")
+    assert agent.cmd_sync().state == AgentReportState.failed
+    payload["agent_uuid"] = "b2ba8106-82ae-4ecb-93cc-b8339f5ddc1e"
+    monkeypatch.setattr(agent_module.os, "replace", Mock(side_effect=OSError("write failed")))
+    assert agent.cmd_sync().state == AgentReportState.failed
+    assert agent.uuid == AGENT_UUID
+    assert (tmp_path / "config.ini").read_bytes() == original
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["config.ini"]
+
+
 def test_set_repository_uses_agent_key_envelope_without_persisting_secret(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
-    agent._Agent__config["AGENT"] = {"private_key": "private-key"}
+    agent._Agent__config["AGENT"] = {"uuid": AGENT_UUID, "private_key": "private-key"}
     calls = []
 
     class FakeRepositories:
@@ -359,7 +394,7 @@ def test_set_repository_uses_agent_key_envelope_without_persisting_secret(monkey
 
 def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
-    agent._Agent__config["AGENT"] = {"private_key": "private-key", "public_key": "public-key"}
+    agent._Agent__config["AGENT"] = {"uuid": AGENT_UUID, "private_key": "private-key", "public_key": "public-key"}
     agent._Agent__repository_passwords[1] = "existing-agent-password"
     calls = []
     repository = {
@@ -423,7 +458,7 @@ def test_initialize_repository_with_recovery_uses_canonical_password(monkeypatch
 
 def test_set_repository_ignores_already_initialized_during_provisioning(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
-    agent._Agent__config["AGENT"] = {"private_key": "private-key", "public_key": "public-key"}
+    agent._Agent__config["AGENT"] = {"uuid": AGENT_UUID, "private_key": "private-key", "public_key": "public-key"}
     key_add_calls = []
 
     class FakeRepositories:
@@ -479,7 +514,7 @@ def test_register_updates_runtime_configuration(monkeypatch, tmp_path):
 
         @staticmethod
         def json():
-            return {"identifier": "agent-17", "secret": "secret-17"}
+            return {"identifier": "agent-17", "uuid": AGENT_UUID, "secret": "secret-17"}
 
     def fake_post(*args, **kwargs):
         payloads.append(kwargs["json"])
@@ -493,6 +528,7 @@ def test_register_updates_runtime_configuration(monkeypatch, tmp_path):
 
     assert result is True
     assert agent.identifier == "agent-17"
+    assert agent.uuid == AGENT_UUID
     assert agent._Agent__secret == "secret-17"
     assert agent.configured is True
     assert agent._Agent__config["AGENT"]["identifier"] == "agent-17"
@@ -794,7 +830,7 @@ def test_progress_and_logs_created_during_send_remain_pending(monkeypatch):
 
 def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
-    agent._Agent__config["AGENT"] = {"private_key": "private-key"}
+    agent._Agent__config["AGENT"] = {"uuid": AGENT_UUID, "private_key": "private-key"}
     inserted_repositories = []
     secret_deletes = []
 
@@ -826,6 +862,7 @@ def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
         return {
             "success": True,
             "result": {
+                "agent_uuid": AGENT_UUID,
                 "repositories": [
                     {
                         "id": 1,
@@ -921,7 +958,6 @@ def test_set_repository_keeps_managed_location_without_rewrite_flag(monkeypatch)
         configured_repository["location"] == "rest:http://127.0.0.1:5050/restic/bootstrap/default"
     )
     assert configured_repository["env"] == {
-        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
     }
@@ -957,7 +993,6 @@ def test_set_repository_rewrites_managed_location_when_flag_enabled(monkeypatch)
 
     assert configured_repository["location"] == "rest:http://backend:5050/restic/bootstrap/default"
     assert configured_repository["env"] == {
-        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_PASSWORD_COMMAND": "ignored",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
@@ -994,30 +1029,23 @@ def test_set_repository_builds_native_location_from_agent_server(monkeypatch):
 
     assert configured_repository["location"] == "rest:http://backend:5050/restic/native/default"
     assert configured_repository["env"] == {
-        "RESTIC_HOST": "drastic-agent-17",
         "RESTIC_REST_USERNAME": "agent-17",
         "RESTIC_REST_PASSWORD": "secret-17",
     }
 
 
-@pytest.mark.parametrize(("process_host", "repository_host", "expected"), [
-    (None, None, "drastic-agent-17"),
-    ("custom-host", None, "custom-host"),
-    (None, "repository-host", "repository-host"),
-    ("custom-host", "repository-host", "repository-host"),
-])
-def test_restic_host_is_stable_and_preserves_overrides(monkeypatch, process_host, repository_host, expected):
-    monkeypatch.delenv("RESTIC_HOST", raising=False)
-    if process_host is not None:
-        monkeypatch.setenv("RESTIC_HOST", process_host)
-    environment = {"RESTIC_HOST": repository_host} if repository_host is not None else {}
-    repository = {"location": "/repo", "environment": dict(environment)}
+def test_backup_host_uses_uuid_not_container_hostname_or_environment(monkeypatch):
+    monkeypatch.setenv("RESTIC_HOST", "process-host")
+    repository = {"id": 1, "location": "/repo", "environment": {"RESTIC_HOST": "repository-host"}}
     for hostname in ("old-container", "new-container"):
         monkeypatch.setattr(agent_module.platform, "node", lambda hostname=hostname: hostname)
         agent = build_agent(identifier="agent-17")
-        _, env = agent._Agent__repository_location_env(repository)
-        assert env["RESTIC_HOST"] == expected
-    assert repository["environment"] == environment
+        agent._Agent__repository_passwords[1] = "password"
+        configured = []
+        agent._Agent__resticapi = SimpleNamespace(set_repository=lambda value, configured=configured: configured.append(value))
+        agent.configure_repository(repository)
+        assert configured[0].backup_host == f"drastic-{AGENT_UUID}"
+    assert repository["environment"] == {"RESTIC_HOST": "repository-host"}
 
 
 def test_startup_warns_once_when_managed_repo_rewrite_enabled_outside_dev(monkeypatch):
@@ -1040,31 +1068,6 @@ def test_startup_warns_once_when_managed_repo_rewrite_enabled_outside_dev(monkey
     ]
 
 
-def test_cancel_job_fails_when_no_restic_pid_becomes_available(monkeypatch):
-    agent = build_agent(identifier="agent-17", secret="secret-17")
-    AgentReport.pending_reports = []
-    AgentReport.finished_reports.clear()
-    AgentReport.job_report(job_id=1, repository_id=2)
-    cancel_calls = []
-    monotonic_values = iter([0, 2])
-
-    class FakeResticApi:
-        @staticmethod
-        def cancel_process(pid):
-            cancel_calls.append(pid)
-
-    agent._Agent__resticapi = FakeResticApi()
-    monkeypatch.setenv("DRASTIC_CANCEL_WAIT_TIMEOUT_SECONDS", "1")
-    monkeypatch.setattr(agent_module, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(agent_module, "sleep", lambda seconds: None)
-
-    report = Agent.cmd_cancel_job(agent, job_id=1)
-
-    assert report.final_state.name == "failed"
-    assert "No restic process became available" in report.log
-    assert cancel_calls == []
-
-
 def test_cancel_restore_can_be_requested_between_processes():
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
@@ -1082,7 +1085,8 @@ def test_cancel_restore_can_be_requested_between_processes():
     assert restore_report.state.name == "running"
 
 
-def test_cancel_job_only_marks_operation_cancelled_after_process_was_killed():
+@pytest.mark.parametrize("pid", [None, 731])
+def test_cancel_job_acknowledges_request_and_leaves_terminal_reporting_to_worker(pid):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -1092,21 +1096,17 @@ def test_cancel_job_only_marks_operation_cancelled_after_process_was_killed():
         repository_id=2,
         operation_uuid="cancel-job-31",
     )
-    job_report.data["pid"] = 731
-
-    class MissingProcessResticApi:
-        @staticmethod
-        def cancel_process(pid):
-            assert pid == 731
-            return False
-
-    agent._Agent__resticapi = MissingProcessResticApi()
+    if pid is not None:
+        job_report.data["pid"] = pid
 
     report = Agent.cmd_cancel_job(agent, job_id=31, operation_uuid="cancel-job-31")
 
-    assert report.final_state.name == "failed"
+    assert report.final_state.name == "success"
+    assert job_report.cancel_event.is_set()
+    assert job_report.state.name == "running"
+    assert job_report.ended is None
     assert job_report.final_state.name == "success"
-    assert "no longer running" in report.log
+    assert "Cancellation requested" in report.log
 
 
 def test_cancel_restore_leaves_terminal_reporting_to_the_worker():

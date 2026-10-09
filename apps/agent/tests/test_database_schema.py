@@ -83,11 +83,13 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
     agent = Agent.__new__(Agent)
     agent._Agent__config = configparser.ConfigParser()
     agent._Agent__config["AGENT"] = {
+        "uuid": "550e8400-e29b-41d4-a716-446655440000",
         "private_key": _encode_config_secret(private_key),
         "public_key": _encode_config_secret(public_key),
     }
     payload = AgentSyncSchema().dump(
         {
+            "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
             "repositories": [{
                 "id": 1,
                 "kind": "local",
@@ -182,10 +184,13 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
         WHEN NEW.id = 2 BEGIN SELECT RAISE(ABORT, 'injected sync failure'); END
     """)
     agent = Agent.__new__(Agent)
+    agent._Agent__config = configparser.ConfigParser()
+    agent._Agent__config["AGENT"] = {"uuid": "550e8400-e29b-41d4-a716-446655440000"}
     payload = {
         name: [{"id": 2}]
         for name in ("repositories", "retentions", "jobs", "schedules", "actions")
     }
+    payload["agent_uuid"] = "550e8400-e29b-41d4-a716-446655440000"
     monkeypatch.setattr(
         agent, "_Agent__send_request", lambda action: {"success": True, "result": payload}
     )

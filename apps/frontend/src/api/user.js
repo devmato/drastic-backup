@@ -13,7 +13,7 @@ export async function getInitializationStatus() {
 }
 
 export async function getAuthStatus() {
-  return (await api.get('/auth/status', { _skipAuthRefresh: true })).data
+  return (await api.get('/auth/status')).data
 }
 
 export async function initializeUser(username, password) {

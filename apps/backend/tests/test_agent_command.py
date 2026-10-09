@@ -8,7 +8,8 @@ from drastic_server.models.agent import AgentOperationState
 
 
 def _agent():
-    return SimpleNamespace(online=True, session=SimpleNamespace(request_sid="agent-sid"))
+    return SimpleNamespace(online=True, protocol_version=AGENT_PROTOCOL_VERSION,
+                           session=SimpleNamespace(request_sid="agent-sid"))
 
 
 def test_run_job_awaits_short_admission_acknowledgement(monkeypatch):
@@ -70,6 +71,7 @@ def test_protocol_gate_blocks_new_and_incompatible_commands_before_dispatch(monk
     monkeypatch.setattr(agent_command, "call", lambda *_args, **_kwargs: calls.append(True))
     monkeypatch.setattr(agent_command, "emit", lambda *_args, **_kwargs: calls.append(True))
     agent = _agent()
+    agent.protocol_version = 0
     with app.app_context():
         for await_response in (True, False):
             for command in (
@@ -83,3 +85,21 @@ def test_protocol_gate_blocks_new_and_incompatible_commands_before_dispatch(monk
         agent.protocol_version = AGENT_PROTOCOL_VERSION + 1
         assert agent_command.AgentService.sync(agent)["state"] == AgentOperationState.failed
     assert not calls
+
+
+def test_old_agents_can_update_but_cannot_dispatch_backup_restore_or_statistics(monkeypatch):
+    app = Flask(__name__)
+    agent = _agent()
+    agent.protocol_version = 14
+    calls = []
+    monkeypatch.setattr(agent_command, "call", lambda _event, payload, **_kwargs:
+                        calls.append(payload["command"]) or {"type": "command", "state": "success", "logs": []})
+    with app.app_context():
+        for command in (AgentCommandName.run_job, AgentCommandName.list_restore_snapshots,
+                        AgentCommandName.list_restore_entries, AgentCommandName.run_restore,
+                        AgentCommandName.proxmox_restore, AgentCommandName.get_repository_stats):
+            response = agent_command.AgentService.send_command(agent, command)
+            assert response["state"] == AgentOperationState.failed
+            assert "update the agent" in response["log"]
+        assert agent_command.AgentService.send_command(agent, AgentCommandName.update)["state"] == AgentOperationState.success
+    assert calls == ["update"]

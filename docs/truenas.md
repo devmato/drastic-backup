@@ -2,7 +2,7 @@
 
 Run one dRastic agent as a Custom App on each TrueNAS system. The dRastic server can be remote; the agent reads the NAS datasets locally and sends backups to its assigned repository.
 
-The TrueNAS integration requires **TrueNAS 25.10 or newer and agent protocol 14**. Its API contract targets 25.10.4. Update the server before the agent. The native `/install` script is intended for writable Linux hosts, not the protected TrueNAS system filesystem.
+The TrueNAS integration requires **TrueNAS 25.10 or newer and agent protocol 15**. Its API contract targets 25.10.4. Update the server before the agent. The native `/install` script is intended for writable Linux hosts, not the protected TrueNAS system filesystem. See [agent identity and protocol 15](agent-installation.md#agent-identity-and-protocol-15) for UUID migration and historical snapshot handling.
 
 ## Install the agent app
 
@@ -75,11 +75,11 @@ Choose **Add job > TrueNAS-Backup** on the configured agent, select datasets or 
 - Browse pools, datasets, folders and files in the same hierarchical browser used for file backups. Pools and datasets use the `storage` icon, folders `folder`, and files `description`, including in the selection on the right.
 - Selecting a pool or parent dataset automatically includes all supported filesystem datasets below it, including newly created children. A selected folder also includes child datasets mounted beneath it. Overlapping dataset selections produce only one backup per dataset.
 - Use **+** to include an entry and **−** to exclude it and its subtree. Use **+** on the excluded entry or remove its exclusion rule to include it again. Exclusions take precedence over selections. **Exclude patterns** under Advanced still apply relative to each dataset root; browser exclusions match literal paths, even if names contain wildcard characters.
-- Existing jobs are migrated once to path selection, preserving their selected datasets, exclusions and patterns. Parent selections now always include child datasets, so jobs that previously disabled child inclusion may back up more data. Update the agent to protocol 14 before running or editing these jobs.
+- Existing jobs are migrated once to path selection, preserving their selected datasets, exclusions and patterns. Parent selections now always include child datasets, so jobs that previously disabled child inclusion may back up more data. Update the agent to protocol 15 before running or editing these jobs.
 - Every included dataset must be unlocked, mounted and readable by the agent. An unavailable dataset fails validation before temporary snapshots are created. Zvols and internal system datasets are excluded from dataset discovery.
 - The job creates a non-recursive snapshot of every selected dataset before reading files. Separate datasets are snapshotted sequentially, not atomically as a group.
 - Exclusions are relative to each dataset root. For example, `cache/**` excludes a root-level cache; `**/cache/**` excludes nested caches too.
-- Each dataset produces a separate Restic artifact in the operation report. Restore paths start at the dataset's contents, without temporary `.zfs/snapshot/...` prefixes. Successive backups reuse the previous backup of that dataset as their parent.
+- Each dataset produces a separate Restic artifact in the operation report. Restore paths start at the dataset's contents, without temporary `.zfs/snapshot/...` prefixes. Successive backups reuse the previous backup with matching job UUID and dataset tags as their parent, even if its hostname differs. Operation logs show the selected parent or the absence of a matching backup.
 - The progress bar measures the current dataset, identified by its name and position in the job. Until its scan has finished, and during snapshot creation, cleanup and finalization, the bar runs without a percentage and the phase is shown below it. Dataset counters describe the current dataset; job counters accumulate across datasets. The animation indicates a running operation, not a measured transfer rate.
 - ZFS snapshots provide a fixed filesystem state. Application-consistent database backups still require appropriate application preparation. Existing start/end actions remain available.
 - One TrueNAS backup runs at a time per agent. A concurrent TrueNAS run fails with a busy message; existing schedules retain their normal no-catch-up behavior.

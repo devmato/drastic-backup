@@ -1,3 +1,7 @@
+"""File backups with job-scoped parent selection."""
+
+from datetime import datetime
+
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.jobs.base import BackupJobHandler
 
@@ -21,14 +25,20 @@ class FileBackupJobHandler(BackupJobHandler):
             report.log_message(f"Exclusions: {', '.join(exclude_patterns)}")
 
         try:
-            restic_status = self.agent.resticapi.backup(
-                paths=paths,
-                exclude_patterns=exclude_patterns,
-                tags=tags,
-                callback=report.process_backup_status,
-                callback_pid=True,
-                callback_throttle=500,
-            )
+            with self.agent.resticapi.operation_cancellation(report.cancel_event):
+                previous = self.agent.resticapi.snapshots(tags=[f"job_uuid:{self.job['uuid']},artifact_key:default"])
+                parent = max(previous, key=lambda item: datetime.fromisoformat(item["time"]))["id"] if previous else None
+                report.log_message(f"Restic parent: {parent}" if parent else "No matching Restic parent; reading all files")
+                restic_status = self.agent.resticapi.backup(
+                    paths=paths,
+                    exclude_patterns=exclude_patterns,
+                    tags=tags,
+                    parent=parent,
+                    force=parent is None,
+                    callback=report.process_backup_status,
+                    callback_pid=True,
+                    callback_throttle=500,
+                )
         except Exception as exc:
             self.finish_artifact(
                 artifact,

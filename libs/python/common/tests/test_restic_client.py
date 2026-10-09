@@ -217,6 +217,46 @@ def test_backup_delivers_scan_and_summary_despite_throttle(monkeypatch):
     assert result == summary
 
 
+def test_backup_host_is_explicit_for_all_variants_and_never_filters_other_commands(monkeypatch):
+    monkeypatch.setenv("RESTIC_HOST", "process-host")
+    calls = []
+
+    def popen(cmd, stdin=None, **kwargs):
+        calls.append((cmd, kwargs["env"]))
+        if cmd[0] == "vzdump":
+            return _FakeProducerProcess(cmd)
+        process = _FakeResticProcess(cmd, stdin=stdin)
+        process.stdin = SimpleNamespace(write=lambda _: None, close=lambda: None)
+        if "backup" not in cmd:
+            process.stdout = _FakeTextStream(lines=['{"total_size":1}\n'])
+        return process
+
+    monkeypatch.setattr(subprocess, "Popen", popen)
+    repository = ResticRepository("/repo", "password", env={"RESTIC_HOST": "repository-host"},
+                                  backup_host="drastic-550e8400-e29b-41d4-a716-446655440000")
+    api = ResticApi("restic", repository)
+    api.backup(["/source"])
+    api.backup_stdin("data", "data.txt")
+    api.backup_stdin_from_command(["vzdump", "101", "--stdout"], "archive.vma")
+    api.snapshots(tags=["job_uuid:job"])
+    api.stats()
+    api.ls("snapshot")
+    api.restore("snapshot", "/restore", ["/"])
+    api.forget_snapshots(["snapshot"], prune=False)
+    for cmd, env in calls:
+        if cmd[0] == "vzdump":
+            assert env["RESTIC_HOST"] == "process-host"
+            continue
+        assert "RESTIC_HOST" not in env
+        assert env["RESTIC_PASSWORD"] == "password"
+        if "backup" in cmd:
+            assert cmd[cmd.index("--host") + 1] == repository.backup_host
+        else:
+            assert "--host" not in cmd
+    assert os.environ["RESTIC_HOST"] == "process-host"
+    assert repository.env == {"RESTIC_HOST": "repository-host"}
+
+
 def test_partial_backup_keeps_snapshot_identity_without_reporting_success(monkeypatch):
     process = _FakeResticProcess(["restic"], return_code=3)
     process.stdout._lines.append('{"message_type":"exit_error","code":3}\n')
@@ -405,7 +445,7 @@ def test_stats_measures_stored_data_and_records_mode(monkeypatch):
     assert result == {"total_size": 1024, "total_blob_count": 2, "mode": "raw-data"}
 
 
-def test_forget_prunes_by_default(monkeypatch):
+def test_forget_deletes_only_explicit_snapshot_ids(monkeypatch):
     popen_calls = []
 
     def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
@@ -416,16 +456,13 @@ def test_forget_prunes_by_default(monkeypatch):
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
-    result = ResticApi(binary_path="restic").forget(keep_last=3, keep_tags=["job-1"])
+    result = ResticApi(binary_path="restic").forget_snapshots(["snap-1"])
 
     assert popen_calls[0] == [
         "restic",
         "--json",
         "forget",
-        "--keep-last",
-        "3",
-        "--keep-tag",
-        "job-1",
+        "snap-1",
         "--prune",
     ]
     assert result == [{"remove": [{"id": "snap-1"}]}]
@@ -758,7 +795,7 @@ def test_cancel_process_uses_configured_termination_grace():
     assert api.cancel_process(123) is False
 
 
-def test_real_restic_backup_restore_smoke(tmp_path):
+def test_real_restic_backup_restore_smoke(tmp_path, monkeypatch):
     restic_binary = os.environ.get("RESTIC_BINARY") or os.environ.get("DRASTIC_RESTIC_BINARY") or which("restic")
     if not restic_binary:
         pytest.skip("restic binary is not available")
@@ -773,7 +810,7 @@ def test_real_restic_backup_restore_smoke(tmp_path):
 
     api = ResticApi(
         binary_path=restic_binary,
-        repository=ResticRepository(location=str(repo_path), password="test-password"),
+        repository=ResticRepository(location=str(repo_path), password="test-password", backup_host="old-container"),
     )
 
     api.init()
@@ -786,6 +823,10 @@ def test_real_restic_backup_restore_smoke(tmp_path):
     assert scan["total_files"] == backup_result["total_files_processed"] == 2
     assert events[-1] == backup_result
     assert backup_result["data_added_packed"] > 0
+    monkeypatch.setenv("RESTIC_HOST", "hidden-process-filter")
+    api.repository.env["RESTIC_HOST"] = "hidden-repository-filter"
+    api.repository.backup_host = "drastic-550e8400-e29b-41d4-a716-446655440000"
+    assert [snapshot["id"] for snapshot in api.snapshots(tags=["smoke-test"])] == [backup_result["snapshot_id"]]
     unchanged = api.backup(paths=[str(source_path)], parent=backup_result["snapshot_id"], tags=["smoke-test"])
     assert unchanged["total_bytes_processed"] == 25
     assert unchanged["files_unmodified"] == 2
@@ -803,6 +844,11 @@ def test_real_restic_backup_restore_smoke(tmp_path):
     assert stats["mode"] == "raw-data"
     assert stats["total_size"] > 0
     assert stats["total_blob_count"] > 0
+    assert stats["snapshots_count"] == 3
+    snapshots = {snapshot["id"]: snapshot for snapshot in api.snapshots()}
+    assert snapshots[backup_result["snapshot_id"]]["hostname"] == "old-container"
+    assert snapshots[unchanged["snapshot_id"]]["hostname"] == api.repository.backup_host
+    assert snapshots[unchanged["snapshot_id"]]["parent"] == backup_result["snapshot_id"]
 
     (source_path / "hello.txt").write_text("changed after backup\n", encoding="utf-8")
     (source_path / "nested" / "data.txt").unlink()

@@ -71,12 +71,16 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function fetchAuthStatus() {
+    const previousUser = user.value
     const data = await userApi.getAuthStatus()
+    // An in-flight keepalive must not restore state after logout or another login.
+    if (user.value !== previousUser) return data
     environment.value = data.environment || 'dev'
-    user.value = data.authenticated ? data.user : null
-    setDiagnosticRecording(user.value?.debug_enabled)
-    if (!data.authenticated) {
-      recoveryKey.value = null
+    if (data.authenticated) {
+      user.value = data.user
+      setDiagnosticRecording(user.value?.debug_enabled)
+    } else {
+      clearSessionState()
     }
     return data
   }
