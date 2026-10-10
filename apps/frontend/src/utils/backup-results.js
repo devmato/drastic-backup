@@ -14,24 +14,3 @@ export function getBackupState(job) {
 export function getBackupStateColor(state) {
   return backupStates.find(item => item.value === state)?.color || 'grey-6'
 }
-
-export function summarizeBackupResults(jobs) {
-  let start = 0
-  return backupStates.map(state => {
-    const count = jobs.filter(job => getBackupState(job) === state.value).length
-    const fraction = jobs.length ? count / jobs.length : 0
-    const segment = { ...state, count, fraction, start }
-    start += fraction
-    return segment
-  })
-}
-
-export function filterAgentJobs(agentJobs, state) {
-  if (!state) return agentJobs
-  return agentJobs.map(agent => ({
-    ...agent,
-    jobs: agent.jobs.filter(job => state === 'attention'
-      ? ['warning', 'failed'].includes(getBackupState(job))
-      : getBackupState(job) === state),
-  })).filter(agent => agent.jobs.length > 0)
-}

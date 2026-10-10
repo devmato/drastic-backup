@@ -10,33 +10,15 @@
 
     <template v-if="activeTab === 'jobs'">
 
-    <div class="row items-center q-col-gutter-sm q-mb-md">
-      <div class="col-12 col-sm-6 col-md-3">
-        <q-select v-model="lastState" :options="stateOptions" label="Latest backup status" outlined :dense="!$q.platform.has.touch" clearable emit-value map-options />
-      </div>
-      <div v-if="lastState" class="col-12 col-sm">
-        <div class="row items-center q-gutter-sm">
-          <span class="text-body2">{{ visibleAgentJobs.reduce((total, agent) => total + agent.jobs.length, 0) }} matching jobs</span>
-          <q-btn flat no-caps color="primary" label="Clear filter" @click="lastState = null" />
-        </div>
-      </div>
-    </div>
-
-    <q-card v-if="!lastState && jobStore.agentJobs.length === 0 && !jobStore.loading" flat bordered>
+    <q-card v-if="jobStore.agentJobs.length === 0 && !jobStore.loading" flat bordered>
       <EmptyState icon="backup" title="No agents available for backups" description="Connect an agent first, then add a backup job for that system.">
         <q-btn outline no-caps no-wrap color="primary" label="View Agents" to="/agents" />
       </EmptyState>
     </q-card>
 
-    <q-card v-if="lastState && visibleAgentJobs.length === 0 && !jobStore.loading" flat bordered>
-      <EmptyState icon="filter_list" title="No matching backup jobs" description="No jobs currently have this latest backup status.">
-        <q-btn outline no-caps color="primary" label="Show All Jobs" @click="lastState = null" />
-      </EmptyState>
-    </q-card>
-
     <q-inner-loading :showing="jobStore.loading" />
 
-    <div v-for="agentData in visibleAgentJobs" :key="agentData.id" class="q-mb-md">
+    <div v-for="agentData in jobStore.agentJobs" :key="agentData.id" class="q-mb-md">
       <q-card flat bordered>
         <q-card-section class="q-py-sm">
           <div class="row items-center q-col-gutter-md">
@@ -161,7 +143,7 @@ import BackupChainsPanel from 'components/jobs/BackupChainsPanel.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { useJobEditor } from 'src/composables/useJobEditor'
-import { backupStates, filterAgentJobs, getBackupStateColor as stateColor } from 'src/utils/backup-results'
+import { backupStates, getBackupStateColor as stateColor } from 'src/utils/backup-results'
 
 const router = useRouter()
 const route = useRoute()
@@ -180,13 +162,6 @@ function openChain(id) {
   showJobDialog.value = false
   router.push({ query: { ...route.query, tab: 'chains', chain_id: String(id) } })
 }
-
-const stateOptions = [...backupStates, { value: 'attention', label: 'Warnings / failures' }]
-const lastState = computed({
-  get: () => stateOptions.some(state => state.value === route.query.last_state) ? route.query.last_state : null,
-  set: value => router.push({ query: { ...route.query, last_state: value || undefined } }),
-})
-const visibleAgentJobs = computed(() => filterAgentJobs(jobStore.agentJobs, lastState.value))
 
 const showJobDialog = ref(false)
 const editingJob = ref(null)

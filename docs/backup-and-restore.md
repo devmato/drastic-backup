@@ -1,5 +1,15 @@
 # Backup and Restore
 
+## Dashboard and Agent Reports
+
+The dashboard shows two charts for reports started in the last seven days across your agents. **Last 7 days (Status)** groups all reports into successful, failed, warning, cancelled, and running results. **Last 7 days (Types)** groups the same reports into **Backup**, **Restore**, **Agent update**, and **Other**. Other includes repository checks, retention, repository unlocks, repository statistics, agent synchronization, and commands. Reserved operations without a reported start time use their creation time.
+
+Click a chart segment or legend entry to open reports filtered by its status or type. The report list uses the exact UTC time boundaries from the dashboard: the start is included and the end is excluded. You can combine type and status filters on the report page. Refresh the dashboard to advance this seven-day window.
+
+The report page supports filters for report type/group, state, agent, job ID, and UTC start time. Filters are stored in the URL and retained when returning from report details. **Last 7 days** updates the period; **Clear filters** shows the full history within the current agent scope. The Jobs page shows all configured jobs; filter execution outcomes on the report page.
+
+The owner-scoped HTTP endpoints `GET /api/agents/operations` and `GET /api/agents/operations/summary` accept optional `type`, `group=other`, `state` (including `attention` for warnings/failures), `agent_id`, `job_id`, `since`, and `until` query parameters. Timestamps are ISO 8601 UTC instants. The list returns compact report rows with agent display names; the summary returns counts by concrete type and state. The existing per-agent history and operation-detail endpoints retain their full response fields.
+
 ## Create a Repository
 
 Use a native repository when dRastic should manage storage through the integrated `rest-server`.

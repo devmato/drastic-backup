@@ -241,8 +241,8 @@ const pageTitle = computed(() => {
 })
 
 const operationListRoute = computed(() => ({
-  path: `/agents/${route.params.agentId}/operations`,
-  query: route.query,
+  path: route.query.scope === 'all' ? '/agents/operations' : `/agents/${route.params.agentId}/operations`,
+  query: { ...route.query, scope: undefined },
 }))
 
 const sortedLogs = computed(() => {
@@ -508,7 +508,7 @@ const summaryColumns = computed(() => {
       ...(current.repository_id ? [{ label: 'Repository', value: current.repository_name || `#${current.repository_id}` }] : []),
     ],
     [
-      { label: 'Device', value: agentDisplayName.value, to: operationListRoute.value },
+      { label: 'Device', value: agentDisplayName.value, to: { path: `/agents/${route.params.agentId}/operations`, query: { ...route.query, scope: undefined, agent_id: undefined } } },
       ...metricCards.value,
     ],
   ]

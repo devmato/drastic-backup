@@ -8,8 +8,10 @@ from flask_smorest import Blueprint, abort
 from drastic_server.schemas.agent import (
     AgentInstallOptionsResponseSchema,
     AgentOperationDetailResponseSchema,
+    AgentOperationListResponseSchema,
     AgentOperationQuerySchema,
     AgentOperationResponseSchema,
+    AgentOperationSummaryResponseSchema,
     AgentProxmoxSettingsInputSchema,
     AgentProxmoxSettingsResponseSchema,
     AgentProxmoxTestResponseSchema,
@@ -194,6 +196,24 @@ class AgentTrueNASCleanup(MethodView):
     @blp.response(200, AgentTrueNASSettingsResponseSchema)
     def post(self, agent_id):
         return _connection_command(agent_id, "truenas_settings", action="cleanup")
+
+
+@blp.route("/operations")
+class OperationList(MethodView):
+    @jwt_required()
+    @blp.arguments(AgentOperationQuerySchema, location="query")
+    @blp.response(200, AgentOperationListResponseSchema(many=True))
+    def get(self, args):
+        return history.list_operations(get_jwt_identity(), args["agent_id"], args)
+
+
+@blp.route("/operations/summary")
+class OperationSummary(MethodView):
+    @jwt_required()
+    @blp.arguments(AgentOperationQuerySchema, location="query")
+    @blp.response(200, AgentOperationSummaryResponseSchema(many=True))
+    def get(self, args):
+        return history.summarize_operations(get_jwt_identity(), args)
 
 
 @blp.route("/<int:agent_id>/operations")

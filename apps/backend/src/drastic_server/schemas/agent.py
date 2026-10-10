@@ -164,6 +164,19 @@ class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
     repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
 
 
+class AgentOperationListResponseSchema(AgentOperationResponseSchema):
+    agent_display_name = fields.String(attribute="agent.display_name", allow_none=True)
+
+    class Meta:
+        exclude = ("logs", "log", "artifacts", "data")
+
+
+class AgentOperationSummaryResponseSchema(Schema):
+    type = fields.String(required=True)
+    state = fields.String(required=True)
+    count = fields.Integer(required=True)
+
+
 class AgentOperationStartResponseSchema(Schema):
     msg = fields.String(required=True)
     id = fields.Integer(required=True)
@@ -183,8 +196,13 @@ class AgentOperationQuerySchema(Schema):
         unknown = EXCLUDE
 
     type = fields.Enum(AgentOperationType, by_value=False, load_default=None, allow_none=True)
-    state = fields.Enum(AgentOperationState, by_value=False, load_default=None, allow_none=True)
+    state = fields.String(load_default=None, allow_none=True,
+                          validate=validate.OneOf((*_OPERATION_STATE_NAMES, "attention")))
     job_id = fields.Integer(load_default=None, allow_none=True)
+    agent_id = fields.Integer(load_default=None, allow_none=True, validate=validate.Range(min=1))
+    group = fields.String(load_default=None, allow_none=True, validate=validate.OneOf(["other"]))
+    since = UTCDateTime(load_default=None, allow_none=True)
+    until = UTCDateTime(load_default=None, allow_none=True)
 
 
 class AgentRegisterInputSchema(Schema):

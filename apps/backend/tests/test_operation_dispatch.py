@@ -56,6 +56,83 @@ def _successful_report(operation):
     }
 
 
+def test_report_summary_and_history_share_groups_period_and_ownership(monkeypatch):
+    app = _build_app(monkeypatch)
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="admin")
+            user.set_initial_password("account-password", recovery_key="user-recovery-key")
+            foreign_user = User(name="other")
+            foreign_user.set_initial_password("other-password", recovery_key="other-recovery-key")
+            agents = [Agent(user=user, secret=f"secret-{index}", hostname=f"host-{index}")
+                      for index in range(2)]
+            foreign_agent = Agent(user=foreign_user, secret="foreign", hostname="foreign")
+            job = Job(agent=agents[0], name="Files", type=JobType.file, config={"paths": []})
+            since, until = datetime(2026, 10, 3), datetime(2026, 10, 10)
+            reports = []
+            for index, operation_type in enumerate(AgentOperationType):
+                for state in AgentOperationState:
+                    reports.append(AgentOperation(
+                        agent=agents[index % 2], type=operation_type, state=state,
+                        job=job if operation_type == AgentOperationType.backup else None,
+                        started=since + timedelta(days=2),
+                    ))
+            # Include the lower boundary and an admission with no reported start.
+            reports.extend([
+                AgentOperation(agent=agents[0], type=AgentOperationType.backup,
+                               state=AgentOperationState.success, started=since, job=job),
+                AgentOperation(agent=agents[1], type=AgentOperationType.command,
+                               state=AgentOperationState.running, created=since, started=None),
+            ])
+            excluded = [
+                AgentOperation(agent=agent, type=AgentOperationType.backup,
+                               state=AgentOperationState.failed, started=started)
+                for agent, started in [(agents[0], since - timedelta(seconds=1)),
+                                       (agents[0], until), (foreign_agent, since)]
+            ]
+            db.session.add_all([user, foreign_user, *agents, foreign_agent, job, *reports, *excluded])
+            db.session.commit()
+            client = app.test_client()
+            _login(client)
+            period = {"since": "2026-10-03T02:00:00+02:00", "until": "2026-10-10T00:00:00Z"}
+            summary = client.get("/api/agents/operations/summary", query_string=period)
+            assert summary.status_code == 200
+            assert sum(row["count"] for row in summary.json) == len(reports)
+            all_reports = client.get("/api/agents/operations", query_string=period)
+            assert all_reports.status_code == 200
+            assert {row["id"] for row in all_reports.json} == {row.id for row in reports}
+            assert all(row["agent_display_name"].startswith("host-") for row in all_reports.json)
+            assert not {"logs", "log", "artifacts", "data"}.intersection(all_reports.json[0])
+            primary = {"backup", "restore", "agent_update"}
+            for group in [*primary, "other"]:
+                for state in AgentOperationState:
+                    expected = sum(row["count"] for row in summary.json
+                                   if row["state"] == state.name and
+                                   (row["type"] not in primary if group == "other" else row["type"] == group))
+                    filters = {**period, "state": state.name,
+                               **({"group": "other"} if group == "other" else {"type": group})}
+                    response = client.get("/api/agents/operations", query_string=filters)
+                    assert response.status_code == 200
+                    assert len(response.json) == expected
+            attention = client.get("/api/agents/operations", query_string={**period, "state": "attention"})
+            assert {row["state"] for row in attention.json} == {"failed", "warning"}
+            assert len(attention.json) == 2 * len(AgentOperationType)
+            job_reports = client.get("/api/agents/operations", query_string={**period, "job_id": job.id})
+            assert all(row["job_id"] == job.id for row in job_reports.json)
+            scoped = client.get(f"/api/agents/{agents[0].id}/operations", query_string=period)
+            assert scoped.status_code == 200
+            assert all(row["agent_id"] == agents[0].id and "logs" in row for row in scoped.json)
+            for endpoint in ["/api/agents/operations", "/api/agents/operations/summary"]:
+                assert client.get(endpoint, query_string={**period, "agent_id": foreign_agent.id}).status_code == 404
+                assert client.get(endpoint, query_string={**period, "since": period["until"]}).status_code == 422
+                for invalid in [{"state": "unknown"}, {"group": "invalid"}, {"since": "yesterday"}]:
+                    assert client.get(endpoint, query_string={**period, **invalid}).status_code == 422
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
 @pytest.mark.parametrize("state", ["success", "failed"])
 def test_agent_update_uses_existing_operation_history_and_logs(monkeypatch, state):
     app = _build_app(monkeypatch)

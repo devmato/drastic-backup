@@ -2,19 +2,19 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { backupStates, getBackupStateColor } from '../src/utils/backup-results.js'
 import { createQueuedReload } from '../src/utils/queued-reload.js'
 
 test('background operation updates stay quiet and preserve data on failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const route = { params: { operationId: '1', agentId: '1' }, query: {} }
+  const route = reactive({ params: { operationId: '1', agentId: '1' }, query: {} })
   let resolveRequest
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const cancellations = []
   const quasar = { notify: () => assert.fail('background error notification') }
-  const page = runInNewContext(`${source}\n;({ operation, cancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+  const page = runInNewContext(`${source}\n;({ operation, operationListRoute, cancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
     computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload,
     useRoute: () => route,
     useAgentStore: () => store,
@@ -77,6 +77,15 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.summaryColumns.value[0], 'Job'), 'Documents')
   assert.equal(field(page.summaryColumns.value[0], 'Repository'), 'Offsite')
   assert.equal(field(page.summaryColumns.value[1], 'Device'), 'Backup host')
+  route.query = { scope: 'all', group: 'other', state: 'failed', since: '2026-10-03T00:00:00Z', until: '2026-10-10T00:00:00Z' }
+  assert.equal(page.operationListRoute.value.path, '/agents/operations')
+  assert.equal(page.operationListRoute.value.query.group, 'other')
+  assert.equal(page.operationListRoute.value.query.since, route.query.since)
+  const deviceLink = page.summaryColumns.value[1].find(item => item.label === 'Device').to
+  assert.equal(deviceLink.path, '/agents/1/operations')
+  assert.equal(deviceLink.query.state, 'failed')
+  route.query.scope = undefined
+  assert.equal(page.operationListRoute.value.path, '/agents/1/operations')
   assert.equal(field(page.metricCards.value, 'Files processed'), '1')
   assert.equal(field(page.metricCards.value, 'Changes'), '1 new')
   assert.equal(field(page.metricCards.value, 'Data transferred'), '256 B')

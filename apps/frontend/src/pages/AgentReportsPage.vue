@@ -1,27 +1,41 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader :title="`Operations for Agent #${route.params.agentId}`" description="Review operation history, status and logs.">
+    <PageHeader :title="route.params.agentId ? `Reports for Agent #${route.params.agentId}` : 'Agent Reports'" description="Review operation history, status and logs.">
       <template #breadcrumbs>
         <q-breadcrumbs>
           <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-          <q-breadcrumbs-el :label="`Agent #${route.params.agentId}`" :to="`/agents/${route.params.agentId}`" />
-          <q-breadcrumbs-el label="Operations" />
+          <q-breadcrumbs-el v-if="route.params.agentId" :label="`Agent #${route.params.agentId}`" :to="`/agents/${route.params.agentId}`" />
+          <q-breadcrumbs-el label="Reports" />
         </q-breadcrumbs>
       </template>
     </PageHeader>
 
     <q-card flat bordered class="q-mb-md">
-      <q-form @submit="loadOperations()">
+      <q-form @submit="applyFilters">
         <q-card-section>
           <div class="row q-col-gutter-md items-center">
             <div class="col-12 col-sm-6 col-md-3">
-              <q-select v-model="filterType" :options="typeOptions" label="Operation type" emit-value map-options clearable outlined dense />
+              <q-select v-model="filterType" :options="typeOptions" label="Report type / group" emit-value map-options clearable outlined dense />
             </div>
             <div class="col-12 col-sm-6 col-md-3">
               <q-select v-model="filterState" :options="stateOptions" label="State" emit-value map-options clearable outlined dense />
             </div>
-            <div class="col-12 col-md-auto">
+            <div v-if="!route.params.agentId" class="col-12 col-sm-6 col-md-3">
+              <q-select v-model="filterAgentId" :options="agentOptions" label="Agent" emit-value map-options clearable outlined dense />
+            </div>
+            <div class="col-12 col-sm-6 col-md-3">
+              <q-input v-model="filterJobId" type="number" min="1" label="Job ID" clearable outlined dense />
+            </div>
+            <div class="col-12 col-sm-6 col-md-3">
+              <q-input v-model="filterSince" type="datetime-local" step="any" label="Started from (UTC)" stack-label clearable outlined dense />
+            </div>
+            <div class="col-12 col-sm-6 col-md-3">
+              <q-input v-model="filterUntil" type="datetime-local" step="any" label="Started before (UTC)" stack-label clearable outlined dense :rules="[value => !value || !filterSince || value > filterSince || 'End must be after start']" hide-bottom-space />
+            </div>
+            <div class="col-12 col-md-auto row q-gutter-sm">
               <q-btn unelevated no-caps no-wrap icon="filter_list" label="Filter" color="primary" type="submit" :loading="loading" />
+              <q-btn flat no-caps no-wrap label="Last 7 days" color="primary" @click="setLastSevenDays" />
+              <q-btn flat no-caps no-wrap label="Clear filters" color="primary" @click="clearFilters" />
             </div>
           </div>
         </q-card-section>
@@ -63,7 +77,7 @@
 import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
-import { ref, watch, onBeforeUnmount } from 'vue'
+import { computed, ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
@@ -71,6 +85,8 @@ import { subscribeToSocketEvents } from 'src/utils/socket'
 import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { getBackupStateColor as stateColor } from 'src/utils/backup-results'
+import { lastSevenDays, operationFilters, operationStates } from 'src/utils/operation-results'
+import { listOperations } from 'src/api/operations'
 
 const route = useRoute()
 const router = useRouter()
@@ -82,6 +98,10 @@ const loading = ref(false)
 const filterType = ref(null)
 const filterState = ref(null)
 const filterJobId = ref(null)
+const filterAgentId = ref(null)
+const filterSince = ref('')
+const filterUntil = ref('')
+const agentOptions = computed(() => agentStore.agents.map(agent => ({ label: agent.display_name, value: String(agent.id) })))
 
 let stopJobSocketListener = null
 let disposed = false
@@ -97,18 +117,18 @@ const typeOptions = [
   { label: 'Repository stats', value: 'repository_stats' },
   { label: 'Agent command', value: 'command' },
   { label: 'Agent update', value: 'agent_update' },
+  { label: 'Agent sync', value: 'sync' },
+  { label: 'Other', value: 'other' },
 ]
 
 const stateOptions = [
-  { label: 'Running', value: 'running' },
-  { label: 'Success', value: 'success' },
-  { label: 'Warning', value: 'warning' },
-  { label: 'Failed', value: 'failed' },
-  { label: 'Cancelled', value: 'cancelled' },
+  ...operationStates,
+  { label: 'Warnings / failures', value: 'attention' },
 ]
 
 const columns = [
   { name: 'id', label: '#', field: 'id', align: 'left', sortable: true },
+  { name: 'agent', label: 'Agent', field: row => row.agent_display_name || `Agent #${row.agent_id}`, align: 'left', sortable: true },
   { name: 'type_text', label: 'Type', field: 'type_text', align: 'left', sortable: true },
   { name: 'state', label: 'State', field: 'state', align: 'left', sortable: true },
   { name: 'started', label: 'Started', field: row => formatDate(row.started), align: 'left', sortable: true },
@@ -123,15 +143,49 @@ function formatDate(isoStr) {
 
 function showOperation(operation) {
   router.push({
-    path: `/agents/${route.params.agentId}/operations/${operation.id}`,
-    query: route.query,
+    path: `/agents/${operation.agent_id}/operations/${operation.id}`,
+    query: { ...route.query, scope: route.params.agentId ? undefined : 'all' },
   })
 }
 
 function syncFiltersFromRoute() {
-  filterType.value = typeof route.query.type === 'string' ? route.query.type : null
+  filterType.value = route.query.group === 'other' ? 'other' : typeof route.query.type === 'string' ? route.query.type : null
   filterState.value = typeof route.query.state === 'string' ? route.query.state : null
-  filterJobId.value = route.query.job_id ? Number(route.query.job_id) : null
+  filterJobId.value = typeof route.query.job_id === 'string' ? route.query.job_id : null
+  filterAgentId.value = typeof route.query.agent_id === 'string' ? route.query.agent_id : null
+  filterSince.value = utcInput(route.query.since)
+  filterUntil.value = utcInput(route.query.until)
+}
+
+function utcInput(value) {
+  const date = new Date(value)
+  return typeof value === 'string' && Number.isFinite(date.getTime()) ? date.toISOString().slice(0, -1) : ''
+}
+
+async function applyFilters() {
+  const query = {
+    ...(filterType.value === 'other' ? { group: 'other' } : filterType.value ? { type: filterType.value } : {}),
+    ...(filterState.value ? { state: filterState.value } : {}),
+    ...(!route.params.agentId && filterAgentId.value ? { agent_id: filterAgentId.value } : {}),
+    ...(filterJobId.value ? { job_id: String(filterJobId.value) } : {}),
+    ...(filterSince.value ? { since: new Date(`${filterSince.value}Z`).toISOString() } : {}),
+    ...(filterUntil.value ? { until: new Date(`${filterUntil.value}Z`).toISOString() } : {}),
+  }
+  if (JSON.stringify(operationFilters(route.query)) === JSON.stringify(query)) await loadOperations()
+  else await router.push({ query })
+}
+
+function setLastSevenDays() {
+  const period = lastSevenDays()
+  filterSince.value = utcInput(period.since)
+  filterUntil.value = utcInput(period.until)
+  void applyFilters()
+}
+
+function clearFilters() {
+  filterType.value = filterState.value = filterJobId.value = filterAgentId.value = null
+  filterSince.value = filterUntil.value = ''
+  void applyFilters()
 }
 
 async function syncJobSocketListener() {
@@ -140,12 +194,13 @@ async function syncJobSocketListener() {
     const eventName = payload?.name || ''
     const eventAgentId = Number(payload?.data?.agent_id)
 
-    if (eventName.startsWith('operationupdate') && eventAgentId === Number(route.params.agentId)) {
+    const agentId = route.params.agentId || route.query.agent_id
+    if (eventName.startsWith('operationupdate') && (!agentId || eventAgentId === Number(agentId))) {
       void queueOperationsReload(Boolean(payload.data?.state && payload.data.state !== 'running'))
       return
     }
 
-    if (filterJobId.value && eventName === `jobstate${filterJobId.value}`) {
+    if (route.query.job_id && eventName === `jobstate${route.query.job_id}`) {
       void queueOperationsReload(true)
     }
   })
@@ -172,18 +227,15 @@ function confirmDeleteOperation(operation) {
 
 async function loadOperations(background = false) {
   const request = ++operationsRequest
-  const agentId = String(route.params.agentId)
   if (!background) loading.value = true
-  const params = {}
-  if (filterType.value) params.type = filterType.value
-  if (filterState.value) params.state = filterState.value
-  if (filterJobId.value) params.job_id = filterJobId.value
+  const params = operationFilters(route.query)
+  if (route.params.agentId) params.agent_id = route.params.agentId
   try {
-    const updatedOperations = await agentStore.getAgentOperations(agentId, params)
-    if (disposed || request !== operationsRequest || String(route.params.agentId) !== agentId) return
+    const updatedOperations = await listOperations(params)
+    if (disposed || request !== operationsRequest) return
     operations.value = updatedOperations
   } catch (e) {
-    if (disposed || request !== operationsRequest || String(route.params.agentId) !== agentId || background) return
+    if (disposed || request !== operationsRequest || background) return
     operations.value = []
     if (shouldIgnoreApiError(e)) return
     $q.notify({ message: getApiErrorMessage(e, 'Could not load operations'), color: 'red', position: 'top' })
@@ -195,7 +247,7 @@ async function loadOperations(background = false) {
 void syncJobSocketListener()
 
 watch(
-  () => [route.params.agentId, route.query.type, route.query.state, route.query.job_id],
+  () => [route.params.agentId, JSON.stringify(operationFilters(route.query))],
   async () => {
     queueOperationsReload.cancel()
     queueOperationsReload = createQueuedReload(() => loadOperations(true))
@@ -204,6 +256,15 @@ watch(
   },
   { immediate: true }
 )
+
+onMounted(async () => {
+  try {
+    await agentStore.loadAgents()
+  } catch (error) {
+    if (disposed || shouldIgnoreApiError(error)) return
+    $q.notify({ message: getApiErrorMessage(error, 'Could not load agents'), color: 'negative', position: 'top' })
+  }
+})
 
 onBeforeUnmount(() => {
   disposed = true

@@ -1,5 +1,13 @@
 import { api } from 'boot/axios'
 
+export async function listOperations(params = {}) {
+  return (await api.get('/agents/operations', { params })).data
+}
+
+export async function summarizeOperations(params) {
+  return (await api.get('/agents/operations/summary', { params })).data
+}
+
 export async function startBackupJob({ jobId, repositoryId, recoveryKey = null, options = {} }) {
   const response = await api.post(`/jobs/${jobId}/run`, {
     repository_id: repositoryId,
