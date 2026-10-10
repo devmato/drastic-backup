@@ -1,8 +1,10 @@
+"""TrueNAS JSON-RPC sessions and verification of local ZFS snapshot mounts."""
+
 import json
 import os
 import re
 import ssl
-from contextlib import closing
+from contextlib import closing, contextmanager
 from pathlib import Path, PurePosixPath
 from threading import Lock
 from time import monotonic
@@ -42,51 +44,77 @@ class TrueNASClient:
         self.settings = settings
         self.api_key = api_key
         self.timeout = timeout
+        self._connection = None
+        self._request_id = 0
         diagnostics.remember_secrets({"api_key": api_key})
 
     @property
     def public_settings(self):
         return {**self.settings, "api_key_configured": bool(self.api_key), "configured": bool(self.api_key)}
 
-    def call(self, method, *params):
+    @contextmanager
+    def session(self):
+        """Reuse one login within a synchronous API phase; never replay failed calls.
+
+        Nested scopes borrow the current connection. The outer scope always closes
+        it, including on errors. Clients belong to one command/worker, not threads.
+        """
+        if self._connection is not None:
+            yield self
+            return
         if not self.api_key:
             raise TrueNASError("Configure the TrueNAS connection on this agent first")
         url = self.settings["api_url"].replace("https://", "wss://", 1) + "/api/current"
-        deadline = monotonic() + self.timeout
         try:
-            with closing(websocket.create_connection(
+            connection = websocket.create_connection(
                 url, timeout=self.timeout,
                 sslopt={"cert_reqs": ssl.CERT_REQUIRED if self.settings["verify_tls"] else ssl.CERT_NONE},
                 redirect_limit=0,
-            )) as connection:
+            )
+        except (OSError, ValueError, TypeError, websocket.WebSocketException) as exc:
+            raise TrueNASError(str(exc).replace(self.api_key, "<redacted>")) from None
+        with closing(connection):
+            login = self._request(connection, "auth.login_ex", [{
+                "mechanism": "API_KEY_PLAIN", "username": self.settings["username"],
+                "api_key": self.api_key, "login_options": {"user_info": False},
+            }])
+            if not isinstance(login, dict) or login.get("response_type") != "SUCCESS":
+                raise TrueNASError("TrueNAS authentication failed; check the user and API key")
+            self._connection = connection
+            try:
+                yield self
+            finally:
+                self._connection = None
 
-                def request(request_id, name, args):
-                    connection.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": name, "params": args}))
-                    while True:
-                        remaining = deadline - monotonic()
-                        if remaining <= 0:
-                            raise TrueNASError("TrueNAS request timed out; its outcome may be unknown")
-                        connection.settimeout(remaining)
-                        response = json.loads(connection.recv())
-                        if not isinstance(response, dict):
-                            raise TrueNASError("Invalid TrueNAS JSON-RPC response")
-                        if response.get("id") != request_id:
-                            continue
-                        if "error" in response:
-                            error = response["error"]
-                            reason = (error.get("data") or {}).get("reason") or error.get("message")
-                            raise TrueNASError(f"TrueNAS {name}: {reason}")
-                        return response.get("result")
-
-                login = request(1, "auth.login_ex", [{
-                    "mechanism": "API_KEY_PLAIN", "username": self.settings["username"],
-                    "api_key": self.api_key, "login_options": {"user_info": False},
-                }])
-                if not isinstance(login, dict) or login.get("response_type") != "SUCCESS":
-                    raise TrueNASError("TrueNAS authentication failed; check the user and API key")
-                return request(2, method, list(params))
+    def _request(self, connection, method, params):
+        self._request_id += 1
+        request_id = self._request_id
+        deadline = monotonic() + self.timeout
+        try:
+            # Each request gets a fresh deadline, even when the session is reused.
+            connection.settimeout(self.timeout)
+            connection.send(json.dumps({"jsonrpc": "2.0", "id": request_id, "method": method, "params": params}))
+            while True:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TrueNASError("TrueNAS request timed out; its outcome may be unknown")
+                connection.settimeout(remaining)
+                response = json.loads(connection.recv())
+                if not isinstance(response, dict):
+                    raise TrueNASError("Invalid TrueNAS JSON-RPC response")
+                if response.get("id") != request_id:
+                    continue
+                if "error" in response:
+                    error = response["error"]
+                    reason = (error.get("data") or {}).get("reason") or error.get("message")
+                    raise TrueNASError(f"TrueNAS {method}: {reason}")
+                return response.get("result")
         except (OSError, ValueError, TypeError, websocket.WebSocketException, TrueNASError) as exc:
             raise TrueNASError(str(exc).replace(self.api_key, "<redacted>")) from None
+
+    def call(self, method, *params):
+        with self.session():
+            return self._request(self._connection, method, list(params))
 
     def version(self):
         version = str(self.call("system.version"))
@@ -96,7 +124,8 @@ class TrueNASClient:
         return version
 
     def test(self):
-        return {"version": self.version(), "dataset_count": len(self.datasets())}
+        with self.session():
+            return {"version": self.version(), "dataset_count": len(self.datasets())}
 
     def local_path(self, mountpoint):
         path = PurePosixPath(mountpoint or "")

@@ -863,3 +863,20 @@ def test_real_restic_backup_restore_smoke(tmp_path, monkeypatch):
     assert (restored_source / "hello.txt").read_text(encoding="utf-8") == "hello backup\n"
     assert (restored_source / "nested" / "data.txt").read_text(encoding="utf-8") == "nested data\n"
     api.check()
+
+    # Explicit paths override exclude patterns in restic 0.19; directory contents stay filtered.
+    filtered = api.backup(paths=[str(source_path)], exclude_patterns=["*.txt"], tags=["filtered"])
+    assert filtered["total_files_processed"] == 0
+    explicit = api.backup(paths=[str(source_path), str(source_path / "hello.txt")], exclude_patterns=["*.txt"], tags=["filtered"])
+    assert explicit["total_files_processed"] == 1
+    (source_path / "nested" / "data.txt").write_text("included\n", encoding="utf-8")
+    with pytest.raises(ResticFailedError) as incomplete:
+        api.backup(paths=[str(source_path), str(source_path / "missing")], exclude_patterns=["hello.txt"], tags=["filtered"])
+    assert "exit code 3" in str(incomplete.value)
+    assert incomplete.value.snapshot_id
+    entries = api.ls(snapshot_id=incomplete.value.snapshot_id, path=str(source_path), recursive=True)
+    assert any(entry.get("path", "").endswith("/nested/data.txt") for entry in entries)
+    assert not any(entry.get("path", "").endswith("/hello.txt") for entry in entries)
+    api.forget_snapshots(snapshot_ids=[filtered["snapshot_id"], explicit["snapshot_id"], incomplete.value.snapshot_id])
+    assert not api.snapshots(tags=["filtered"])
+    api.check()

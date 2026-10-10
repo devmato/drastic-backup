@@ -1,5 +1,7 @@
 # Unreleased
 
+- **Changed exclusion precedence with restic 0.19.1:** File and TrueNAS backups now keep explicitly selected files and folders even when an exclude pattern matches them. Directory contents remain filtered; TrueNAS browser exclusions made with **−** still take precedence over selections.
+
 - Backup cancellation now signals the worker immediately, including during parent lookup and between processes, and waits for worker cleanup before terminal reporting. Session keepalive now clears the session/socket and redirects protected views to login when `/auth/status` returns `authenticated: false`, including HTTP 200 responses.
 
 - **Agent protocol 15 required for backup, restore and repository statistics.** Update the backend/database first, then agents. Agents now receive a durable server-issued UUID and use `drastic-<full-UUID>` as their explicit Restic backup hostname. Removed implicit `RESTIC_HOST` filtering and hostname overrides; historical snapshots remain visible and reusable through job/artifact tags. File and TrueNAS backups explicitly select their own parent or force a fresh read, avoiding cross-job automatic parents. Recovery exports include agent UUIDs.

@@ -88,6 +88,7 @@ def nas(state, tmp_path, monkeypatch):
     snapshots = {}
     api = TrueNASClient({**SETTINGS, "host_root": str(root)}, "api-secret")
     controls = {"fail_delete": False, "cancel": None, "missing_mount": False, "datasets": ["tank/data"]}
+    controls["connections"] = []
     calls = []
 
     def call(method, *params):
@@ -129,7 +130,25 @@ def nas(state, tmp_path, monkeypatch):
             return relative
         return None if controls["missing_mount"] else relative.replace("/.zfs/snapshot/", "@")
 
-    monkeypatch.setattr(api, "call", call)
+    def connect(*_args, **_kwargs):
+        session = {"requests": [], "closed": False}
+        controls["connections"].append(session)
+
+        def receive():
+            request = session["requests"][-1]
+            response = {"id": request["id"]}
+            try:
+                response["result"] = ({"response_type": "SUCCESS"} if request["method"] == "auth.login_ex"
+                                      else call(request["method"], *request["params"]))
+            except TrueNASError as exc:
+                response["error"] = {"data": {"reason": str(exc)}}
+            return json.dumps(response)
+
+        return SimpleNamespace(send=lambda msg: session["requests"].append(json.loads(msg)),
+                               settimeout=lambda _: None, recv=receive,
+                               close=lambda: session.update(closed=True))
+
+    monkeypatch.setattr(truenas_module.websocket, "create_connection", connect)
     monkeypatch.setattr(truenas_module, "mount_source", source)
     return api, controls, calls, snapshots, live
 
@@ -255,6 +274,38 @@ def test_child_selection_expands_at_run_time_without_duplicates(nas, state, sele
     assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
     assert report.data["backup_items_total"] == report.data["truenas_progress"]["datasets_total"] == len(expected)
     assert not snapshots and state["snapshots"].count() == 0
+
+
+def test_backup_reuses_sessions_for_six_pending_snapshots_and_closes_before_restic(nas, state):
+    api, controls, _, snapshots, _ = nas
+    for index in range(5):
+        name = f"tank/data/child{index}"
+        path = api.local_path(f"/mnt/{name}")
+        path.mkdir()
+        (path / "example.txt").write_text(name)
+        controls["datasets"].append(name)
+
+    def backup(**_kwargs):
+        assert all(connection["closed"] for connection in controls["connections"])
+        return {"snapshot_id": "saved"}
+
+    handler, _ = make_handler(api, SimpleNamespace(
+        operation_cancellation=lambda _: nullcontext(), snapshots=lambda **_: [], backup=backup))
+    controls["fail_delete"] = True
+    handler.run_backup(AgentReport.command_report())
+    assert len(snapshots) == state["snapshots"].count() == 6
+
+    controls["connections"].clear()
+    controls["fail_delete"] = False
+    handler.run_backup(AgentReport.command_report())
+    assert not snapshots and state["snapshots"].count() == 0
+    connections = controls["connections"]
+    assert len(connections) == 2  # Preparation (including pending cleanup), then final cleanup.
+    for connection in connections:
+        assert connection["closed"]
+        requests = connection["requests"]
+        assert sum(request["method"] == "auth.login_ex" for request in requests) == 1
+        assert len({request["id"] for request in requests}) == len(requests)
 
 
 @pytest.mark.parametrize("missing_parent", [False, True])

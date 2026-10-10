@@ -65,30 +65,31 @@ def cleanup_snapshots(api, agent_id, report=None):
     pending = list(truenas_snapshots.all())
     if not pending:
         return
-    host_id = api.call("system.host_id")
-    for row in pending:
-        try:
-            if row["api_url"] != api.settings["api_url"] or row["host_id"] != host_id:
-                raise TrueNASError("Pending snapshot belongs to a different NAS; restore its connection to clean it up")
-            snapshots = api.call("pool.snapshot.query", [["id", "=", row["snapshot_id"]]])
-            if snapshots:
-                properties = snapshots[0].get("properties") or {}
-                if (properties.get("org.drastic:agent", {}).get("value") != str(agent_id)
-                        or properties.get("org.drastic:operation", {}).get("value") != row["operation_uuid"]):
-                    raise TrueNASError("Snapshot ownership does not match; refusing deletion")
-                api.call("pool.snapshot.delete", row["snapshot_id"], {"recursive": False, "defer": False})
-            elif not row["confirmed"] and time() - row["created_at"] < 300:
-                # An API timeout is not proof that snapshot creation failed.
-                raise TrueNASError("Snapshot creation outcome is unknown; retry cleanup after five minutes")
-            truenas_snapshots.delete(id=row["id"])
-            if report:
-                report.log_message(f"Cleaned up TrueNAS snapshot {row['snapshot_id']}")
-        except Exception as exc:
-            message = f"TrueNAS cleanup pending for {row['snapshot_id']}: {exc}"
-            if report:
-                report.log_message(message, final_state=AgentOperationState.warning)
-            else:
-                logging.warning(message)
+    with api.session():
+        host_id = api.call("system.host_id")
+        for row in pending:
+            try:
+                if row["api_url"] != api.settings["api_url"] or row["host_id"] != host_id:
+                    raise TrueNASError("Pending snapshot belongs to a different NAS; restore its connection to clean it up")
+                snapshots = api.call("pool.snapshot.query", [["id", "=", row["snapshot_id"]]])
+                if snapshots:
+                    properties = snapshots[0].get("properties") or {}
+                    if (properties.get("org.drastic:agent", {}).get("value") != str(agent_id)
+                            or properties.get("org.drastic:operation", {}).get("value") != row["operation_uuid"]):
+                        raise TrueNASError("Snapshot ownership does not match; refusing deletion")
+                    api.call("pool.snapshot.delete", row["snapshot_id"], {"recursive": False, "defer": False})
+                elif not row["confirmed"] and time() - row["created_at"] < 300:
+                    # An API timeout is not proof that snapshot creation failed.
+                    raise TrueNASError("Snapshot creation outcome is unknown; retry cleanup after five minutes")
+                truenas_snapshots.delete(id=row["id"])
+                if report:
+                    report.log_message(f"Cleaned up TrueNAS snapshot {row['snapshot_id']}")
+            except Exception as exc:
+                message = f"TrueNAS cleanup pending for {row['snapshot_id']}: {exc}"
+                if report:
+                    report.log_message(message, final_state=AgentOperationState.warning)
+                else:
+                    logging.warning(message)
 
 
 def recover_snapshots(agent):
@@ -111,35 +112,38 @@ class TrueNASBackupJobHandler(BackupJobHandler):
         try:
             api = self.agent.get_truenas_client()
             self._check_cancelled(report)
-            api.version()
-            cleanup_snapshots(api, self.agent.identifier, report)
-            if truenas_snapshots.count():
-                raise TrueNASError("Clean up pending snapshots before starting another TrueNAS backup")
-            available = {item["id"]: item for item in api.datasets()}
-            selected = backup_selection(config, available)
-            host_id = api.call("system.host_id")
-            name = f"drastic-{report.uuid}"
-            paths = []
-            report.set_data("backup_items_total", len(selected))
-            # ponytail: ZFS logical sizes are estimates (metadata, sparse files, exclusions);
-            # refine from Restic's existing scan instead of adding a filesystem walk.
-            report.set_backup_size_estimates({f"dataset:{dataset['id']}": dataset.get("bytes_estimated")
-                                             for dataset, _, _ in selected})
-            report.set_data("truenas_progress", {"phase": "snapshots", "datasets_total": len(selected)})
-            for dataset, included, excluded in selected:
-                self._check_cancelled(report)
-                snapshot_id = f"{dataset['id']}@{name}"
-                record = {"snapshot_id": snapshot_id, "api_url": api.settings["api_url"], "host_id": host_id,
-                          "operation_uuid": report.uuid, "created_at": time(), "confirmed": False}
-                record["id"] = truenas_snapshots.insert(record)
-                api.call("pool.snapshot.create", {
-                    "dataset": dataset["id"], "name": name, "recursive": False,
-                    "properties": {"org.drastic:agent": str(self.agent.identifier), "org.drastic:operation": report.uuid},
-                })
-                record["confirmed"] = True
-                truenas_snapshots.update(record, ["id"])
-                paths.append((dataset, api.snapshot_path(dataset, name), included, excluded))
-                report.log_message(f"Created and mounted {snapshot_id}")
+            # Snapshot preparation can exceed the login rate limit if every call
+            # authenticates separately. Close this session before long Restic runs.
+            with api.session():
+                api.version()
+                cleanup_snapshots(api, self.agent.identifier, report)
+                if truenas_snapshots.count():
+                    raise TrueNASError("Clean up pending snapshots before starting another TrueNAS backup")
+                available = {item["id"]: item for item in api.datasets()}
+                selected = backup_selection(config, available)
+                host_id = api.call("system.host_id")
+                name = f"drastic-{report.uuid}"
+                paths = []
+                report.set_data("backup_items_total", len(selected))
+                # ponytail: ZFS logical sizes are estimates (metadata, sparse files, exclusions);
+                # refine from Restic's existing scan instead of adding a filesystem walk.
+                report.set_backup_size_estimates({f"dataset:{dataset['id']}": dataset.get("bytes_estimated")
+                                                 for dataset, _, _ in selected})
+                report.set_data("truenas_progress", {"phase": "snapshots", "datasets_total": len(selected)})
+                for dataset, included, excluded in selected:
+                    self._check_cancelled(report)
+                    snapshot_id = f"{dataset['id']}@{name}"
+                    record = {"snapshot_id": snapshot_id, "api_url": api.settings["api_url"], "host_id": host_id,
+                              "operation_uuid": report.uuid, "created_at": time(), "confirmed": False}
+                    record["id"] = truenas_snapshots.insert(record)
+                    api.call("pool.snapshot.create", {
+                        "dataset": dataset["id"], "name": name, "recursive": False,
+                        "properties": {"org.drastic:agent": str(self.agent.identifier), "org.drastic:operation": report.uuid},
+                    })
+                    record["confirmed"] = True
+                    truenas_snapshots.update(record, ["id"])
+                    paths.append((dataset, api.snapshot_path(dataset, name), included, excluded))
+                    report.log_message(f"Created and mounted {snapshot_id}")
 
             failed = []
             for index, (dataset, path, included, excluded) in enumerate(paths, 1):

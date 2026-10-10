@@ -86,6 +86,8 @@ Example exclude patterns:
 node_modules
 ```
 
+With restic 0.19.1, explicitly selected files and folders take precedence over exclude patterns. For example, selecting `/data` with `*.key` excluded skips its `.key` files; explicitly selecting `/data/private.key` also backs up that file. Contents of selected directories remain filtered by the patterns.
+
 ### Proxmox Backup
 
 Use the shared split-view browser to select the local Proxmox host or individual VMs. Click the host to browse its VMs. Selecting the host with **+** includes all supported VMs, including newly created ones; use **−** on a VM to exclude it and **+** to include it again. Without the host selected, **+** selects individual VMs and **−** removes them from the selection. The right column shows the selected host or VMs and any active exclusions.
