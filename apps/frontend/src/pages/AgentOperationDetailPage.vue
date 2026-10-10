@@ -10,10 +10,19 @@
         </q-breadcrumbs>
       </template>
       <template #actions>
+        <q-btn
+          v-if="operation" flat round color="primary" icon="info" aria-label="Technical details"
+          :aria-expanded="showTechnicalDetails" aria-controls="operation-technical-details"
+          @click="showTechnicalDetails = !showTechnicalDetails"
+        >
+          <q-tooltip>Technical details</q-tooltip>
+        </q-btn>
+        <q-btn v-if="canCancelOperation" flat round color="negative" icon="cancel" aria-label="Cancel operation" :loading="cancelling" @click="cancelOperation">
+          <q-tooltip>Cancel operation</q-tooltip>
+        </q-btn>
         <q-btn flat round color="primary" icon="refresh" aria-label="Refresh operation" :loading="loading" @click="loadOperation()">
           <q-tooltip>Refresh operation</q-tooltip>
         </q-btn>
-        <q-btn v-if="isRestoreOperation && operation?.state === 'running'" outline no-caps no-wrap color="negative" label="Cancel restore" :loading="cancelling" @click="cancelRestore" />
       </template>
     </PageHeader>
 
@@ -70,10 +79,7 @@
               </q-item>
             </q-list>
 
-            <q-expansion-item
-              dense dense-toggle switch-toggle-side label="Technical details"
-              header-class="q-px-none" class="text-body2"
-            >
+            <div v-show="showTechnicalDetails" id="operation-technical-details" class="text-body2">
               <div v-for="field in technicalDetails" :key="field.label" class="row no-wrap items-center q-mt-sm">
                 <span class="col-auto q-mr-sm">{{ field.label }}:</span>
                 <span class="col db-break-word">
@@ -87,7 +93,7 @@
                   <q-tooltip>Copy snapshot ID</q-tooltip>
                 </q-btn>
               </div>
-            </q-expansion-item>
+            </div>
           </div>
         </q-card-section>
       </q-card>
@@ -184,6 +190,7 @@ import { useRoute } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useOperationStore } from 'stores/operation'
+import { cancelJob } from 'src/api/jobs'
 import { subscribeToSocketEvents } from 'src/utils/socket'
 import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -195,12 +202,18 @@ const $q = useQuasar()
 const agentStore = useAgentStore()
 const operationStore = useOperationStore()
 const cancelling = ref(false)
+const showTechnicalDetails = ref(false)
 
-async function cancelRestore() {
+async function cancelOperation() {
+  if (!canCancelOperation.value || cancelling.value) return
   cancelling.value = true
   try {
-    await operationStore.cancelRestore(operation.value.id)
-    $q.notify({ message: 'Restore cancellation requested', color: 'info' })
+    if (isRestoreOperation.value) {
+      await operationStore.cancelRestore(operation.value.id)
+    } else {
+      await cancelJob(operation.value.job_id)
+    }
+    $q.notify({ message: 'Operation cancellation requested', color: 'info' })
     await loadOperation()
   } catch (e) {
     if (!shouldIgnoreApiError(e)) $q.notify({ message: getApiErrorMessage(e), color: 'negative' })
@@ -282,6 +295,8 @@ const truenasProgress = computed(() => operationData.value.truenas_progress)
 const backupProgress = computed(() => operationData.value.backup_progress)
 const isBackupOperation = computed(() => operation.value?.type === 'backup')
 const isRestoreOperation = computed(() => operation.value?.type === 'restore')
+const canCancelOperation = computed(() => operation.value?.state === 'running'
+  && (isRestoreOperation.value || isBackupOperation.value && Boolean(operation.value.job_id)))
 const bytesProcessed = computed(() => numberOrNull(operationData.value.bytes_processed))
 const bytesTotal = computed(() => {
   if (isBackupOperation.value && operation.value?.state === 'running' && !backupProgress.value) return null
@@ -696,6 +711,7 @@ watch(
     queueOperationRefresh.cancel()
     queueOperationRefresh = createQueuedReload(() => loadOperation(true))
     operation.value = null
+    showTechnicalDetails.value = false
     await loadOperation()
   },
   { immediate: true }

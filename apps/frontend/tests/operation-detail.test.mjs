@@ -12,12 +12,15 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const route = { params: { operationId: '1', agentId: '1' }, query: {} }
   let resolveRequest
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
-  const page = runInNewContext(`${source}\n;({ operation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+  const cancellations = []
+  const quasar = { notify: () => assert.fail('background error notification') }
+  const page = runInNewContext(`${source}\n;({ operation, cancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
     computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload,
     useRoute: () => route,
     useAgentStore: () => store,
-    useOperationStore: () => ({}),
-    useQuasar: () => ({ notify: () => assert.fail('background error notification') }),
+    useOperationStore: () => ({ cancelRestore: async id => cancellations.push(['restore', id]) }),
+    cancelJob: async id => cancellations.push(['backup', id]),
+    useQuasar: () => quasar,
     subscribeToSocketEvents: async () => () => {},
     recordBrowserDiagnostic: () => {},
     watch: () => {},
@@ -434,4 +437,12 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.jobDetailsCaption.value, '3 datasets · 1 successful · 1 failed · 1 warning')
   page.operation.value.artifacts = [page.operation.value.artifacts[0]]
   assert.equal(page.jobDetailsCaption.value, '1 dataset · 1 successful')
+
+  store.getOperation = async () => page.operation.value
+  quasar.notify = () => {}
+  for (const type of ['backup', 'restore']) {
+    page.operation.value = { id: 1, job_id: 2, type, state: 'running', data: {} }
+    await page.cancelOperation()
+  }
+  assert.deepEqual(cancellations, [['backup', 2], ['restore', 1]])
 })
