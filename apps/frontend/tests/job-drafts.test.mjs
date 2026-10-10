@@ -166,6 +166,43 @@ test('job submission validates general fields even when another section is activ
   assert.equal(dialog.activeSection.value, 'general')
 })
 
+test('path breadcrumbs navigate to exact ancestors and reset when the source changes', async () => {
+  const source = readFileSync(new URL('../src/components/PathBrowser.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const requested = []
+  const browser = runInNewContext(`${source}\n;({ navigate, breadcrumbs })`, {
+    computed, ref, pathSelectionOptions, watch: () => {}, defineOptions: () => {},
+    defineProps: () => ({ initialPath: '/', selectedPaths: [], loadEntries: async path => {
+      requested.push(path)
+      return path === '/host'
+        ? { path, path_label: 'pve.example', breadcrumbs: [{ label: 'pve.example', path }] }
+        : { path }
+    } }),
+    defineEmits: () => () => {},
+    useQuasar: () => ({ notify: () => assert.fail('Unexpected browser error') }),
+    shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
+  })
+  const rows = () => JSON.parse(JSON.stringify(browser.breadcrumbs.value))
+  await browser.navigate('/sys/bus')
+  assert.deepEqual(rows(), [
+    { label: '/', path: '/' }, { label: 'sys', path: '/sys' }, { label: 'bus', path: '/sys/bus' },
+  ])
+  await browser.navigate(browser.breadcrumbs.value[1].path)
+  assert.equal(requested.at(-1), '/sys')
+  await browser.navigate('/host')
+  assert.equal(rows()[1].label, 'pve.example')
+  await browser.navigate('/with spaces/#%/日本語/')
+  assert.deepEqual(rows().slice(1), [
+    { label: 'with spaces', path: '/with spaces' },
+    { label: '#%', path: '/with spaces/#%' },
+    { label: '日本語', path: '/with spaces/#%/日本語' },
+  ])
+  await browser.navigate(browser.breadcrumbs.value[2].path)
+  assert.equal(requested.at(-1), '/with spaces/#%')
+  await browser.navigate(browser.breadcrumbs.value[0].path)
+  assert.deepEqual(rows(), [{ label: '/', path: '/' }])
+})
+
 test('Proxmox host and VM browser preserves scope and supports inherited selection and exclusions', async () => {
   const script = name => readFileSync(new URL(`../src/components/${name}.vue`, import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
@@ -194,7 +231,7 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
     defineEmits: () => (event, value) => { if (event === 'update:selection') panel.updateSelection(value) },
   }
-  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath, entryRows })`, { ...context })
+  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath, entryRows, breadcrumbs })`, { ...context })
   const selected = runInNewContext(`${script('PathSelectionPanel')}\n;({ removePath, selectionRows })`, { ...context })
   const root = await panel.loadEntries('/')
   const host = root.entries[0]
@@ -202,6 +239,9 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   assert.equal(host.icon, 'dns')
   await browser.navigate(host.path)
   assert.equal(browser.parentPath.value, '/')
+  assert.deepEqual(JSON.parse(JSON.stringify(browser.breadcrumbs.value)), [
+    { label: '/', path: '/' }, { label: 'pve', path: host.path },
+  ])
   const vms = (await panel.loadEntries(host.path)).entries
   assert.deepEqual(Array.from(vms, vm => vm.vmid), [101, 102])
   assert.equal(browser.entryRows.value.find(vm => vm.vmid === 101).state, 'include', 'inactive exclusions do not change existing include jobs')
@@ -341,7 +381,7 @@ test('TrueNAS keeps a custom-mounted dataset distinct from a same-named folder',
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
     defineEmits: () => (event, value) => { if (event === 'update:selection') panel.update(selectionConfig(value)) },
   }
-  const browser = runInNewContext(`${script('PathBrowser')}\n;({ navigate, setInclude, setExclude, parentPath, currentPathLabel })`, { ...context })
+  const browser = runInNewContext(`${script('PathBrowser')}\n;({ navigate, setInclude, setExclude, parentPath, currentPathLabel, breadcrumbs })`, { ...context })
   const selected = runInNewContext(`${script('PathSelectionPanel')}\n;({ removePath, selectionRows })`, { ...context })
   const pool = browserKey({ dataset: 'tank', path: '.' })
   const listing = await panel.loadEntries(pool)
@@ -355,11 +395,20 @@ test('TrueNAS keeps a custom-mounted dataset distinct from a same-named folder',
     await browser.navigate(entry.path)
     assert.equal(requested.at(-1), local)
     assert.equal(browser.currentPathLabel.value, '/tank/photos', 'display labels stay readable')
+    assert.deepEqual(JSON.parse(JSON.stringify(browser.breadcrumbs.value)), [
+      { label: '/', path: '/' }, { label: 'tank', path: pool }, { label: 'photos', path: entry.path },
+    ])
     assert.equal(browser.parentPath.value, pool)
-    await browser.navigate(browser.parentPath.value)
+    await browser.navigate(browser.breadcrumbs.value[1].path)
     assert.equal(requested.at(-1), '/host/mnt/tank')
     browser.setInclude(entry)
   }
+  await browser.navigate(browserKey({ dataset: 'tank/photos', path: '2026/Summer trip' }))
+  assert.deepEqual(Array.from(browser.breadcrumbs.value, crumb => crumb.label), ['/', 'tank', 'photos', '2026', 'Summer trip'])
+  await browser.navigate(browser.breadcrumbs.value[3].path)
+  assert.equal(requested.at(-1), '/host/mnt/archive/2026', 'ancestors retain the custom dataset mountpoint')
+  await browser.navigate(browser.breadcrumbs.value[0].path)
+  assert.deepEqual(Array.from(browser.breadcrumbs.value, crumb => crumb.path), ['/'])
   assert.deepEqual(JSON.parse(JSON.stringify(props.modelValue.paths)), [
     { dataset: 'tank', path: 'photos', group: 'folder' },
     { dataset: 'tank/photos', path: '.', group: 'dataset' },

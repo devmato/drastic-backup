@@ -1,17 +1,31 @@
 <template>
-  <div>
-    <div class="row items-center q-gutter-sm q-mb-xs">
-      <q-btn v-if="currentPath !== '/'" flat dense round icon="arrow_upward" @click="navigate(parentPath)">
-        <q-tooltip>Parent directory</q-tooltip>
-      </q-btn>
-      <q-chip dense square color="grey-2" text-color="dark" class="col">
-        <span class="ellipsis">{{ currentPathLabel }}</span>
-      </q-chip>
-      <q-spinner v-if="loading" size="sm" />
-    </div>
+  <q-card flat bordered>
+    <div class="column no-wrap" :style="{ height }">
+      <div class="row no-wrap items-center col-auto q-px-sm q-py-xs">
+        <q-btn v-if="currentPath !== '/'" flat dense round icon="arrow_upward" class="col-auto"
+          :color="$q.dark.isActive ? 'grey-5' : 'grey-7'" aria-label="Parent directory" @click="navigate(parentPath)">
+          <q-tooltip>Parent directory</q-tooltip>
+        </q-btn>
+        <nav class="col scroll-x" aria-label="Directory path">
+          <div class="row no-wrap items-center">
+            <template v-for="(crumb, index) in breadcrumbs" :key="crumb.path">
+              <span v-if="index" class="text-grey-6 q-mx-xs" aria-hidden="true">/</span>
+              <q-btn v-if="index < breadcrumbs.length - 1" flat dense no-caps no-wrap
+                class="col-auto text-caption" :color="$q.dark.isActive ? 'grey-5' : 'grey-7'"
+                :icon="index === 0 ? 'home' : undefined" :label="index === 0 ? undefined : crumb.label"
+                :aria-label="index === 0 ? 'Root directory' : `Open ${crumb.label}`" @click="navigate(crumb.path)" />
+              <span v-else class="col-auto text-caption text-weight-medium text-no-wrap q-px-xs" aria-current="page">
+                <q-icon v-if="index === 0" name="home" size="sm" role="img" aria-hidden="false" aria-label="Root directory" />
+                <template v-else>{{ crumb.label }}</template>
+              </span>
+            </template>
+          </div>
+        </nav>
+        <q-spinner v-if="loading" class="col-auto q-ml-xs" size="sm" />
+      </div>
+      <q-separator />
 
-    <q-card flat bordered>
-      <q-scroll-area :style="{ height }">
+      <q-scroll-area class="col">
         <q-list v-if="entryRows.length > 0" separator>
           <q-item
             v-for="entry in entryRows"
@@ -64,8 +78,8 @@
         </q-list>
         <div v-else-if="!loading" class="text-grey q-pa-md">{{ emptyLabel }}</div>
       </q-scroll-area>
-    </q-card>
-  </div>
+    </div>
+  </q-card>
 </template>
 
 <script setup>
@@ -94,12 +108,26 @@ const emit = defineEmits(['update:selection', 'update:selectedPaths', 'pick', 'p
 const $q = useQuasar()
 const currentPath = ref(props.initialPath || '/')
 const currentPathLabel = ref(currentPath.value)
+const loadedBreadcrumbs = ref(null)
 const parentPath = ref('/')
 const entries = ref([])
 const loading = ref(false)
 let loadVersion = 0
 
 const selectedPathSet = computed(() => new Set(props.selectedPaths || []))
+const breadcrumbs = computed(() => {
+  const root = { label: '/', path: '/' }
+  if (currentPath.value === '/') return [root]
+  // Loaders with opaque source IDs provide targets rather than deriving them from display labels.
+  if (loadedBreadcrumbs.value) return [root, ...loadedBreadcrumbs.value]
+  if (currentPathLabel.value !== currentPath.value) {
+    return [root, { label: currentPathLabel.value, path: currentPath.value }]
+  }
+  const parts = currentPath.value.split('/').filter(Boolean)
+  return [root, ...parts.map((label, index) => ({
+    label, path: `/${parts.slice(0, index + 1).join('/')}`,
+  }))]
+})
 
 const entryRows = computed(() =>
   [...entries.value]
@@ -120,6 +148,7 @@ async function navigate(path = '/') {
     if (version !== loadVersion) return
     currentPath.value = result.base_directory || result.path || path || '/'
     currentPathLabel.value = result.path_label || currentPath.value
+    loadedBreadcrumbs.value = result.breadcrumbs || null
     parentPath.value = result.parent_directory || parentDirectory(currentPath.value)
     entries.value = result.directories || result.entries || []
     emit('path-change', currentPath.value)

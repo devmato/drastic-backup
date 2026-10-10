@@ -99,6 +99,15 @@ async function loadEntries(path) {
   const parent = relativePath === '.'
     ? (parentDataset ? browserKey({ dataset: parentDataset, path: '.' }) : '/')
     : browserKey({ dataset: datasetId, path: relativePath.split('/').slice(0, -1).join('/') || '.' })
-  return { path, entries, parent_directory: parent, path_label: datasetId ? browserPath({ dataset: datasetId, path: relativePath }) : '/' }
+  const breadcrumbs = []
+  const datasetParts = datasetId.split('/').filter(Boolean)
+  datasetParts.forEach((label, index) => {
+    breadcrumbs.push({ label, path: browserKey({ dataset: datasetParts.slice(0, index + 1).join('/'), path: '.' }) })
+  })
+  const directoryParts = relativePath === '.' ? [] : relativePath.split('/')
+  directoryParts.forEach((label, index) => {
+    breadcrumbs.push({ label, path: browserKey({ dataset: datasetId, path: directoryParts.slice(0, index + 1).join('/') }) })
+  })
+  return { path, entries, breadcrumbs, parent_directory: parent, path_label: datasetId ? browserPath({ dataset: datasetId, path: relativePath }) : '/' }
 }
 </script>
