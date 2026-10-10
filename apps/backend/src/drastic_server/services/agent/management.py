@@ -16,6 +16,7 @@ from drastic_server.models.agent import Agent, AgentOperationState
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
+from drastic_server.services.agent.installer import installation_target
 from drastic_server.services.chains import require_unused_chain_reference
 from drastic_server.services.exceptions import (
     AgentCommandFailed,
@@ -145,6 +146,9 @@ def run_action(user_id, agent_id, action):
         agent.install_type == "git" or (agent.install_type == "docker" and (agent.protocol_version or 0) >= 4)
     )):
         raise ValueError("Updates require a managed Linux installation; Docker agents require protocol 4")
+    if command == AgentCommandName.update:
+        # Reject unreproducible backend builds before pausing a remote agent.
+        installation_target()
     response = AgentService.send_command(agent, command)
     if is_agent_timeout_response(response):
         if command == AgentCommandName.update:

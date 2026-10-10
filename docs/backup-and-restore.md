@@ -64,7 +64,8 @@ Docker agent path handling:
 Runtime behavior:
 
 - The agent runs a restic backup for the configured `paths`.
-- Excludes are passed to restic from `exclude_patterns`.
+- Browser exclusions (`file` or `folder` entries) are literal path rules. The most specific rule wins, so an explicit include can reopen a subtree below an excluded parent while leaving its siblings excluded. A deeper exclusion narrows that subtree again; removing a rule restores inheritance. Include exceptions require agent protocol 16 and also apply to previously saved rules.
+- Free-form excludes (`pattern` entries) are passed to restic after the browser rules.
 - Snapshots are tagged with `job_uuid:<job-uuid>`, `run_uuid:<run-uuid>`, `artifact_uuid:<artifact-uuid>`, and `artifact_key:default`.
 - If the selected repository is not initialized yet, the agent tries to initialize it while provisioning repository access.
 - New custom repository targets are initialized with the repository recovery password, then the agent adds its local restic key for ongoing scheduled access.
@@ -283,7 +284,7 @@ Offline or busy agents wait up to the configured start timeout, measured from wh
 
 **Cancel Chain** prevents remaining steps from starting and requests cancellation of the active job. If admission is uncertain or the active agent is offline, cancellation waits for confirmation. Disabling a schedule prevents future starts from that schedule; other enabled schedules continue to apply. Schedule changes do not cancel an existing run.
 
-The backend coordinates every chain, including chains on one agent. During a backend outage, an already started backup and its local retention can finish if its repository remains directly reachable, but the next step waits. Native repositories still need the backend restic proxy. Independent job schedules retain their existing autonomous behavior and remain active when a job is added to a chain. Membership is shown in the job list and its **Schedule > Backup Chains** section, with a link to the centrally edited chain.
+The backend coordinates every chain, including chains on one agent. During a backend outage, an already started backup and its local retention can finish if its repository remains directly reachable, but the next step waits. Native repositories still need the backend restic proxy. Independent job schedules retain their existing autonomous behavior and remain active when a job is added to a chain. When editing a job, its **Schedule > Backup Chains** section shows chain membership and links to the centrally edited chain.
 
 A chain serializes its own steps, not all access to a repository. Independent schedules, other chains or external Restic processes can still use that repository. Restic locks protect exclusive maintenance, and failed cleanup remains pending rather than forcibly unlocking a repository.
 

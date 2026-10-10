@@ -17,7 +17,7 @@ class _FailingResticApi:
         raise ResticFailedError("backup failed", snapshot_id="partial-snap")
 
 
-def test_failed_file_artifact_keeps_snapshot_id():
+def test_file_backup_rejects_empty_scope_and_keeps_failed_snapshot_id():
     agent = type("Agent", (), {"resticapi": _FailingResticApi()})()
     handler = FileBackupJobHandler(
         agent=agent,
@@ -34,6 +34,9 @@ def test_failed_file_artifact_keeps_snapshot_id():
 
     assert artifact["state"].name == "failed"
     assert artifact["snapshot_id"] == "partial-snap"
+    handler.job["config"]["exclude_patterns"] = [{"path": "/data", "group": "folder"}]
+    with pytest.raises(ValueError, match="Select at least one path"):
+        handler.run_backup(AgentReport.command_report())
 
 
 @pytest.mark.parametrize(("previous_status", "total_bytes", "total_files"), [

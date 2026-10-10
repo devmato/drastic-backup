@@ -1,11 +1,14 @@
 import argparse
+import bz2
 import fcntl
 import importlib.util
+import io
 import json
 import os
 import pty
 import signal
 import subprocess
+import sys
 import termios
 from pathlib import Path
 from types import SimpleNamespace
@@ -31,14 +34,15 @@ def installer(tmp_path, monkeypatch):
 
 def arguments(command="install", **overrides):
     return argparse.Namespace(**{
-        "command": command, "source": None, "repository": None, "ref": None,
+        "command": command, "source": None, "repository": None, "ref": None, "revision": None,
         "server": "https://backup.example.net", "user": "admin", "password": "secret",
         "yes": True, "purge": False, **overrides,
     })
 
 
-def mock_runtime(installer, monkeypatch):
-    service = {"active": False, "enabled": False, "fail_start": False, "refuse_stop": False, "stop_error": False}
+def mock_runtime(installer, monkeypatch, *, mock_packages=False):
+    service = {"active": False, "enabled": False, "fail_start": False, "refuse_stop": False, "stop_error": False,
+               "restic_checks": 0, "fail_restic": False}
     real_run = installer.run
 
     def run(*args, **kwargs):
@@ -70,6 +74,15 @@ def mock_runtime(installer, monkeypatch):
                 data.write_text("[AGENT]\nidentifier = original-id\nsecret = original-secret\n"
                                 "[SERVER]\nurl = https://backup.example.net\n")
             return subprocess.CompletedProcess(args, 0)
+        if args[0].endswith("venv/bin/python") and args[1] == "-c":
+            assert "drastic_agent.integrations.restic_binary import ensure_binary" in args[2]
+            assert args[3] == str(installer.data_directory() / "bin")
+            service["restic_checks"] += 1
+            if service["fail_restic"]:
+                raise subprocess.CalledProcessError(1, args)
+            return subprocess.CompletedProcess(args, 0)
+        if mock_packages and args[0] == "bash" and args[1].endswith("install-agent-dependencies.sh"):
+            return subprocess.CompletedProcess(args, 0)
         return real_run(*args, **kwargs)
 
     monkeypatch.setattr(installer, "run", run)
@@ -95,22 +108,27 @@ def test_stop_skips_only_missing_service(installer, monkeypatch, state):
 
 
 @pytest.fixture
-def repository(tmp_path):
+def repository(tmp_path, installer, monkeypatch):
     repo = tmp_path / "repository"
     repo.mkdir()
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
     (repo / "version").write_text("one")
     (repo / "scripts").mkdir()
     (repo / "scripts/drastic-agent-installer.py").write_text("# test lifecycle manager\n")
+    restic_module = repo / "apps/agent/src/drastic_agent/integrations/restic_binary.py"
+    restic_module.parent.mkdir(parents=True)
+    restic_module.touch()
     version_script = Path(__file__).resolve().parents[3] / "libs/python/common/src/drastic_common/version.py"
     target = repo / "libs/python/common/src/drastic_common/version.py"
     target.parent.mkdir(parents=True)
     target.write_bytes(version_script.read_bytes())
-    (repo / ".gitignore").write_text("build-version.txt\n")
+    (repo / ".gitignore").write_text("build-version.txt\nbuild-revision.txt\n")
     subprocess.run(["git", "-C", str(repo), "add", "."], check=True)
     subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.net",
                     "commit", "-m", "test: initial"], check=True, capture_output=True)
     subprocess.run(["git", "-C", str(repo), "tag", "v1"], check=True)
+    monkeypatch.setattr(installer, "target_revision", lambda server: subprocess.check_output(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip())
     return repo
 
 
@@ -121,6 +139,7 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     root = installer.ROOT
     identity = (root / "data/config.ini").read_bytes()
     old = (root / "current").resolve()
+    old_manager = (root / "bin/installer.py").read_bytes()
     stamp = old / "source/libs/python/common/src/drastic_common/build-version.txt"
     installed_version = stamp.read_text().strip()
     assert installed_version.endswith(installer.read_state()["commit"][:8])
@@ -139,6 +158,11 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     assert exported.stdout.splitlines() == ["git", str(root / "cache/restic")]
     installer.check_owned()
 
+    candidate_manager = repository / "scripts/drastic-agent-installer.py"
+    candidate_manager.write_text(Path(installer.__file__).read_text() + "\n# Updated controller\n")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: update controller"], check=True, capture_output=True)
     service["fail_start"] = True
     with pytest.raises(RuntimeError, match="failed to start"):
         installer.install(arguments("update", server=None))
@@ -148,6 +172,7 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     assert list((root / "releases").iterdir()) == [old]
     assert (root / "data/config.ini").read_bytes() == identity
     assert "keep-me" in env.read_text()
+    assert (root / "bin/installer.py").read_bytes() == old_manager
     failed = json.loads(next((root / "data").glob("update-*.json")).read_text())
     assert failed["state"] == "failed"
     assert [log["message"] for log in failed["logs"]][-2:] == [
@@ -156,7 +181,9 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
 
     installer.install(arguments("update", server=None))
     assert not old.exists()
-    assert installer.read_state()["ref"] == "v1"
+    assert installer.read_state()["ref"] == installer.read_state()["commit"]
+    assert service["restic_checks"] == 3
+    assert (root / "bin/installer.py").read_bytes() == candidate_manager.read_bytes()
     assert (root / "data/config.ini").read_bytes() == identity
     assert "keep-me" in env.read_text()
     updates = [json.loads(path.read_text()) for path in (root / "data").glob("update-*.json")]
@@ -191,12 +218,25 @@ def test_container_uses_prebuilt_release_and_shared_update_rollback(installer, m
     monkeypatch.setenv("DRASTIC_PROXMOX_TOKEN_SECRET", "keep-me")
     image = installer.ROOT / "releases/image"
     image.mkdir(parents=True)
-    installer.initialize_image(arguments(repository=str(repository), ref="v1", commit="image-commit"))
+    stamp = image / "source/libs/python/common/src/drastic_common/build-version.txt"
+    stamp.parent.mkdir(parents=True)
+    image_commit = "a" * 40
+    stamp.write_text("2026-10-10-aaaaaaaa\n")
+    stamp.with_name("build-revision.txt").write_text(image_commit + "\n")
+    installer.initialize_image(argparse.Namespace(repository=str(repository)))
     installer.check_owned()
     assert not installer.SERVICE.exists()
     assert (installer.ROOT / "current").resolve() == image
     assert not (installer.ROOT / "data").exists()
     assert installer.read_state()["deployment"] == "docker"
+    assert installer.read_state()["commit"] == installer.read_state()["ref"] == image_commit
+    assert installer.read_state()["version"] == "2026-10-10-aaaaaaaa"
+    old_manager = (installer.ROOT / "bin/installer.py").read_bytes()
+    candidate_manager = repository / "scripts/drastic-agent-installer.py"
+    candidate_manager.write_text(Path(installer.__file__).read_text() + "\n# Updated Docker controller\n")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: update Docker controller"], check=True, capture_output=True)
     mock_runtime(installer, monkeypatch)
     processes = []
     fail_start = False
@@ -225,7 +265,8 @@ def test_container_uses_prebuilt_release_and_shared_update_rollback(installer, m
         installer.install(arguments("update", server=None))
     assert (installer.ROOT / "current").resolve() == image
     assert installer.active()
-    assert installer.read_state()["commit"] == "image-commit"
+    assert installer.read_state()["commit"] == image_commit
+    assert (installer.ROOT / "bin/installer.py").read_bytes() == old_manager
 
     installer.install(arguments("update", server=None))
     current = (installer.ROOT / "current").resolve()
@@ -235,6 +276,7 @@ def test_container_uses_prebuilt_release_and_shared_update_rollback(installer, m
     assert processes[-1].env["DRASTIC_PROXMOX_TOKEN_SECRET"] == "keep-me"
     assert (data / "config.ini").read_bytes() == identity
     assert installer.read_state()["deployment"] == "docker"
+    assert (installer.ROOT / "bin/installer.py").read_bytes() == candidate_manager.read_bytes()
 
     dependencies = repository / "scripts/install-agent-dependencies.sh"
     dependencies.write_text("#!/bin/bash\nexit 9\n")
@@ -259,7 +301,7 @@ def test_container_update_request_requires_launcher_and_rejects_duplicates(insta
     (installer.ROOT / "launcher.pid").write_text(str(os.getpid()))
     installer.request_update(args)
     request = installer.ROOT / "update-request.json"
-    assert json.loads(request.read_text()) == {"repository": None, "ref": "develop", "source": None}
+    assert json.loads(request.read_text()) == {"repository": None, "ref": "develop", "source": None, "revision": None}
     with pytest.raises(RuntimeError, match="already running"):
         installer.request_update(args)
     request.unlink()
@@ -350,7 +392,7 @@ def test_foreign_paths_are_not_removed(installer, tmp_path):
     assert external.exists()
 
 
-def test_branch_updates_follow_remote_and_build_failure_keeps_service(installer, monkeypatch, repository):
+def test_updates_replace_legacy_ref_with_exact_backend_commit_and_preserve_service_on_failure(installer, monkeypatch, repository):
     service = mock_runtime(installer, monkeypatch)
     subprocess.run(["git", "-C", str(repository), "checkout", "-b", "develop"], check=True)
     installer.install(arguments(repository=str(repository), ref="develop"))
@@ -360,25 +402,203 @@ def test_branch_updates_follow_remote_and_build_failure_keeps_service(installer,
     subprocess.run(["git", "-C", str(repository), "add", "version"], check=True)
     subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
                     "commit", "-m", "test: next"], check=True, capture_output=True)
-    # The selected branch need not be the repository's default branch.
+    backend_commit = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+    monkeypatch.setattr(installer, "target_revision", lambda server: backend_commit)
+    # The remote default branch can advance beyond the deployed backend.
     subprocess.run(["git", "-C", str(repository), "checkout", "main"], check=True)
+    (repository / "version").write_text("newer than backend")
+    subprocess.run(["git", "-C", str(repository), "add", "version"], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: newer remote"], check=True, capture_output=True)
     installer.install(arguments("update", server=None))
     assert installer.read_state()["commit"] != old_commit
     assert installer.read_state()["version"] != old_version
     assert installer.read_state()["version"].endswith(installer.read_state()["commit"][:8])
-    assert installer.read_state()["ref"] == "develop"
+    assert installer.read_state()["commit"] == backend_commit
+    assert installer.read_state()["ref"] == backend_commit
+    assert (installer.ROOT / "current/source/version").read_text() == "two"
     current = (installer.ROOT / "current").resolve()
     with pytest.raises(subprocess.CalledProcessError):
         installer.install(arguments("update", ref="nonexistent-ref", server=None))
     assert (installer.ROOT / "current").resolve() == current
     assert list((installer.ROOT / "releases").iterdir()) == [current]
     assert service["active"]
+    # An unavailable backend commit also leaves the current release and identity untouched.
+    monkeypatch.setattr(installer, "target_revision", lambda server: "f" * 40)
+    with pytest.raises(subprocess.CalledProcessError):
+        installer.install(arguments("update", server=None))
+    assert (installer.ROOT / "current").resolve() == current
+    assert service["active"]
+
+
+def test_restic_preflight_failure_keeps_running_release_and_identity(installer, monkeypatch, repository):
+    service = mock_runtime(installer, monkeypatch)
+    installer.install(arguments(repository=str(repository), ref="v1"))
+    old = (installer.ROOT / "current").resolve()
+    identity = (installer.ROOT / "data/config.ini").read_bytes()
+    state = installer.read_state()
+    service["fail_restic"] = True
+    with pytest.raises(subprocess.CalledProcessError):
+        installer.install(arguments("update", server=None))
+    assert service["active"]
+    assert (installer.ROOT / "current").resolve() == old
+    assert list((installer.ROOT / "releases").iterdir()) == [old]
+    assert installer.read_state() == state
+    assert (installer.ROOT / "data/config.ini").read_bytes() == identity
+    status = json.loads(next((installer.ROOT / "data").glob("update-*.json")).read_text())
+    assert status["state"] == "failed"
+    assert not any("Stopping agent" in log["message"] for log in status["logs"])
+
+
+@pytest.fixture
+def historical_repository(tmp_path):
+    project = Path(__file__).resolve().parents[3]
+    repo = tmp_path / "historical-repository"
+    subprocess.run(["git", "clone", "--shared", "--no-checkout", str(project), str(repo)],
+                   check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(repo), "checkout", "--detach", "ab50d71"], check=True, capture_output=True)
+    script = "scripts/drastic-agent-installer.py"
+    (repo / script).write_bytes((project / script).read_bytes())
+    subprocess.run(["git", "-C", str(repo), "add", script], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: backend-bound controller"], check=True, capture_output=True)
+    backend_revision = subprocess.check_output(["git", "-C", str(repo), "rev-parse", "HEAD"], text=True).strip()
+    return repo, backend_revision
+
+
+@pytest.fixture
+def legacy_download_python(tmp_path):
+    # Mock only HTTP responses; the historical shell downloader still checks and installs its archive.
+    python = tmp_path / "legacy-download-python"
+    binary = b"#!/bin/sh\nprintf '%s\\n' 'restic 0.18.1 compiled for test'\n"
+    archive = bz2.compress(binary)
+    python.write_text(f'''#!{sys.executable}
+import hashlib, io, os, sys
+import urllib.request
+if sys.argv[1] != "-":
+    os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])
+sys.argv = sys.argv[1:]
+archive = {archive!r}
+def urlopen(url, timeout):
+    checksum = "0" * 64 if os.environ.get("TEST_BAD_RESTIC_HASH") else hashlib.sha256(archive).hexdigest()
+    payload = (checksum + " " + sys.argv[2] + "\\n").encode() if url.endswith("/SHA256SUMS") else archive
+    return io.BytesIO(payload)
+urllib.request.urlopen = urlopen
+exec(compile(sys.stdin.read(), "<historical-downloader>", "exec"), {{"__name__": "__main__"}})
+''')
+    python.chmod(0o755)
+    return python
+
+
+@pytest.mark.parametrize("ref", ["b56f2df", "ab50d71"])
+@pytest.mark.parametrize("docker", [False, True])
+def test_real_older_release_keeps_backend_controller_for_next_update(
+    installer, monkeypatch, historical_repository, legacy_download_python, tmp_path, ref, docker,
+):
+    repo, backend_revision = historical_repository
+    service = mock_runtime(installer, monkeypatch, mock_packages=True)
+    monkeypatch.setattr(installer, "sys", SimpleNamespace(executable=str(legacy_download_python)))
+    data = tmp_path / "mounted-data" if docker else installer.ROOT / "data"
+    data.mkdir()
+    identity = b"[AGENT]\nidentifier = preserved\nsecret = preserved-secret\n[SERVER]\nurl = https://backup.example.net\n"
+    (data / "config.ini").write_bytes(identity)
+    if docker:
+        monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(data))
+        monkeypatch.setattr(installer, "CONTAINER", True)
+        monkeypatch.setattr(installer, "active", lambda: service["active"])
+        monkeypatch.setattr(installer, "start", lambda: service.update(active=True))
+        monkeypatch.setattr(installer, "stop", lambda: service.update(active=False))
+    installer.install(arguments(repository=str(repo), ref=backend_revision))
+    controller = installer.ROOT / "bin/installer.py"
+    saved_controller = controller.read_bytes()
+    installer.install(arguments("update", ref=ref, server=None))
+    legacy_source = installer.ROOT / "current/source"
+    # These are real old sources, not a stub that already implements the new policy.
+    assert 'ref = args.ref or state.get(\'ref\') or \'main\'' in (legacy_source / "scripts/drastic-agent-installer.py").read_text()
+    legacy_commit = subprocess.check_output(["git", "-C", str(repo), "rev-parse", ref], text=True).strip()
+    assert installer.read_state()["commit"] == legacy_commit
+    assert controller.read_bytes() == saved_controller
+    wrapper = (installer.ROOT / "bin/drastic-agent").read_text()
+    assert f'"{controller}" "$@"' in wrapper
+    assert "current/source/scripts/drastic-agent-installer.py" not in wrapper
+    assert (data / "config.ini").read_bytes() == identity
+    if ref == "b56f2df":
+        assert not (legacy_source / "apps/agent/src/drastic_agent/integrations/restic_binary.py").exists()
+        binary = next((data / "bin").glob("restic_0.18.1_linux_*"))
+        assert subprocess.check_output([str(binary), "version"], text=True).startswith("restic 0.18.1 ")
+
+    # Reload the controller as a new CLI invocation (or a restarted Docker launcher) would.
+    spec = importlib.util.spec_from_file_location("installed_controller", controller)
+    manager = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(manager)
+    for name in ("ROOT", "WRAPPER", "SERVICE", "CONTAINER"):
+        monkeypatch.setattr(manager, name, getattr(installer, name))
+    monkeypatch.setattr(manager.time, "sleep", lambda _: None)
+    monkeypatch.setattr(manager, "target_revision", lambda server: backend_revision)
+    mock_runtime(manager, monkeypatch, mock_packages=True)
+    if docker:
+        monkeypatch.setattr(manager, "active", lambda: service["active"])
+        monkeypatch.setattr(manager, "start", lambda: service.update(active=True))
+        monkeypatch.setattr(manager, "stop", lambda: service.update(active=False))
+    manager.install(arguments("update", server=None))
+    assert manager.read_state()["commit"] == backend_revision
+    assert manager.read_state()["ref"] == backend_revision
+    assert (data / "config.ini").read_bytes() == identity
+
+
+def test_historical_download_failure_keeps_active_binary_and_release(
+    installer, monkeypatch, historical_repository, legacy_download_python,
+):
+    repo, backend_revision = historical_repository
+    service = mock_runtime(installer, monkeypatch, mock_packages=True)
+    monkeypatch.setattr(installer, "sys", SimpleNamespace(executable=str(legacy_download_python)))
+    installer.install(arguments(repository=str(repo), ref=backend_revision))
+    old_release = (installer.ROOT / "current").resolve()
+    old_state = installer.read_state()
+    controller = (installer.ROOT / "bin/installer.py").read_bytes()
+    identity = (installer.ROOT / "data/config.ini").read_bytes()
+    binary_dir = installer.ROOT / "data/bin"
+    binary_dir.mkdir()
+    active_binary = binary_dir / "restic_0.19.1_linux_amd64"
+    active_binary.write_bytes(b"existing active executable")
+    monkeypatch.setenv("TEST_BAD_RESTIC_HASH", "1")
+    with pytest.raises(subprocess.CalledProcessError):
+        installer.install(arguments("update", ref="b56f2df", server=None))
+    assert service["active"]
+    assert (installer.ROOT / "current").resolve() == old_release
+    assert installer.read_state() == old_state
+    assert (installer.ROOT / "bin/installer.py").read_bytes() == controller
+    assert (installer.ROOT / "data/config.ini").read_bytes() == identity
+    assert active_binary.read_bytes() == b"existing active executable"
+    assert list(binary_dir.iterdir()) == [active_binary]
+
+
+@pytest.mark.parametrize("payload,valid", [
+    ({"revision": "a" * 40, "version": "2026-10-10-aaaaaaaa"}, True),
+    ({"revision": "a" * 40, "version": "2026-10-10-aaaaaaaa-dirty"}, False),
+    ({"revision": "a" * 40, "version": "2026-10-10-bbbbbbbb"}, False),
+    ({"revision": "-main", "version": "unknown"}, False),
+    ({"revision": "a" * 40, "version": None}, False),
+    ({}, False), ([], False), ("not-json", False),
+])
+def test_backend_target_validation(installer, monkeypatch, payload, valid):
+    def open_target(url, timeout):
+        assert url == "https://backup.example.net/api/agents/installation-target"
+        assert timeout == 30
+        return io.BytesIO((json.dumps(payload) if payload != "not-json" else payload).encode())
+
+    monkeypatch.setattr(installer, "build_opener", lambda handler: SimpleNamespace(open=open_target))
+    if valid:
+        assert installer.target_revision("https://backup.example.net/") == "a" * 40
+    else:
+        with pytest.raises(RuntimeError):
+            installer.target_revision("https://backup.example.net")
 
 
 def test_local_source_preserves_dirty_version_without_git(installer, monkeypatch, repository):
     mock_runtime(installer, monkeypatch)
     project = repository / "apps/agent/pyproject.toml"
-    project.parent.mkdir(parents=True)
+    project.parent.mkdir(parents=True, exist_ok=True)
     project.touch()
     installer.install(arguments(source=str(repository)))
     release = (installer.ROOT / "current").resolve()
@@ -416,31 +636,77 @@ def test_pipe_help_needs_no_root_or_downloads():
     assert "--ref BRANCH|TAG|COMMIT" in result.stdout
 
 
-def test_piped_bootstrap_prompts_for_ref_and_preserves_explicit_ref():
+def test_piped_bootstrap_never_prompts_for_branch_and_preserves_explicit_ref():
     script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
     prefix = script.read_text().split("\nroot() {", 1)[0] + '\nprintf "%s\\n" "$REF"\n'
     env = {**os.environ, "DRASTIC_AGENT_REF": ""}
-    for args, expected in [((), "main"), (("--ref", "v1.2.3"), "v1.2.3")]:
+    for args, expected in [((), ""), (("--ref", "v1.2.3"), "v1.2.3")]:
         result = subprocess.run(["bash", "-s", "--", *args], input=prefix,
                                 capture_output=True, text=True, check=True, env=env)
         assert result.stdout.strip() == expected
         assert "Git branch" not in result.stderr
 
-    master, slave = pty.openpty()
-    try:
-        def attach_tty():
-            os.setsid()
-            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
-
-        process = subprocess.Popen(["bash", "-s"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                   stderr=slave, text=True, env=env, preexec_fn=attach_tty)
-        os.close(slave)
-        os.write(master, b"develop\n")
-        output, _ = process.communicate(prefix, timeout=5)
-        assert process.returncode == 0
-        assert output.strip() == "develop"
-    finally:
-        os.close(master)
+@pytest.mark.parametrize("dirty,explicit_ref", [(False, False), (True, False), (False, True)])
+def test_bootstrap_fetches_backend_commit_and_rejects_dirty_target(installer, repository, tmp_path, dirty, explicit_ref):
+    manager = repository / "scripts/drastic-agent-installer.py"
+    manager.write_text("raise SystemExit('Legacy controller must not run')\n")
+    backend_manager = (
+        '\nINDEPENDENT_LIFECYCLE = True\n'
+        'import json, subprocess, sys\n'
+        'source = sys.argv[sys.argv.index("--source") + 1]\n'
+        'print(json.dumps({"args": sys.argv[1:], "commit": subprocess.check_output('
+        '["git", "-C", source, "rev-parse", "HEAD"], text=True).strip()}))\n'
+    )
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: bootstrap target"], check=True, capture_output=True)
+    revision = subprocess.check_output(["git", "-C", str(repository), "rev-parse", "HEAD"], text=True).strip()
+    target = {"revision": revision, "version": f"2026-10-10-{revision[:8]}" + ("-dirty" if dirty else "")}
+    (repository / "version").write_text("newer remote")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: ahead of backend"], check=True, capture_output=True)
+    uv = installer.ROOT / "tools/bin/uv"
+    uv.parent.mkdir(parents=True)
+    uv.write_text(f'#!/bin/sh\nif [ "$2" = find ]; then printf "%s\\n" "{sys.executable}"; fi\n')
+    uv.chmod(0o755)
+    tools = tmp_path / "test-bin"
+    tools.mkdir()
+    curl = tools / "curl"
+    curl.write_text(f'''#!{sys.executable}
+from pathlib import Path
+import sys
+payload = {backend_manager!r} if sys.argv[-1].endswith("/install.py") else {json.dumps(target)!r}
+if "-o" in sys.argv:
+    Path(sys.argv[sys.argv.index("-o") + 1]).write_text(payload)
+else:
+    print(payload)
+''')
+    curl.chmod(0o755)
+    script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
+    bootstrap = (script.read_text()
+                 .replace("/opt/drastic-agent", str(installer.ROOT))
+                 .replace("/usr/local/bin/drastic-agent", str(installer.WRAPPER))
+                 .replace("/etc/systemd/system/drastic-agent.service", str(installer.SERVICE))
+                 .replace('if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi', '"$@"')
+                 .replace('if [ "$(id -u)" -ne 0 ]; then', 'if false; then')
+                 .replace('"$(stat -c %u "$root")" = 0', f'"$(stat -c %u "$root")" = {os.getuid()}'))
+    result = subprocess.run(
+        ["bash", "-s", "--", "--server", "https://backup.example.net", "--repository", str(repository),
+         *(["--ref", revision] if explicit_ref else [])],
+        input=bootstrap, text=True, capture_output=True, timeout=10,
+        env={**os.environ, "PATH": f"{tools}:{os.environ['PATH']}", "DRASTIC_AGENT_REF": ""},
+    )
+    if dirty:
+        assert result.returncode != 0
+        assert "no reproducible agent installation target" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
+        installed = json.loads(result.stdout)
+        assert installed["commit"] == revision
+        flag = "--ref" if explicit_ref else "--revision"
+        assert installed["args"][installed["args"].index(flag) + 1] == revision
+        assert ("--ref" in installed["args"]) == explicit_ref
 
 
 def test_bootstrap_requires_explicit_adoption_and_rejects_legacy_or_foreign_files(installer):

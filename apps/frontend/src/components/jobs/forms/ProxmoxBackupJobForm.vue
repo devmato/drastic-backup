@@ -1,6 +1,6 @@
 <template>
   <PathSelectionPanel class="q-mt-md" browser-title="Hosts and VMs" selected-title="Selection"
-    :selection="selection" :load-entries="loadEntries" :entry-options="entryOptions" :reload-key="reloadKey"
+    :selection="selection" :load-entries="loadEntries" :reload-key="reloadKey"
     :available-message="agentOnline ? '' : 'Agent must be online on the Proxmox host to discover VMs.'"
     empty-label="No supported VMs found." empty-selected-label="No host or VMs selected yet."
     error-message="Failed to load Proxmox VMs" @update:selection="updateSelection"
@@ -77,22 +77,9 @@ function guestEntry(vmid) {
     selectionEntry: { vmid } }
 }
 const selection = computed(() => ({
-  paths: hostSelected.value ? [hostEntry()] : configModel.value.guest_ids.map(guestEntry),
+  paths: [...(hostSelected.value ? [hostEntry()] : []), ...configModel.value.guest_ids.map(guestEntry)],
   exclude_patterns: hostSelected.value ? configModel.value.exclude_guest_ids.map(guestEntry) : [],
 }))
-function entryOptions(entry) {
-  if (entry.group === 'host') return {
-    state: hostSelected.value ? 'include' : null,
-    includeDisabled: hostSelected.value, excludeDisabled: !hostSelected.value,
-  }
-  const excluded = hostSelected.value && configModel.value.exclude_guest_ids.includes(entry.vmid)
-  const included = hostSelected.value || configModel.value.guest_ids.includes(entry.vmid)
-  return {
-    state: excluded ? 'exclude' : included ? 'include' : null,
-    note: excluded ? 'Excluded' : hostSelected.value ? `Included via ${hostName.value}` : '',
-    includeDisabled: included && !excluded,
-  }
-}
 function updateConfig(patch) { emit('update:modelValue', { ...configModel.value, ...patch }) }
 function updateSelection(value) {
   updateConfig({

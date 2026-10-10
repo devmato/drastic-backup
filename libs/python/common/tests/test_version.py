@@ -20,10 +20,12 @@ def test_version_survives_packaging_and_marks_local_changes(tmp_path, monkeypatc
     monkeypatch.setenv("GIT_COMMITTER_DATE", "2026-10-08T00:30:00+02:00")
     git("init", "-b", "main")
     (tmp_path / "source.py").write_text("original\n")
-    (tmp_path / ".gitignore").write_text("build-version.txt\n")
+    (tmp_path / ".gitignore").write_text("build-version.txt\nbuild-revision.txt\n")
     git("add", ".")
     git("commit", "-m", "test: version")
     expected = f"2026-10-07-{git('rev-parse', 'HEAD')[:8]}"
+    revision = git("rev-parse", "HEAD")
+    assert version.source_revision(tmp_path) == revision
     assert version.source_version(tmp_path) == expected
     # Local timezone and branch names do not affect the version.
     monkeypatch.setenv("TZ", "Pacific/Auckland")
@@ -32,8 +34,11 @@ def test_version_survives_packaging_and_marks_local_changes(tmp_path, monkeypatc
 
     script = Path(version.__file__)
     stamp = tmp_path / "build-version.txt"
-    subprocess.run([sys.executable, str(script), "--source", str(tmp_path), "--output", str(stamp)], check=True)
+    revision_stamp = tmp_path / "build-revision.txt"
+    subprocess.run([sys.executable, str(script), "--source", str(tmp_path), "--output", str(stamp),
+                    "--revision-output", str(revision_stamp)], check=True)
     assert stamp.read_text().strip() == expected
+    assert revision_stamp.read_text().strip() == revision
     (tmp_path / "source.py").write_text("changed\n")
     assert version.source_version(tmp_path) == expected + "-dirty"
     git("add", "source.py")
@@ -47,9 +52,14 @@ def test_version_survives_packaging_and_marks_local_changes(tmp_path, monkeypatc
     package.mkdir(parents=True)
     (package / "version.py").write_bytes(script.read_bytes())
     (package / "build-version.txt").write_bytes(stamp.read_bytes())
+    (package / "build-revision.txt").write_bytes(revision_stamp.read_bytes())
     env = {**os.environ, "PATH": "", "PYTHONPATH": str(package)}
     command = [sys.executable, "-c", "from version import get_version; print(get_version())"]
     assert subprocess.check_output(command, cwd=package, env=env, text=True).strip() == expected
+    revision_command = [sys.executable, "-c", "from version import get_revision; print(get_revision())"]
+    assert subprocess.check_output(revision_command, cwd=package, env=env, text=True).strip() == revision
+    (package / "build-revision.txt").write_text("invalid\n")
+    assert subprocess.check_output(revision_command, cwd=package, env=env, text=True).strip() == "None"
     (package / "build-version.txt").unlink()
     # A venv inside another checkout must not report that checkout's version.
     env["PATH"] = os.environ["PATH"]
@@ -93,12 +103,16 @@ def test_docker_versions_from_checkouts_and_linked_worktrees(tmp_path, monkeypat
                 if context == worktree:
                     value = run(sys.executable, str(worktree / helper), "--source", str(worktree))
                     assert value == expected + ("-dirty" if dirty else "")
-                    extra_args = ["--build-arg", f"DRASTIC_VERSION={value}"]
+                    revision = run("git", "rev-parse", "HEAD")
+                    extra_args = ["--build-arg", f"DRASTIC_VERSION={value}", "--build-arg", f"DRASTIC_REVISION={revision}"]
                 run("docker", "build", "--target", "version-build", "-t", image,
                     "-f", str(context / dockerfile), *extra_args, str(context))
                 actual = run("docker", "run", "--rm", image, "python", "-c",
                              "from pathlib import Path; print(Path('/build-version.txt').read_text().strip())")
                 assert actual == expected + ("-dirty" if dirty else "")
+                actual_revision = run("docker", "run", "--rm", image, "python", "-c",
+                                      "from pathlib import Path; print(Path('/build-revision.txt').read_text().strip())")
+                assert actual_revision == run("git", "rev-parse", "HEAD")
             (worktree / "local-change").unlink()
         finally:
             subprocess.run(["docker", "image", "rm", image], capture_output=True)

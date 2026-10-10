@@ -4,13 +4,20 @@ from datetime import datetime
 
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.jobs.base import BackupJobHandler
+from drastic_common.backup_selection import restic_path_selection
 
 
 class FileBackupJobHandler(BackupJobHandler):
     def run_backup(self, report):
         config = self.job.get("config") or {}
-        paths = [path["path"] for path in config.get("paths", [])]
-        exclude_patterns = [pattern["path"] for pattern in config.get("exclude_patterns", [])]
+        exclusions = config.get("exclude_patterns", [])
+        paths, exclude_patterns = restic_path_selection(
+            [path["path"] for path in config.get("paths", [])],
+            [entry["path"] for entry in exclusions if entry.get("group") in {"folder", "file"}],
+        )
+        exclude_patterns += [entry["path"] for entry in exclusions if entry.get("group") not in {"folder", "file"}]
+        if not paths:
+            raise ValueError("Select at least one path that is not excluded")
         artifact = self.start_artifact("default", report=report)
         tags = [
             f"job_uuid:{self.job['uuid']}",

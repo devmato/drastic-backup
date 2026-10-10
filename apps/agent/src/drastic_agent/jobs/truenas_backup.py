@@ -1,7 +1,6 @@
 """Back up verified ZFS snapshots with dataset-scoped Restic parents."""
 
 import logging
-import re
 from datetime import datetime
 from pathlib import PurePosixPath
 from time import time
@@ -10,41 +9,49 @@ from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.storage.database import truenas_snapshots
 from drastic_agent.truenas import TRUENAS_LOCK, TrueNASError
+from drastic_common.backup_selection import literal_pattern, restic_path_selection
 from drastic_common.restic.exceptions import ResticCancelledError
-from drastic_common.truenas import TrueNASBackupConfigSchema, path_is_within
+from drastic_common.truenas import TrueNASBackupConfigSchema
 
 
-def dataset_paths(entries, dataset, available):
-    """Project selected subtrees onto each dataset's own snapshot root."""
-    paths = set()
-    for entry in entries:
-        if entry["dataset"] == dataset["id"]:
-            paths.add(entry["path"])
-        elif dataset["id"].startswith(entry["dataset"] + "/"):
-            if entry["path"] == ".":
-                paths.add(".")
-            elif entry["group"] != "file" and entry["dataset"] in available and dataset.get("mountpoint"):
-                source = available[entry["dataset"]].get("mountpoint")
-                if source:
-                    selected = PurePosixPath(source) / entry["path"]
-                    mount = PurePosixPath(dataset["mountpoint"])
-                    if mount.is_relative_to(selected):
-                        paths.add(".")
-                    elif selected.is_relative_to(mount):
-                        paths.add(str(selected.relative_to(mount)))
-    return ["."] if "." in paths else sorted(paths)
+def dataset_path(entry, dataset, available):
+    """Project one selected subtree onto a dataset's snapshot root."""
+    if entry["dataset"] == dataset["id"]:
+        return entry["path"]
+    if dataset["id"].startswith(entry["dataset"] + "/"):
+        if entry["path"] == ".":
+            return "."
+        elif entry["group"] != "file" and entry["dataset"] in available and dataset.get("mountpoint"):
+            source = available[entry["dataset"]].get("mountpoint")
+            if source:
+                selected = PurePosixPath(source) / entry["path"]
+                mount = PurePosixPath(dataset["mountpoint"])
+                if mount.is_relative_to(selected):
+                    return "."
+                elif selected.is_relative_to(mount):
+                    return str(selected.relative_to(mount))
+    return None
 
 
 def backup_selection(config, available):
     for entry in config["paths"]:
-        if entry["dataset"] not in available and not any(path_is_within(entry, excluded) for excluded in config["exclude_paths"]):
+        if entry["dataset"] not in available and not any(
+                (entry["dataset"], entry["path"]) == (excluded["dataset"], excluded["path"])
+                for excluded in config["exclude_paths"]):
             raise TrueNASError(f"Dataset {entry['dataset']}: not found or unsupported")
     selected = []
     for dataset in sorted(available.values(), key=lambda item: item["id"]):
-        included = dataset_paths(config["paths"], dataset, available)
-        excluded = dataset_paths(config["exclude_paths"], dataset, available)
-        included = [path for path in included if not any(
-            parent == "." or path == parent or path.startswith(parent + "/") for parent in excluded)]
+        rules = {}
+        for exclude, entries in ((False, config["paths"]), (True, config["exclude_paths"])):
+            for entry in entries:
+                # Multiple ancestor rules can project onto the same dataset root.
+                # The nearest dataset/path wins, with exclusions winning exact ties.
+                priority = (entry["dataset"].count("/"), len(PurePosixPath(entry["path"]).parts), exclude)
+                path = dataset_path(entry, dataset, available)
+                if path is not None:
+                    rules[path] = max(rules.get(path, (-1, -1, False)), priority)
+        included = sorted(path for path, priority in rules.items() if not priority[2])
+        excluded = sorted(path for path, priority in rules.items() if priority[2])
         if not included:
             continue
         if not dataset["available"]:
@@ -53,11 +60,6 @@ def backup_selection(config, available):
     if not selected:
         raise TrueNASError("Select at least one path that is not excluded")
     return selected
-
-
-def literal_pattern(path):
-    # Restic exclusions are glob patterns; browser selections are literal names.
-    return re.sub(r"([\\*?\[\]])", r"\\\1", str(path))
 
 
 def cleanup_snapshots(api, agent_id, report=None):
@@ -166,10 +168,14 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                         parent = max(previous, key=lambda item: datetime.fromisoformat(item["time"]))["id"] if previous else None
                         report.log_message(f"Dataset {dataset['id']}: Restic parent {parent}" if parent else
                                            f"Dataset {dataset['id']}: no matching Restic parent; reading all files")
+                        sources, exclusions = restic_path_selection(
+                            ["." if relative == "." else f"./{relative}" for relative in included],
+                            [path / relative for relative in excluded], cwd=path,
+                        )
                         status = self.agent.resticapi.backup(
-                            paths=["." if relative == "." else f"./{relative}" for relative in included], cwd=str(path), parent=parent,
+                            paths=sources, cwd=str(path), parent=parent,
                             force=parent is None,
-                            exclude_patterns=[literal_pattern(path / relative) for relative in excluded]
+                            exclude_patterns=exclusions
                             + [f"{literal_pattern(path)}/{pattern.lstrip('/')}" for pattern in [".zfs", *config["exclude_patterns"]]],
                             tags=[f"job_uuid:{self.job['uuid']}", f"operation_uuid:{report.uuid}", "source:truenas",
                                   f"dataset:{dataset['id']}", f"artifact_uuid:{artifact['uuid']}",

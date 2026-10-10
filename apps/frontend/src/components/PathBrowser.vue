@@ -72,6 +72,7 @@
 import { computed, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
+import { pathSelectionOptions } from 'src/utils/path-selection'
 
 const props = defineProps({
   loadEntries: { type: Function, required: true },
@@ -98,8 +99,6 @@ const entries = ref([])
 const loading = ref(false)
 let loadVersion = 0
 
-const includePathSet = computed(() => new Set((props.selection.paths || []).map(entry => entry.path)))
-const excludePathSet = computed(() => new Set((props.selection.exclude_patterns || []).map(entry => entry.path)))
 const selectedPathSet = computed(() => new Set(props.selectedPaths || []))
 
 const entryRows = computed(() =>
@@ -139,23 +138,19 @@ function normalizeEntry(entry) {
   const file = typeof entry.file === 'boolean' ? entry.file : entry.type !== 'dir'
   const readable = entry.readable !== false
   const name = entry.name || basename(path)
-  return {
+  const row = {
     ...entry,
     name,
     path,
     file,
     readable,
     navigable: entry.navigable ?? (!file && readable),
-    state: includeState(path),
-    ...props.entryOptions?.(entry),
+    group: entry.group || (file ? 'file' : 'folder'),
   }
-}
-
-function includeState(path) {
-  if (props.mode === 'include-only') {
-    return selectedPathSet.value.has(path) ? 'include' : null
-  }
-  return includePathSet.value.has(path) ? 'include' : excludePathSet.value.has(path) ? 'exclude' : null
+  const options = props.mode === 'include-only'
+    ? { state: selectedPathSet.value.has(path) ? 'include' : null }
+    : pathSelectionOptions(row, props.selection)
+  return { ...row, ...options, ...props.entryOptions?.({ ...row, ...options }) }
 }
 
 function entryPath(name) {
@@ -221,6 +216,7 @@ function entryCaption(entry) {
 }
 
 function includeTooltip(entry) {
+  if (entry.includeTooltip) return entry.includeTooltip
   if (props.mode === 'include-only' && selectedPathSet.value.has(entry.path)) {
     return 'Remove from restore'
   }

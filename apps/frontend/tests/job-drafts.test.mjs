@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { describeTiming, scheduleTiming } from '../src/utils/schedule.js'
 import { hasTrueNASSelection, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin } from '../src/utils/truenas-selection.js'
+import { pathSelectionOptions } from '../src/utils/path-selection.js'
 
 for (const [kind, item, changes] of [
   ['Action', { module: 'command', hook: 'start', data: { command: 'original' } }, { data: { command: 'edited' } }],
@@ -173,7 +174,7 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   const agent = reactive({ id: 1, hostname: 'pve.example', protocol_version: 14 })
   const known = [{ vmid: 101, name: 'first', node: 'pve' }, { vmid: 102, name: 'second', node: 'pve' }]
   let fail = false
-  const panel = runInNewContext(`${script('jobs/forms/ProxmoxBackupJobForm')}\n;({ loadEntries, selection, entryOptions, updateConfig, updateSelection, refresh, backupModeOptions })`, {
+  const panel = runInNewContext(`${script('jobs/forms/ProxmoxBackupJobForm')}\n;({ loadEntries, selection, updateConfig, updateSelection, refresh, backupModeOptions })`, {
     computed, ref,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
@@ -188,12 +189,12 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   const browserProps = { mode: 'include-exclude', initialPath: '/', loadEntries: panel.loadEntries,
     get selection() { return panel.selection.value } }
   const context = {
-    computed, ref, defineProps: () => browserProps, watch: () => {}, defineOptions: () => {},
+    computed, ref, pathSelectionOptions, defineProps: () => browserProps, watch: () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: () => assert.fail('Unexpected browser error') }),
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
     defineEmits: () => (event, value) => { if (event === 'update:selection') panel.updateSelection(value) },
   }
-  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath })`, { ...context })
+  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath, entryRows })`, { ...context })
   const selected = runInNewContext(`${script('PathSelectionPanel')}\n;({ removePath, selectionRows })`, { ...context })
   const root = await panel.loadEntries('/')
   const host = root.entries[0]
@@ -203,7 +204,7 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   assert.equal(browser.parentPath.value, '/')
   const vms = (await panel.loadEntries(host.path)).entries
   assert.deepEqual(Array.from(vms, vm => vm.vmid), [101, 102])
-  assert.equal(panel.entryOptions(vms[0]).state, 'include', 'inactive exclusions do not change existing include jobs')
+  assert.equal(browser.entryRows.value.find(vm => vm.vmid === 101).state, 'include', 'inactive exclusions do not change existing include jobs')
   assert.deepEqual(Array.from(selected.selectionRows.value, row => row.label), ['first (VM 101)', 'VM 999'])
   browser.setInclude(vms[1])
   assert.deepEqual(Array.from(props.modelValue.guest_ids), [101, 999, 102])
@@ -213,22 +214,23 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   assert.deepEqual(Array.from(props.modelValue.guest_ids), [102])
   browser.setInclude(host)
   assert.equal(props.modelValue.selection_mode, 'all')
-  assert.deepEqual(Array.from(selected.selectionRows.value, row => row.icon), ['dns'])
+  assert.deepEqual(Array.from(selected.selectionRows.value, row => row.icon), ['dns', 'computer'])
   browser.setExclude(vms[0])
-  assert.equal(panel.entryOptions(vms[0]).state, 'exclude')
-  assert.equal(panel.entryOptions(vms[1]).state, 'include')
-  assert.deepEqual(Array.from(selected.selectionRows.value, row => [row.icon, row.state]), [['dns', 'include'], ['computer', 'exclude']])
+  assert.equal(browser.entryRows.value.find(vm => vm.vmid === 101).state, 'exclude')
+  assert.equal(browser.entryRows.value.find(vm => vm.vmid === 102).state, 'include')
+  assert.deepEqual(Array.from(selected.selectionRows.value, row => [row.icon, row.state]), [['dns', 'include'], ['computer', 'include'], ['computer', 'exclude']])
   browser.setInclude(vms[0])
   assert.deepEqual(Array.from(props.modelValue.exclude_guest_ids), [])
   known.push({ vmid: 103, name: 'new', node: 'pve' })
   panel.refresh()
-  const newVM = (await panel.loadEntries('/host')).entries.find(vm => vm.vmid === 103)
-  assert.equal(panel.entryOptions(newVM).state, 'include', 'new VMs inherit the host selection')
+  await browser.navigate('/host')
+  const newVM = browser.entryRows.value.find(vm => vm.vmid === 103)
+  assert.equal(newVM.state, 'include', 'new VMs inherit the host selection')
   browser.setExclude(host)
   assert.equal(props.modelValue.selection_mode, 'include')
-  assert.equal(props.modelValue.guest_ids.length, 0, 'removing the host leaves an empty selection')
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [102, 101], 'removing the host keeps explicit VM includes')
   browser.setInclude(newVM)
-  assert.deepEqual(Array.from(props.modelValue.guest_ids), [103])
+  assert.deepEqual(Array.from(props.modelValue.guest_ids), [102, 101, 103])
   assert.equal(props.modelValue.backup_mode, 'native_cbt')
   assert.equal(props.modelValue.fleecing_storage, 'local-thin')
   const allConfig = { ...original, selection_mode: 'all', exclude_guest_ids: [102, 999] }
@@ -258,12 +260,13 @@ test('TrueNAS browses datasets, folders and files and retains selection after di
     id, path: `/host/mnt/${id}`, mountpoint: `/mnt/${id}`, available: !['tank', 'tank/locked'].includes(id),
   }))
   const requested = []
+  const agent = { id: 1, protocol_version: 16 }
   const panel = runInNewContext(`${source}\n;({ loadEntries, selection, entryOptions, update, refresh })`, {
-    computed, ref, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin,
+    computed, ref, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin, pathSelectionOptions,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
     watch: () => {},
-    useAgentStore: () => ({ agents: [{ id: 1, protocol_version: 14 }], getTrueNASDatasets: async () => {
+    useAgentStore: () => ({ agents: [agent], getTrueNASDatasets: async () => {
       if (fail) throw new Error('Discovery failed')
       return known
     } }),
@@ -287,8 +290,17 @@ test('TrueNAS browses datasets, folders and files and retains selection after di
   panel.update({ exclude_paths: [excluded] })
   assert.equal(panel.entryOptions(docs).state, 'exclude')
   assert.equal(panel.entryOptions(docs).includeDisabled, false)
-  await panel.loadEntries(docs.path)
+  const child = (await panel.loadEntries(docs.path)).entries[0]
   assert.equal(requested.at(-1), '/host/mnt/tank/data/docs')
+  assert.equal(panel.entryOptions(child).state, 'exclude')
+  assert.equal(panel.entryOptions(child).includeDisabled, false)
+  agent.protocol_version = 15
+  assert.equal(panel.entryOptions(child).includeDisabled, true)
+  agent.protocol_version = 16
+  panel.update({ paths: [...props.modelValue.paths, { dataset: 'tank/data', path: 'docs/docs', group: 'folder' }] })
+  assert.equal(panel.entryOptions(child).state, 'include')
+  assert.equal(panel.entryOptions(child).note, 'Explicitly included')
+  assert.equal(panel.entryOptions(contents.entries[1]).state, 'include', 'unrelated files retain their inherited selection')
   const selected = JSON.stringify(panel.selection.value)
   fail = true
   panel.refresh()
@@ -311,7 +323,7 @@ test('TrueNAS keeps a custom-mounted dataset distinct from a same-named folder',
   const props = reactive({ modelValue: { paths: [], exclude_paths: [] }, agentId: 1, agentOnline: true })
   const requested = []
   const panel = runInNewContext(`${script('jobs/forms/TrueNASBackupJobForm')}\n;({ loadEntries, selection, entryOptions, update })`, {
-    computed, ref, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin,
+    computed, ref, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin, pathSelectionOptions,
     defineProps: () => props,
     defineEmits: () => (_, value) => { props.modelValue = value },
     watch: () => {},
@@ -324,7 +336,7 @@ test('TrueNAS keeps a custom-mounted dataset distinct from a same-named folder',
   const browserProps = { mode: 'include-exclude', initialPath: '/', loadEntries: panel.loadEntries,
     get selection() { return panel.selection.value } }
   const context = {
-    computed, ref, defineProps: () => browserProps, watch: () => {}, defineOptions: () => {},
+    computed, ref, pathSelectionOptions, defineProps: () => browserProps, watch: () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: () => assert.fail('Unexpected browser error') }),
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
     defineEmits: () => (event, value) => { if (event === 'update:selection') panel.update(selectionConfig(value)) },
@@ -376,11 +388,19 @@ test('TrueNAS selection round-trips all entry types and respects path boundaries
   assert.equal(isPathWithin({ dataset: 'tank/data/new', path: '.', group: 'dataset' }, config.paths[0]), true)
   assert.equal(isPathWithin({ dataset: 'tank/data', path: 'cached/file', group: 'file' }, config.exclude_paths[0]), false)
   assert.equal(isPathWithin({ dataset: 'tank/data', path: 'cache/file', group: 'file' }, config.exclude_paths[0]), true)
+  const selection = { paths: [{ path: '/data', group: 'folder' }, { path: '/data/media/Sony', group: 'folder' }],
+    exclude_patterns: [{ path: '/data/media', group: 'folder' }, { path: '/data/media/Sony/cache', group: 'folder' }] }
+  for (const [path, state] of [['/data/media/other', 'exclude'], ['/data/media/Sony/file', 'include'], ['/data/media/Sony/cache/file', 'exclude'], ['/data/medial/file', 'include']]) {
+    assert.equal(pathSelectionOptions({ path, group: 'file' }, selection).state, state)
+  }
+  selection.paths.pop()
+  assert.equal(pathSelectionOptions({ path: '/data/media/Sony/file', group: 'file' }, selection).state, 'exclude')
 })
 
 test('TrueNAS cannot submit a job whose explicit roots are all excluded', () => {
   const root = dataset => ({ dataset, path: '.', group: 'dataset' })
-  assert.equal(hasTrueNASSelection({ paths: [root('tank/data')], exclude_paths: [root('tank')] }), false)
+  assert.equal(hasTrueNASSelection({ paths: [root('tank/data')], exclude_paths: [root('tank')] }), true)
+  assert.equal(hasTrueNASSelection({ paths: [root('tank/data')], exclude_paths: [root('tank/data')] }), false)
   assert.equal(hasTrueNASSelection({ paths: [root('tank/database')], exclude_paths: [root('tank/data')] }), true)
   const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
@@ -395,7 +415,7 @@ test('TrueNAS cannot submit a job whose explicit roots are all excluded', () => 
     useQuasar: () => ({ notify: notice => notices.push(notice) }),
     useAgentStore: () => ({ agents: [] }),
   })
-  Object.assign(dialog.jobForm, { name: 'NAS', type: 'truenas', config: { paths: [root('tank/data')], exclude_paths: [root('tank')] } })
+  Object.assign(dialog.jobForm, { name: 'NAS', type: 'truenas', config: { paths: [root('tank/data')], exclude_paths: [root('tank/data')] } })
   assert.equal(dialog.entriesConfigured.value, false)
   dialog.submitForm()
   assert.match(notices[0].message, /not excluded/)

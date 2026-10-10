@@ -8,6 +8,7 @@
 **/.ruff_cache/
 **/*.egg-info/
 **/build-version.txt
+**/build-revision.txt
 
 # Virtualenvs
 **/.venv/

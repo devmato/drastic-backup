@@ -5,6 +5,7 @@
       :available-message="agentId && agentOnline ? '' : 'Agent must be online to browse directories.'"
       :load-entries="loadAgentEntries"
       :selection="configModel"
+      :entry-options="entryOptions"
       :reload-key="agentId"
       browser-title="Directory Browser"
       selected-title="Selection"
@@ -41,6 +42,7 @@
 import { computed, ref } from 'vue'
 import PathSelectionPanel from 'components/PathSelectionPanel.vue'
 import { useJobStore } from 'stores/job'
+import { useAgentStore } from 'stores/agent'
 
 const props = defineProps({
   modelValue: { type: Object, required: true },
@@ -51,9 +53,18 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const jobStore = useJobStore()
+const agentStore = useAgentStore()
 const excludePattern = ref('')
 
 const configModel = computed(() => createConfig(props.modelValue))
+
+function entryOptions(entry) {
+  if (entry.state === 'exclude' && !entry.explicit
+    && (agentStore.agents.find(agent => String(agent.id) === String(props.agentId))?.protocol_version || 0) < 16) {
+    return { includeDisabled: true, includeTooltip: 'Update the agent to include paths below excluded parents (protocol 16 required)' }
+  }
+  return {}
+}
 
 function createConfig(config = {}) {
   return {

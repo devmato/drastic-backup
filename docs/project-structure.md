@@ -31,6 +31,7 @@ Important paths:
 - `apps/backend/src/drastic_server/services` -- Business use cases, grouped by responsibility.
 - `apps/backend/src/drastic_server/services/jobs` -- Job configuration, queries, management and execution.
 - `apps/backend/src/drastic_server/services/operations` -- Durable operation lifecycle, history and report ingestion.
+- `apps/backend/src/drastic_server/services/agent/installer.py` -- Installer rendering, standalone controller delivery through `/install.py`, and reproducible backend build targets.
 - `apps/backend/src/drastic_server/integrations` -- External transport adapters.
 - `apps/backend/tests` -- Backend test suite.
 - `apps/backend/scripts/run.sh` -- Container startup script.
@@ -64,6 +65,7 @@ Important paths:
 - `apps/agent/src/drastic_agent/agent` -- Operation/report state, action execution and protocol-facing schemas.
 - `apps/agent/src/drastic_agent/services` -- Restore, retention, connection settings, repository access and credentials.
 - `apps/agent/src/drastic_agent/integrations` -- Host-tool adapters, including verified restic installation.
+- `scripts/drastic-agent-installer.py` -- Shared native/Docker lifecycle manager; installed independently as `/opt/drastic-agent/bin/installer.py` and stages backend-matched source, dependencies and restic before activation.
 - `apps/agent/src/drastic_agent/proxmox.py` -- Proxmox guest discovery and backup streaming.
 - `apps/agent/data` -- Local development agent state.
 
@@ -72,6 +74,10 @@ Important paths:
 `libs/python/common` contains shared Python code used by backend and agent.
 
 `libs/python/common/src/drastic_common/restic` contains the shared restic client. Common also owns the shared agent protocol, scheduling rules, secret envelopes, process utilities and product version generation; it does not import application packages.
+
+`drastic_common/backup_selection.py` translates literal File/TrueNAS path rules into Restic exclusions and identifies configurations requiring include-exception support. The frontend shares browser inheritance and state feedback in `src/utils/path-selection.js`.
+
+`drastic_common/version.py` generates product versions and full source revisions. Packages and Docker builds preserve them in generated `build-version.txt` and `build-revision.txt` files, including when Git is unavailable at runtime.
 
 ## Compose Files
 

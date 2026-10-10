@@ -103,6 +103,16 @@ def create_app(config_object=None):
 
 
 def _register_install_route(app: Flask) -> None:
+    @app.get("/install.py")
+    def serve_agent_manager():
+        from drastic_server.services.agent.installer import read_linux_agent_manager_script
+
+        return Response(
+            read_linux_agent_manager_script(),
+            content_type="text/x-python; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
+        )
+
     @app.get("/install")
     def serve_agent_installer():
         from drastic_server.utils.urls import public_server_url
@@ -110,6 +120,7 @@ def _register_install_route(app: Flask) -> None:
         return Response(
             render_linux_agent_install_script(public_server_url(), app.config["AGENT_GIT_REPOSITORY"]),
             content_type="text/x-shellscript; charset=utf-8",
+            headers={"Cache-Control": "no-store"},
         )
 
 

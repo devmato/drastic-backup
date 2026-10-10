@@ -69,8 +69,8 @@ class TrueNASBackupConfigSchema(Schema):
             keys = [(entry["dataset"], entry["path"]) for entry in data[field]]
             if len(keys) != len(set(keys)):
                 raise ValidationError({field: ["Duplicate paths are not allowed"]})
-        if not any(not any(path_is_within(entry, excluded) for excluded in data["exclude_paths"])
-                   for entry in data["paths"]):
+        excluded = {(entry["dataset"], entry["path"]) for entry in data["exclude_paths"]}
+        if not any((entry["dataset"], entry["path"]) not in excluded for entry in data["paths"]):
             raise ValidationError({"paths": ["Select at least one path that is not excluded"]})
 
 

@@ -1,5 +1,6 @@
 import configparser
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -34,7 +35,7 @@ from drastic_common.restic.repository import ResticRepository
 
 @pytest.fixture
 def restic_binary():
-    binary = shutil.which("restic")
+    binary = os.environ.get("RESTIC_BINARY") or os.environ.get("DRASTIC_RESTIC_BINARY") or shutil.which("restic")
     if binary is None:
         pytest.skip("restic is not installed")
     return binary

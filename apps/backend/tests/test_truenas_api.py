@@ -73,13 +73,13 @@ def test_truenas_job_validation_and_agent_protocol(api_client):
 
 def test_path_selection_validation_and_round_trip(api_client):
     client, agent, _, _ = api_client
-    agent.protocol_version = 14
+    agent.protocol_version = 16
     agent.connections = {"truenas": {"configured": True, "available": True}}
     db.session.commit()
     root = {"dataset": "tank", "path": ".", "group": "dataset"}
     folder = {"dataset": "tank", "path": "photos", "group": "folder"}
     excluded = {"dataset": "tank", "path": "photos/private", "group": "folder"}
-    config = {"paths": [folder], "exclude_paths": [excluded], "exclude_patterns": ["*.tmp"]}
+    config = {"paths": [folder], "exclude_paths": [root, excluded], "exclude_patterns": ["*.tmp"]}
     payload = {"agent_id": agent.id, "name": "NAS", "type": "truenas", "config": config}
     response = client.post("/api/jobs/", json=payload)
     assert response.status_code == 201
@@ -87,8 +87,18 @@ def test_path_selection_validation_and_round_trip(api_client):
     assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 200
     assert client.get(f"/api/jobs/{job_id}").json["config"] == config
     assert AgentRequestService(agent).sync()["jobs"][0]["config"] == config
+    agent.protocol_version = 15
+    db.session.commit()
+    with pytest.raises(ValueError, match="protocol 16"):
+        ensure_job_connection(agent, "truenas", config)
+    with pytest.raises(AgentException, match="protocol 16"):
+        AgentRequestService(agent).sync()
+    assert client.put(f"/api/jobs/{job_id}", json={"config": config}).status_code == 400
+    assert client.put(f"/api/jobs/{job_id}", json={"config": {"paths": [{"path": "docs"}]}}).status_code == 400
+    agent.protocol_version = 16
+    db.session.commit()
     invalid_configs = [
-        {**config, "exclude_paths": entries} for entries in ([root], [folder], [excluded, excluded])
+        {**config, "exclude_paths": entries} for entries in ([folder], [excluded, excluded])
     ] + [{**config, "paths": [{**folder, "path": path}]} for path in ("", "/etc", "../etc", "a/../b", ".zfs/snapshot", "a//b", "a/./b", "a\x00b")]
     for invalid in invalid_configs:
         assert client.post("/api/jobs/", json={**payload, "config": invalid}).status_code == 422

@@ -1,17 +1,17 @@
 <template>
-  <div class="q-mt-md">
+  <div>
     <q-linear-progress v-if="loadingOptions" indeterminate aria-label="Loading restore host options" />
     <q-banner v-if="error" class="q-mb-md text-negative" role="alert">{{ error }}</q-banner>
     <template v-if="options && mode === 'proxmox_vm'">
       <div class="row q-col-gutter-sm">
         <div class="col-12 col-md-4">
-          <q-input v-model.number="selection.vmid" outlined type="number" label="Target VMID" min="100" max="999999999" :rules="[validateVmid]" />
+          <q-input v-model.number="selection.vmid" outlined :dense="!$q.platform.has.touch" hide-bottom-space type="number" label="Target VMID" min="100" max="999999999" :disable="disabled" :rules="[validateVmid]" />
         </div>
         <div class="col-12 col-md-8">
-          <q-select v-model="selection.storage" outlined :options="storageOptions" label="Target storage" emit-value map-options :rules="[val => !!val || 'Required']" />
+          <q-select v-model="selection.storage" outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" :options="storageOptions" label="Target storage" emit-value map-options :disable="disabled" :rules="[val => !!val || 'Required']" />
         </div>
       </div>
-      <q-checkbox v-model="selection.unique" label="Generate new MAC addresses" />
+      <q-checkbox v-model="selection.unique" :disable="disabled" label="Generate new MAC addresses" />
       <div class="text-caption q-mt-sm">Target node: {{ options.node }}. The restored VM stays stopped. Existing VMs cannot be replaced.</div>
     </template>
     <template v-if="options && mode === 'proxmox_files'">
@@ -19,14 +19,14 @@
       <template v-else>
         <div class="text-caption q-mb-sm">{{ options.guest_files_on_demand ? 'TAR and Native/CBT backups are read on demand without storing complete guest disks locally. Allow space for working data and exported files.' : 'Update the restore agent for on-demand guest file access. This agent downloads and extracts TAR or Native/CBT disks locally; allow space for backup data, extracted disks and exported files.' }} Browser sessions expire after one hour of inactivity.</div>
         <div v-if="!selection.session_id" class="row items-center q-gutter-sm">
-          <q-btn color="primary" label="Prepare file browser" :loading="preparing" :disable="preparing" @click="prepare" />
+          <q-btn unelevated no-caps color="primary" label="Prepare file browser" :loading="preparing" :disable="disabled || preparing" @click="prepare" />
           <q-btn v-if="preparing && operationId" flat label="Cancel preparation" @click="cancelPreparation" />
         </div>
         <q-btn v-else flat label="Prepare again" :disable="disabled || browsing" @click="prepareAgain" />
         <div v-if="phase" class="text-caption q-mt-sm" role="status">{{ phase }}</div>
         <q-linear-progress v-if="preparing" class="q-mt-sm" indeterminate aria-label="Preparing guest files" />
         <template v-if="selection.session_id">
-          <q-select v-model="selection.volume" class="q-mt-md" outlined :options="volumeOptions" label="Guest filesystem / volume" emit-value map-options :disable="disabled || browsing" @update:model-value="selection.include_paths = []" />
+          <q-select v-model="selection.volume" class="q-mt-md" outlined :dense="!$q.platform.has.touch" hide-bottom-space :options="volumeOptions" label="Guest filesystem / volume" emit-value map-options :disable="disabled || browsing" @update:model-value="selection.include_paths = []" />
           <div v-for="volume in unavailableVolumes" :key="volume.device" class="text-caption text-warning q-mt-xs">{{ volume.device }}: {{ volume.error }}</div>
           <PathSelectionPanel
             v-if="selection.volume"
@@ -180,5 +180,10 @@ onBeforeUnmount(() => {
   if (!handedOff) void cleanup()
 })
 
-defineExpose({ handOff: () => { handedOff = true }, busy: computed(() => preparing.value || browsing.value) })
+defineExpose({
+  handOff: () => { handedOff = true },
+  busy: computed(() => loadingOptions.value || preparing.value || browsing.value),
+  canSubmit: computed(() => !loadingOptions.value && !error.value && validateVmid(selection.value.vmid) === true
+    && storageOptions.value.some(storage => storage.value === selection.value.storage)),
+})
 </script>

@@ -14,6 +14,7 @@ import drastic_agent.runtime.agent as agent_module
 import drastic_agent.truenas as truenas_module
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.jobs.file_backup import FileBackupJobHandler
 from drastic_agent.jobs.truenas_backup import TrueNASBackupJobHandler, cleanup_snapshots
 from drastic_agent.runtime.agent import Agent, _encode_config_secret
 from drastic_agent.truenas import TrueNASClient, TrueNASError
@@ -344,26 +345,32 @@ def test_dataset_exclusions_skip_whole_subtrees_before_validation_and_snapshots(
     handler.job["config"] = {"paths": roots(["tank", "tank/data/photos"]),
                              "exclude_paths": roots(["tank/data", "tank/locked", "tank/missing"])}
     handler.run_backup(AgentReport.command_report())
-    expected = ["tank", "tank/database"]
+    expected = ["tank", "tank/data/photos", "tank/data/photos/new", "tank/database"]
     assert [params[0]["dataset"] for method, params in calls if method == "pool.snapshot.create"] == expected
     assert [artifact["data"]["dataset"] for artifact in artifacts] == expected
     assert not snapshots and state["snapshots"].count() == 0
 
 
-def test_selected_snapshot_paths_restore_with_literal_exclusions(nas, state, tmp_path, monkeypatch):
+@pytest.mark.parametrize("backup_type", ["truenas", "file"])
+def test_selected_snapshot_paths_restore_with_literal_exclusions(nas, state, tmp_path, monkeypatch, backup_type):
     binary = shutil.which("restic")
     if not binary:
         pytest.skip("restic is required (scripts/ci/install-restic.sh)")
-    api, _, _, snapshots, _ = nas
+    api, _, _, snapshots, live = nas
     call = api.call
+
+    def contents(root):
+        for name in ["docs/keep.txt", "docs/private/secret.txt", "docs/private/keep[1]/nested/saved.txt", "docs/private/keep[1]/nested/skip.tmp",
+                     "docs/private/keep[1]/cache/skip.txt", "docs/[draft]*?.txt", "docs/draftABC.txt", "other.txt"]:
+            target = root / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(name)
 
     def snapshot_contents(method, *params):
         result = call(method, *params)
         if method == "pool.snapshot.create":
             root = api.local_path("/mnt/tank/data") / ".zfs/snapshot" / params[0]["name"]
-            (root / "docs/private").mkdir(parents=True)
-            for name in ["docs/keep.txt", "docs/private/secret.txt", "docs/[draft]*?.txt", "docs/draftABC.txt", "other.txt"]:
-                (root / name).write_text(name)
+            contents(root)
         return result
 
     monkeypatch.setattr(api, "call", snapshot_contents)
@@ -373,14 +380,29 @@ def test_selected_snapshot_paths_restore_with_literal_exclusions(nas, state, tmp
     def entry(path, group):
         return {"dataset": "tank/data", "path": path, "group": group}
     handler.job["config"] = {
-        "paths": [entry("docs", "folder"), entry("example.txt", "file")],
-        "exclude_paths": [entry("docs/private", "folder"), entry("docs/[draft]*?.txt", "file")],
+        "paths": [entry("docs", "folder"), entry("docs/private/keep[1]", "folder"), entry("example.txt", "file")],
+        "exclude_paths": [entry(".", "dataset"), entry("docs/private", "folder"), entry("docs/private/keep[1]/cache", "folder"), entry("docs/[draft]*?.txt", "file")],
+        "exclude_patterns": ["**/*.tmp"],
     }
+    if backup_type == "file":
+        contents(live)
+        config = handler.job["config"]
+        agent = handler.agent
+        handler = FileBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {
+            "paths": [{"path": str(live / value["path"]), "group": value["group"]} for value in config["paths"]],
+            "exclude_patterns": [{"path": str(live / value["path"]), "group": "folder" if value["group"] == "dataset" else value["group"]} for value in config["exclude_paths"]]
+            + [{"path": pattern, "group": "pattern"} for pattern in config["exclude_patterns"]],
+        }}, 1)
+        handler.operation = {"id": 1, "uuid": "operation-1"}
+        handler.start_artifact = lambda key, report=None: artifacts.append({"uuid": "artifact", "artifact_key": key}) or artifacts[-1]
+        handler.finish_artifact = lambda artifact, **kwargs: artifact.update(kwargs)
     handler.run_backup(AgentReport.command_report())
     target = tmp_path / "restored"
     restic.restore(artifacts[0]["snapshot_id"], str(target), include_paths=["/"])
+    if backup_type == "file":
+        target = target.joinpath(*live.resolve().parts[1:])
     assert {str(path.relative_to(target)) for path in target.rglob("*") if path.is_file()} == {
-        "docs/keep.txt", "docs/draftABC.txt", "example.txt",
+        "docs/keep.txt", "docs/draftABC.txt", "docs/private/keep[1]/nested/saved.txt", "example.txt",
     }
     assert (target / "example.txt").read_text() == "snapshot content"
     assert not snapshots and not state["snapshots"].count()
@@ -399,6 +421,9 @@ def test_folder_selection_projects_to_child_dataset_mounts():
         ("tank/data", ["photos"], ["photos/child/nested"]),
         ("tank/data/child", ["."], ["nested"]),
     ]
+    config["paths"].append({"dataset": "tank/data/child/nested", "path": ".", "group": "dataset"})
+    selected = backup_module.backup_selection(config, available)
+    assert [(dataset["id"], paths) for dataset, paths, _ in selected][-1] == ("tank/data/child/nested", ["."])
 
 
 @pytest.mark.parametrize("relative", ["missing.txt", "escape/example.txt"])

@@ -41,17 +41,17 @@ The default root path is `/`, which allows file jobs to reference host paths via
 
 ### Docker Updates
 
-The **Agents** overview offers **Update agents (N)** to start updates in parallel for online, supported agents whose known build differs from the backend. Click the update icon beside a differing version to update just that agent, without a confirmation dialog. The UI confirms only the start; agents finish through the existing updater and their versions refresh on reconnect. Updates follow each agent's saved repository/ref, so pinned versions may still differ afterwards. If a start acknowledgement times out, check the agent logs before retrying; update results remain available under **Reports**.
+The **Agents** overview offers **Update agents (N)** to start updates in parallel for online, supported agents whose known build differs from the backend. Click the update icon beside a differing version to update just that agent, without a confirmation dialog. The UI confirms only the start; agents finish through the existing updater and their versions refresh on reconnect. Updates install the exact Git commit of the running backend, including when that means returning to an older release. If a start acknowledgement times out, check the agent logs before retrying; update results remain available under **Reports**.
 
 Managed Docker images using protocol 4 or later support **Agent Properties > Actions > Update**. Older containers need one image update through their deployment first. The image still builds directly from the local source checkout, but uses the same `/opt/drastic-agent` release layout and Python lifecycle installer as native installations. A small launcher in that installer runs as PID 1 and restarts the agent after an update; systemd and Docker socket access are not required for updates.
 
-Updates fetch the saved Git repository/ref, prepare a non-editable virtual environment, and install or refresh required Debian packages through the target release's `install-agent-dependencies.sh`. Package or build failures leave the running agent in place. The existing startup checks restore the previous agent release if the new process fails to start; Debian package changes are not rolled back. Running/queued operations and duplicate web updates are rejected, and execution stays paused through the startup checks.
+Updates resolve the backend's `/api/agents/installation-target` once, fetch and verify that full commit from the saved repository, prepare a non-editable virtual environment, and install or refresh required Debian packages through the target release's `install-agent-dependencies.sh`. The target's pinned restic binary is downloaded and verified before stopping the running agent. Source, build or restic download failures leave the running release in place. The existing startup checks restore the previous agent release if the new process fails to start; Debian package changes are not rolled back. Running/queued operations and duplicate web updates are rejected, and execution stays paused through the startup checks.
 
-Official branch images follow their source branch (for example `develop`); release images follow `main` for Git updates. Selecting an image tag determines its initial software version. To pin subsequent Git updates to a tag/commit or change their source, use the same lifecycle command inside the running container:
+Selecting an image tag determines its initial software version. Subsequent Git updates follow the backend, regardless of the image's original branch or tag. To update a running container:
 
 ```bash
 docker exec AGENT_CONTAINER drastic-agent status
-docker exec AGENT_CONTAINER drastic-agent update --ref 2026-10-08-a1b2c3d4
+docker exec AGENT_CONTAINER drastic-agent update
 docker logs -f AGENT_CONTAINER
 ```
 
@@ -67,7 +67,7 @@ curl -fsSL https://backup.example.net/install | bash
 
 It installs directly from Git, including a private `uv`, Python 3.11 and virtual environment. The host needs `bash`, `curl`, `git`, systemd and root or sudo access. No system Python installation or package-manager changes are needed. SSH/SFTP jobs additionally require the host's OpenSSH client; Proxmox jobs require their existing host tools.
 
-The script asks for a Git branch, tag or commit through `/dev/tty`, including when piped into Bash. Press Enter for `main` (released versions), or enter `develop` for development. The backend supplies the server URL and `DRASTIC_AGENT_GIT_REPOSITORY`. `--ref` skips the prompt; unattended installations without a terminal default to `main`. Local `--source` installs use the checkout without asking for a ref.
+The backend supplies the server URL and `DRASTIC_AGENT_GIT_REPOSITORY`. The script selects the exact backend commit automatically; there is no branch prompt or fallback to `main`. Unknown, dirty or mismatched backend build metadata is rejected. Local `--source` installs remain available for uncommitted development work.
 
 You can also pipe the script directly from Git, without using the backend installer endpoint:
 
@@ -76,25 +76,26 @@ curl -fsSL https://raw.githubusercontent.com/devmato/drastic-backup/main/scripts
   --server https://backup.example.net
 ```
 
-Select a branch, release tag or commit with `--ref`. For unattended installs, supply registration credentials:
+For unattended installs, supply registration credentials:
 
 ```bash
 curl -fsSL https://backup.example.net/install | bash -s -- \
-  --ref 2026-10-08-a1b2c3d4 \
   --user admin \
   --password replace-me
 ```
 
-Use the release tag matching your deployed server, and choose a tag that includes this installer. For a development version, pass `--ref develop` or a commit SHA. Override the source repository with `--repository URL`. Registration credentials are not persisted by the installer; the existing registration flow saves the generated identity and keypair.
+The backend commit must be available from the Git repository. Override the repository with `--repository URL`. An explicit `--ref BRANCH|TAG|COMMIT` is still supported for a single install/update invocation; it does not pin future updates. Registration credentials are not persisted by the installer; the existing registration flow saves the generated identity and keypair.
+
+If the selected source predates the independent controller, the pipe installer obtains the current controller separately from the backend's public, uncached `/install.py` endpoint. It never executes that older source's ref-pinned installer. Current local `--source` checkouts use their own compatible controller, including uncommitted changes.
 
 To install your current local checkout, including uncommitted changes:
 
 ```bash
 bash scripts/install-drastic-agent.sh --source "$PWD" \
-  --server https://backup.example.net --ref develop
+  --server https://backup.example.net
 ```
 
-The checkout is copied into the managed installation, without local environment files or runtime directories. Future `update` commands fetch the stored repository/ref; use `install --source PATH` again to deploy local changes.
+The checkout is copied into the managed installation, without local environment files or runtime directories. Future `update` commands resolve the backend commit; use `install --source PATH` again to deploy local changes.
 
 ### Layout and Updates
 
@@ -103,6 +104,7 @@ All managed files live under one root:
 ```text
 /opt/drastic-agent/
 ├── bin/drastic-agent
+├── bin/installer.py        # release-independent lifecycle controller
 ├── tools/                 # private uv and Python
 ├── releases/<id>/         # source checkout and virtual environment
 ├── current -> releases/<id>
@@ -121,13 +123,23 @@ sudo drastic-agent update --ref 2026-10-08-a1b2c3d4
 journalctl -u drastic-agent.service
 ```
 
-Updates follow the saved branch, or keep the selected tag/commit pinned until you change `--ref`. Dependencies are installed with `uv sync --frozen --no-dev --no-editable`. A new source/venv directory is prepared and checked before stopping the running service. If the new service fails its startup checks, the old installation is restored. Agent data and additional environment settings (for example Proxmox credentials) are retained. This rollback covers program files, not changes made by the running agent to its data.
+Updates follow the backend commit, ignoring any branch/tag previously saved in `install.json`. Dependencies are installed with `uv sync --frozen --no-dev --no-editable`. A new source/venv directory and its pinned restic binary are prepared and checked before stopping the running service. If the new service fails its startup checks, the old installation is restored. Agent data and additional environment settings (for example Proxmox credentials) are retained. This rollback covers program files, not changes made by the running agent to its data.
+
+The wrapper and Docker launcher use the independent `bin/installer.py` controller. Selecting an older agent with `--ref` keeps the backend-following controller instead of restoring that release's legacy ref-pinned updater. Compatible newer controllers update with their target release; startup rollback restores the previous controller and wrapper together.
 
 **Agent Properties > Actions > Update** starts the same command for managed native Linux agents using protocol 1 or later. Running/queued operations and duplicate updates are rejected; new executions and schedules wait until the installer finishes, including its startup checks. The UI acknowledges the start and refreshes the version after reconnect. Check completion and errors with `journalctl -u drastic-agent-update.service`.
 
 If the service cannot be stopped during rollback, both releases remain on disk and the installer reports the blocked rollback. Stop `drastic-agent.service` before retrying. An interrupted first installation cleans up its new runtime files; any existing or newly registered agent identity remains available for a retry.
 
 The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, otherwise the browser origin. Native installations report their install type as `git`; Docker installations continue to report `docker`.
+
+### Transition from Branch-Based Updates
+
+Older installed lifecycle managers still follow their saved branch/tag. Update the backend first, then, while the agent is idle, rerun its `/install` pipe command once for a native installation. This replaces the manager with the backend-matched version and retains the existing identity and extra environment settings; no uninstall or new registration is needed. For Docker agents, update/recreate the image once through Docker/Compose or TrueNAS while retaining the agent data mount. Subsequent CLI and web updates follow the backend commit.
+
+### restic Version
+
+restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and changes together with the selected Drastic build. Native and managed Docker updates use the target's checksum-verified downloader before activation; pre-refactor targets use their standalone CI download script without loading the old agent runtime or database. The agent checks the binary version again on startup. Different versions use separate paths under `data/bin`, so a failed download does not replace the previous release's executable. No independent `restic self-update` is needed.
 
 ### Protocol Compatibility
 

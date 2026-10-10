@@ -34,6 +34,11 @@ def test_file_job_stores_config_in_standard_envelope():
     assert job.type == JobType.file
     assert job.config == {"paths": [{"path": "/data", "group": "folder"}], "exclude_patterns": []}
     assert job.config_envelope == {"data": job.config}
+    exceptions = {"paths": [{"path": "/data/keep", "group": "folder"}],
+                  "exclude_patterns": [{"path": "/data", "group": "folder"}]}
+    with pytest.raises(ValueError, match="protocol 16"):
+        ensure_job_connection(SimpleNamespace(protocol_version=15), "file", exceptions)
+    ensure_job_connection(SimpleNamespace(protocol_version=16), "file", exceptions)
 
 
 def test_proxmox_job_updates_config_envelope():

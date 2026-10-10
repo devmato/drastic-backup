@@ -1,6 +1,6 @@
 """Agent HTTP contracts, including connection settings and operation history."""
 
-from flask import current_app
+from flask import current_app, jsonify
 from flask.views import MethodView
 from flask_jwt_extended import get_jwt_identity, jwt_required
 from flask_smorest import Blueprint, abort
@@ -26,12 +26,24 @@ from drastic_server.schemas.agent import (
 )
 from drastic_server.schemas.common import MessageSchema
 from drastic_server.services.agent import build_agent_install_targets, management
+from drastic_server.services.agent.installer import installation_target
+from drastic_server.services.exceptions import ResourceConflict
 from drastic_server.services.operations import history
 from drastic_server.utils.urls import explicit_public_url, public_server_url
 from drastic_server.views.api.errors import register_service_errors
 
 blp = Blueprint("agents", __name__, url_prefix="/api/agents", description="Agent operations")
 register_service_errors(blp)
+
+
+@blp.route("/installation-target")
+class AgentInstallationTarget(MethodView):
+    def get(self):
+        # Unpaired installers need public build metadata, never a cached branch head.
+        try:
+            return jsonify(installation_target()), 200, {"Cache-Control": "no-store"}
+        except ResourceConflict as exc:
+            abort(409, message=str(exc), headers={"Cache-Control": "no-store"})
 
 
 @blp.route("/register")

@@ -111,6 +111,8 @@ Runtime helpers receive focused dependencies: the scheduler gets tables and the 
 - Child reports do not overtake their outstanding parents. Failed sends rotate so unrelated reports can progress.
 - A request timeout does not tear down a connection that may already have reconnected.
 - Agent updates reuse the independent installer. Admission stays paused while its outcome is uncertain.
+- The installed lifecycle controller lives in `bin/installer.py`, independently of `current/source`, so an explicit agent downgrade cannot restore legacy ref-pinned updates. Target controllers declaring `INDEPENDENT_LIFECYCLE` may replace it; controller/wrapper files share the existing activation rollback. Bootstrap obtains the controller from the backend's public `/install.py` when the selected source lacks that contract. Pre-refactor targets stage restic through their standalone checksum-verifying downloader without importing their agent runtime or touching the live database.
+- Managed installation/update targets are exact backend commits exposed through public, uncached build metadata. The installer verifies the fetched commit and stages its pinned restic executable before stopping the active release. Unknown or dirty backend builds require an explicit local source override; old lifecycle managers transition once through the pipe installer or a Docker image update.
 - Failed integrity checks keep retention blocked until the required verification succeeds. Restore path, snapshot ownership and overwrite checks remain in the execution services.
 
 ## Frontend

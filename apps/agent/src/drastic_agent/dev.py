@@ -1,3 +1,5 @@
+"""Restart the development agent when agent or shared Python sources change."""
+
 import os
 from pathlib import Path
 
@@ -19,13 +21,13 @@ def _parse_debounce_ms() -> int:
 
 
 def main() -> int:
-    watch_path = Path("src/drastic_agent")
+    watch_paths = (Path("src/drastic_agent"), Path("../../libs/python/common/src/drastic_common"))
     debounce_ms = _parse_debounce_ms()
 
-    print(f"Starting agent hot reload for {watch_path} with debounce {debounce_ms}ms")
+    print(f"Starting agent hot reload for {', '.join(map(str, watch_paths))} with debounce {debounce_ms}ms")
 
     return run_process(
-        watch_path,
+        *watch_paths,
         target="uv run drastic-agent",
         target_type="command",
         watch_filter=PythonFilter(),

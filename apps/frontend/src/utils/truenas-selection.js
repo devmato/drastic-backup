@@ -4,7 +4,7 @@ export function isDatasetWithin(name, parent) {
 
 export function hasTrueNASSelection(config = {}) {
   return (config.paths || []).some(entry =>
-    !(config.exclude_paths || []).some(parent => isPathWithin(entry, parent)))
+    !(config.exclude_paths || []).some(parent => browserKey(entry) === browserKey(parent)))
 }
 
 export function isPathWithin(entry, parent, datasets = []) {

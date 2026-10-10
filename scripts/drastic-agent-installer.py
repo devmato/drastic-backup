@@ -9,6 +9,8 @@ import fcntl
 import getpass
 import json
 import os
+import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -19,6 +21,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from shlex import quote
 from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, build_opener
 from uuid import uuid4
 
 ROOT = Path('/opt/drastic-agent')
@@ -26,6 +29,7 @@ WRAPPER = Path('/usr/local/bin/drastic-agent')
 SERVICE = Path('/etc/systemd/system/drastic-agent.service')
 MARKER = '.managed-by-drastic-agent'
 REPOSITORY = 'https://github.com/devmato/drastic-backup.git'
+INDEPENDENT_LIFECYCLE = True
 CONTAINER = False
 PROCESS = None
 SHUTTING_DOWN = False
@@ -88,7 +92,7 @@ def check_owned():
     if not (ROOT / MARKER).is_file() or (ROOT / MARKER).is_symlink():
         fail('Installation ownership marker is missing. Run the pipe installer first.')
     for name in ('data', 'data/config.ini', 'tools', 'cache', 'releases', 'bin', 'install.json', 'drastic-agent.env',
-                 'launcher.pid', 'update-request.json'):
+                 'launcher.pid', 'update-request.json', 'bin/installer.py', 'bin/drastic-agent'):
         if (ROOT / name).is_symlink():
             fail(f'Unexpected symlink: {ROOT / name}')
     if WRAPPER.exists() or WRAPPER.is_symlink():
@@ -156,14 +160,22 @@ def installation_settings(state):
     return settings
 
 
-def write_wrapper(settings):
+def write_wrapper(settings, manager_source=None):
+    """Persist the controller separately so agent downgrades cannot restore ref-pinned updates."""
     (ROOT / 'bin').mkdir(exist_ok=True)
+    manager = Path(__file__).read_text()
+    if manager_source is not None:
+        candidate = manager_source.read_text()
+        # Only releases that preserve this independent-controller contract may replace it.
+        if '\nINDEPENDENT_LIFECYCLE = True\n' in candidate:
+            manager = candidate
+    write(ROOT / 'bin/installer.py', manager, 0o700)
     exports = '' if CONTAINER else '\n'.join(f'export {key}={quote(value)}' for key, value in settings.items())
     write(ROOT / 'bin/drastic-agent', f'''#!/usr/bin/env bash
 set -euo pipefail
 case "${{1:-}}" in
     install|update|status|uninstall|run)
-        exec "{sys.executable}" "{ROOT}/current/source/scripts/drastic-agent-installer.py" "$@" ;;
+        exec "{sys.executable}" "{ROOT}/bin/installer.py" "$@" ;;
 esac
 {exports}
 case "${{1:-}}" in
@@ -218,15 +230,96 @@ def validate_server(value):
     return value.rstrip('/')
 
 
-def prepare_release(args, state):
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+def validate_revision(value):
+    if not isinstance(value, str) or not re.fullmatch(r'[0-9a-f]{40}', value):
+        fail('The installation target must be a full Git commit SHA.')
+    return value
+
+
+def target_revision(server):
+    server = validate_server(server)
+    try:
+        with build_opener(NoRedirect).open(server + '/api/agents/installation-target', timeout=30) as response:
+            target = json.loads(response.read(4097))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError('The backend installation target is unavailable; use a published build or --source for local development.') from exc
+    if not isinstance(target, dict):
+        fail('The backend returned an invalid installation target.')
+    revision = validate_revision(target.get('revision'))
+    if not isinstance(target.get('version'), str) or not re.fullmatch(
+        rf'[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}-{revision[:8]}', target['version'],
+    ):
+        fail('The backend installation target is not a clean source version.')
+    return revision
+
+
+def fetch_source(repository, revision, source):
+    validate_revision(revision)
+    run('git', 'init', '--quiet', source)
+    run('git', '-C', source, 'remote', 'add', '--', 'origin', repository)
+    run('git', '-C', source, 'fetch', '--depth=1', '--no-tags', 'origin', revision,
+        env={**os.environ, 'GIT_TERMINAL_PROMPT': '0'})
+    commit = run('git', '-C', source, 'rev-parse', 'FETCH_HEAD^{commit}', capture_output=True, text=True).stdout.strip()
+    if commit != revision:
+        fail('The fetched source does not match the backend commit.')
+    run('git', '-C', source, 'checkout', '--detach', revision)
+
+
+def prepare_restic(source, python, environment):
+    """Verify the target's restic without importing an older agent runtime or its database."""
+    folder = data_directory() / 'bin'
+    if (source / 'apps/agent/src/drastic_agent/integrations/restic_binary.py').is_file():
+        run(python, '-c',
+            'import platform, sys; from drastic_agent.integrations.restic_binary import ensure_binary; '
+            'machine = platform.machine().lower(); '
+            'arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine); '
+            'ensure_binary(sys.argv[1], "linux", arch)',
+            folder, env=environment)
+        return
+    # Pre-refactor releases already ship a standalone, checksum-verifying CI downloader.
+    version = run(sys.executable, '-c',
+                  'import runpy, sys; print(runpy.run_path(sys.argv[1])["RESTIC_VERSION"])',
+                  source / 'libs/python/common/src/drastic_common/restic/constants.py',
+                  capture_output=True, text=True).stdout.strip()
+    machine = platform.machine().lower()
+    arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(machine, machine)
+    binary = folder / f'restic_{version}_linux_{arch}'
+    if binary.is_file() and os.access(binary, os.X_OK):
+        try:
+            result = run(binary, 'version', capture_output=True, text=True, timeout=5, check=False)
+            if result.returncode == 0 and re.search(rf'\brestic\s+{re.escape(version)}(?:\s|$)', result.stdout):
+                return
+        except (OSError, subprocess.SubprocessError):
+            pass
+    folder.mkdir(parents=True, exist_ok=True)
+    # Stage on the binary's filesystem: Docker data can be on a different mount.
+    with tempfile.TemporaryDirectory(dir=folder, prefix='.restic-') as temporary:
+        candidate = Path(temporary) / 'restic'
+        run('bash', source / 'scripts/ci/install-restic.sh',
+            env={**environment, 'PYTHON_BINARY': str(sys.executable), 'RESTIC_INSTALL_PATH': str(candidate)})
+        os.replace(candidate, binary)
+
+
+def prepare_release(args, state, server):
     releases = ROOT / 'releases'
     releases.mkdir(exist_ok=True)
     release = Path(tempfile.mkdtemp(dir=releases))
     try:
         source = release / 'source'
         repository = args.repository or state.get('repository') or REPOSITORY
-        ref = args.ref or state.get('ref') or 'main'
-        if ref.startswith('-') or not ref:
+        # Legacy refs remain readable metadata, but never choose a default update target.
+        revision = getattr(args, 'revision', None)
+        if revision:
+            validate_revision(revision)
+        elif not args.ref and not args.source:
+            revision = target_revision(server)
+        ref = args.ref or revision
+        if args.ref and (args.ref.startswith('-') or revision):
             fail('Invalid Git ref.')
         if args.source:
             checkout = Path(args.source).resolve()
@@ -235,23 +328,33 @@ def prepare_release(args, state):
             shutil.copytree(checkout, source, symlinks=True,
                             ignore=shutil.ignore_patterns('.git', '.venv', 'node_modules', 'data',
                                                          'storage', 'dist', 'site', '__pycache__',
-                                                         '.pytest_cache', '.ruff_cache', '.env*'))
+                                                          '.pytest_cache', '.ruff_cache', '.env*',
+                                                          'build-version.txt', 'build-revision.txt'))
             commit = run('git', '-c', f'safe.directory={Path(args.source).resolve()}',
                          '-C', args.source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
+        elif revision:
+            fetch_source(repository, revision, source)
+            commit = revision
         else:
             run('git', 'clone', '--no-checkout', '--', repository, source)
             remote_ref = f'refs/remotes/origin/{ref}'
             branch = run('git', '-C', source, 'show-ref', '--verify', '--quiet', remote_ref, check=False).returncode == 0
             run('git', '-C', source, 'checkout', '--detach', remote_ref if branch else ref)
             commit = run('git', '-C', source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
+        if revision and commit != revision:
+            fail('The source does not match the backend commit.')
         if not (source / 'scripts/drastic-agent-installer.py').is_file():
-            fail('This Git ref does not contain the native lifecycle manager.')
+            fail('This source does not contain the native lifecycle manager.')
         version_script = source / 'libs/python/common/src/drastic_common/version.py'
         version = 'unknown'
         if version_script.is_file():
             run(sys.executable, version_script, '--source', args.source or source,
                 '--output', version_script.with_name('build-version.txt'))
+            # Older target releases understand --output but not --revision-output.
+            write(version_script.with_name('build-revision.txt'), commit + '\n', 0o644)
             version = version_script.with_name('build-version.txt').read_text().strip()
+        if revision and not re.fullmatch(rf'[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}-{revision[:8]}', version):
+            fail('The source is not a clean version of the backend commit.')
         environment = {**os.environ, 'UV_CACHE_DIR': str(ROOT / 'cache/uv'),
                        'UV_PYTHON_INSTALL_DIR': str(ROOT / 'tools/python'),
                        'UV_PROJECT_ENVIRONMENT': str(release / 'venv')}
@@ -270,7 +373,10 @@ def prepare_release(args, state):
                 if CONTAINER:
                     raise
                 print(f'Optional dependencies were not installed: {exc}. Continuing agent installation.', file=sys.stderr)
-        new_state = {'repository': repository, 'ref': ref, 'commit': commit, 'version': version}
+        # Versioned paths keep the running release's restic intact on download failure.
+        # Do this before stop(): --help alone never installs or validates restic.
+        prepare_restic(source, release / 'venv/bin/python', environment)
+        new_state = {'repository': repository, 'ref': ref or commit, 'commit': commit, 'version': version}
         if CONTAINER:
             new_state['deployment'] = 'docker'
         return release, new_state
@@ -333,13 +439,13 @@ def _install(args, state, data, progress):
         if not user or not password:
             fail('Registration credentials must not be empty.')
 
-    release, new_state = prepare_release(args, state)
+    release, new_state = prepare_release(args, state, server)
     progress(f'Release prepared: {new_state["ref"]} ({new_state["commit"]})')
     new_state['server'] = server
     was_active = active()
     was_enabled = not CONTAINER and run('systemctl', 'is-enabled', '--quiet', SERVICE.name, check=False).returncode == 0
     old_release = (ROOT / 'current').resolve() if (ROOT / 'current').exists() else None
-    files = [ROOT / 'drastic-agent.env', ROOT / 'install.json', ROOT / 'bin/drastic-agent']
+    files = [ROOT / 'drastic-agent.env', ROOT / 'install.json', ROOT / 'bin/drastic-agent', ROOT / 'bin/installer.py']
     if not CONTAINER:
         files.append(SERVICE)
     snapshots = {path: (path.read_bytes(), path.stat().st_mode & 0o777) if path.exists() else None for path in files}
@@ -360,7 +466,7 @@ def _install(args, state, data, progress):
         env.extend(f'{key}={json.dumps(value, ensure_ascii=False)}' for key, value in settings.items())
         write(env_path, '\n'.join(env) + '\n')
         write(ROOT / 'install.json', json.dumps(new_state, indent=2) + '\n')
-        write_wrapper(settings)
+        write_wrapper(settings, release / 'source/scripts/drastic-agent-installer.py')
         switch(release)
         if not CONTAINER:
             write(SERVICE, service_text(), 0o644)
@@ -415,8 +521,10 @@ def initialize_image(args):
     (ROOT / MARKER).touch()
     ROOT.chmod(0o700)
     check_owned()
-    state = {'deployment': 'docker', 'repository': args.repository, 'ref': args.ref, 'commit': args.commit}
     stamp = ROOT / 'releases/image/source/libs/python/common/src/drastic_common/build-version.txt'
+    revision_stamp = stamp.with_name('build-revision.txt')
+    commit = revision_stamp.read_text().strip() if revision_stamp.is_file() else 'unknown'
+    state = {'deployment': 'docker', 'repository': args.repository, 'ref': commit, 'commit': commit}
     state['version'] = stamp.read_text().strip() if stamp.is_file() else 'unknown'
     write(ROOT / 'install.json', json.dumps(state, indent=2) + '\n')
     switch(ROOT / 'releases/image')
@@ -436,7 +544,7 @@ def request_update(args):
         fail('An update is already running.')
     if args.server or args.user or args.password:
         fail('Container updates preserve registration; configure credentials through the container environment.')
-    write(ROOT / 'update-request.json', json.dumps({key: getattr(args, key) for key in ('repository', 'ref', 'source')}) + '\n')
+    write(ROOT / 'update-request.json', json.dumps({key: getattr(args, key, None) for key in ('repository', 'ref', 'source', 'revision')}) + '\n')
     print('Agent update requested; details: docker logs <agent-container>', flush=True)
 
 
@@ -522,7 +630,8 @@ def main():
     for command in ('install', 'update'):
         sub = commands.add_parser(command)
         sub.add_argument('--repository')
-        sub.add_argument('--ref')
+        sub.add_argument('--ref', help='Explicit source override for this invocation; subsequent updates follow the backend')
+        sub.add_argument('--revision', help='Exact backend commit selected by the bootstrap installer')
         sub.add_argument('--source', help='Install a local checkout instead of fetching Git')
         sub.add_argument('--server')
         sub.add_argument('--user')
@@ -531,8 +640,6 @@ def main():
     commands.add_parser('run')
     image = commands.add_parser('image', help='Initialize a prebuilt Docker release')
     image.add_argument('--repository', default=REPOSITORY)
-    image.add_argument('--ref', default='main')
-    image.add_argument('--commit', default='unknown')
     sub = commands.add_parser('uninstall', description='Remove the native agent; keep local identity and settings unless --purge is used.')
     sub.add_argument('--purge', action='store_true', help='Also remove all local agent data, identity and settings')
     sub.add_argument('--yes', action='store_true', help='Skip confirmation (required for unattended uninstall)')

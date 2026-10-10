@@ -63,12 +63,12 @@ def test_release_tags_final_main_commit_and_migrates_legacy_tags(tmp_path):
         assert ["push", "registry.test/owner/repo/agent:latest"] in commands
         build = next(command for command in reversed(commands) if command[0] == "build")
         assert "DRASTIC_VERSION=" + tag in build
-        assert "DRASTIC_AGENT_REF=main" in build
-        assert "DRASTIC_AGENT_COMMIT=" + env["GITHUB_SHA"] in build
+        assert "DRASTIC_REVISION=" + env["GITHUB_SHA"] in build
         env["CONTAINER_PLATFORMS"] = "linux/amd64,linux/arm64"
         run("bash", str(project / "scripts/ci/publish-docker-image.sh"), "server", "Dockerfile", ".")
         buildx = json.loads(calls.read_text().splitlines()[-1])
         assert buildx[:2] == ["buildx", "build"]
         assert "DRASTIC_VERSION=" + tag in buildx
+        assert "DRASTIC_REVISION=" + env["GITHUB_SHA"] in buildx
         env["CONTAINER_PLATFORMS"] = ""
         run("git", "switch", "develop")

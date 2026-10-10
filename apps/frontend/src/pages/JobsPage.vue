@@ -65,14 +65,6 @@
           :rows-per-page-options="[0]"
           hide-bottom
         >
-          <template v-slot:body-cell-name="props">
-            <q-td :props="props">
-              <div>{{ props.row.name }}</div>
-              <div v-for="chain in props.row.chains || []" :key="`${chain.id}:${chain.position}`">
-                <q-btn flat dense no-caps size="sm" color="primary" icon="playlist_play" :label="`${chain.name} · ${chain.position}/${chain.step_count}`" @click="openChain(chain.id)" />
-              </div>
-            </q-td>
-          </template>
           <template v-slot:body-cell-type="props">
             <q-td :props="props">
               <q-badge color="primary" :label="props.row.type_text || props.row.type" />

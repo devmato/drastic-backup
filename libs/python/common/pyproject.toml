@@ -21,7 +21,7 @@ package-dir = {"" = "src"}
 where = ["src"]
 
 [tool.setuptools.package-data]
-drastic_common = ["build-version.txt"]
+drastic_common = ["build-version.txt", "build-revision.txt"]
 
 [dependency-groups]
 dev = [

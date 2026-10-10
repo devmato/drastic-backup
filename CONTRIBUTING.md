@@ -87,6 +87,7 @@ The `version` fields required by Python/npm packaging stay fixed and are not pro
 
 - Prefer the same split-view layout for all backup job types: a hierarchical browser on the left, explicit selections and exclusions on the right. Reuse `PathBrowser`, `PathSelectionPanel`, and `SelectionLayout`.
 - Express selection scope through **+ / −** actions. Selecting a parent includes supported descendants, including newly created ones. Derive the selection mode from the selection instead of exposing separate selection-mode or child-inclusion switches.
+- The most specific browser path rule wins: an explicit child include can override a parent exclusion, and a deeper exclusion can narrow that child again. Removing a rule restores inheritance. Show explicit versus inherited scope, and keep explicit child selections visible when a parent is selected or removed. Free-form exclude patterns retain Restic semantics.
 - Do not show selection-count badges; the selection list already communicates the scope.
 - Place job-specific controls, such as **Backup Mode**, below the split view. Put optional settings under **Advanced**.
 - Use consistent type icons in both columns: pools/datasets `storage`, folders `folder`, files `description`, hosts `dns`, and VMs `computer`.

@@ -23,6 +23,7 @@ import PathSelectionPanel from 'components/PathSelectionPanel.vue'
 import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { browserKey, browserPath, browserSelection, isPathWithin, selectionConfig } from 'src/utils/truenas-selection'
+import { pathSelectionOptions } from 'src/utils/path-selection'
 
 const props = defineProps({ modelValue: { type: Object, required: true }, agentId: { type: [Number, String], default: null }, agentOnline: Boolean })
 const emit = defineEmits(['update:modelValue'])
@@ -44,14 +45,17 @@ function refresh() { datasets.value = null; reloadKey.value++ }
 watch(() => [props.agentId, props.agentOnline], refresh)
 
 function entryOptions(entry) {
-  const rule = { dataset: entry.selectionEntry.dataset, path: entry.selectionEntry.relativePath, group: entry.group }
-  const excluded = (props.modelValue.exclude_paths || []).find(parent => isPathWithin(rule, parent, datasets.value || []))
-  const included = (props.modelValue.paths || []).find(parent => isPathWithin(rule, parent, datasets.value || []))
+  const original = value => ({ dataset: value.dataset, path: value.relativePath, group: value.group })
+  const options = pathSelectionOptions({ ...entry, ...entry.selectionEntry }, selection.value,
+    (child, parent) => isPathWithin(original(child), original(parent), datasets.value || []))
+  const needsUpdate = options.state === 'exclude' && !options.explicit
+    && (agentStore.agents.find(agent => String(agent.id) === String(props.agentId))?.protocol_version || 0) < 16
   return {
-    state: excluded ? 'exclude' : included ? 'include' : null,
-    note: excluded ? `Excluded via ${browserPath(excluded)}` : included ? `Included via ${browserPath(included)}` : '',
-    includeDisabled: !entry.readable || (!!excluded && browserKey(excluded) !== entry.path),
-    excludeDisabled: false,
+    ...options,
+    includeDisabled: options.includeDisabled || needsUpdate,
+    includeTooltip: needsUpdate ? 'Update the agent to include paths below excluded parents (protocol 16 required)' : '',
+    // Locked/unmounted datasets must still be excludable from a selected parent.
+    excludeDisabled: options.explicit && options.state === 'exclude',
   }
 }
 

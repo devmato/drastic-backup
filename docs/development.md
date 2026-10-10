@@ -75,7 +75,7 @@ Override the server URL explicitly:
 
 ## Test Native Installer From Git
 
-For installer and systemd testing, start the development stack without the Docker agent and install a native agent from a concrete Git commit:
+For installer and systemd testing, start the development stack without the Docker agent. A clean backend checkout provides its exact commit as the native installation target:
 
 ```bash
 ./scripts/dev.sh up --no-agent
@@ -83,15 +83,14 @@ For installer and systemd testing, start the development stack without the Docke
 
 ```bash
 curl -fsSL http://127.0.0.1:5050/install | bash -s -- \
-  --ref <commit-sha> \
   --user admin \
   --password admin
 ```
 
-The target host needs `git`, `curl`, systemd and root or sudo access. Python and `uv` are installed privately under `/opt/drastic-agent`. For uncommitted changes, use `bash scripts/install-drastic-agent.sh --source "$PWD" --ref develop --server http://127.0.0.1:5050`. Manage the installed agent locally:
+The target host needs `git`, `curl`, systemd and root or sudo access. Python and `uv` are installed privately under `/opt/drastic-agent`. The backend commit must be pushed to the configured agent repository. Dirty or unknown backend builds have no automatic installation target; for uncommitted changes use `bash scripts/install-drastic-agent.sh --source "$PWD" --server http://127.0.0.1:5050`. Manage the installed agent locally:
 
 ```bash
-sudo drastic-agent update --ref <commit-sha>
+sudo drastic-agent update
 ```
 
 ```bash
@@ -99,6 +98,8 @@ sudo drastic-agent uninstall
 ```
 
 If the installer runs from another host or VM, set `DRASTIC_PUBLIC_URL` to a URL reachable by that host before rendering `/install`.
+
+`--ref <branch|tag|commit>` explicitly overrides one installation/update; subsequent updates use the backend again. Docker builds stamp both product version and full revision. When supplying `DRASTIC_VERSION` manually (for example from a linked Git worktree), also pass `DRASTIC_REVISION=<full-commit-sha>`.
 
 ## Reset Local State
 

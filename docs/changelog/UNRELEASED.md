@@ -1,6 +1,9 @@
 # Unreleased
 
-- **Changed exclusion precedence with restic 0.19.1:** File and TrueNAS backups now keep explicitly selected files and folders even when an exclude pattern matches them. Directory contents remain filtered; TrueNAS browser exclusions made with **−** still take precedence over selections.
+- **Changed exclusion precedence with restic 0.19.1:** File and TrueNAS backups now keep explicitly selected files and folders even when an exclude pattern matches them. Directory contents remain filtered by free-form patterns. Browser path rules use the most specific include/exclude: explicit children can reopen excluded parents without including their siblings, including across TrueNAS datasets. These exceptions require agent protocol 16 and also apply to existing rules. Proxmox keeps explicit VM selections visible alongside a host selection and retains them when the host is removed.
+
+- Managed agent installation and updates now select the exact running backend commit without a branch prompt. Dirty/unknown backend builds require an explicit local source. Existing native installations transition once by rerunning `/install`; Docker agents need one image update while preserving their data mount. Explicit `--ref` overrides apply only to that invocation. restic is pinned to 0.19.1 and verified before activating an updated agent, so download failures leave the running release intact.
+- The lifecycle controller remains independent when selecting older agent releases, so subsequent updates still follow the backend. Pipe installations of older sources obtain the current controller separately from `/install.py`. Pre-refactor releases retain compatible restic preflight through their existing standalone downloader; controller changes participate in startup rollback.
 
 - Backup cancellation now signals the worker immediately, including during parent lookup and between processes, and waits for worker cleanup before terminal reporting. Session keepalive now clears the session/socket and redirects protected views to login when `/auth/status` returns `authenticated: false`, including HTTP 200 responses.
 
@@ -19,7 +22,7 @@
 
 - Backup chains support multiple independently enabled UTC schedules, using the same schedule dialog and list as jobs. Existing start times and activation are migrated to the first schedule entry. Overlapping triggers in the same minute start one chain run.
 
-- Added centrally scheduled backup chains under **Jobs > Backup Chains**, with ordered jobs across agents, per-step repository/retention/check settings, persistent run history, cancellation, bounded start waits, restart recovery and duplicate-start protection. Chain times use UTC and participating agents require protocol 11. Jobs show their chain membership. Failed retention is retried independently on the agent, with repository checks before cleanup.
+- Added centrally scheduled backup chains under **Jobs > Backup Chains**, with ordered jobs across agents, per-step repository/retention/check settings, persistent run history, cancellation, bounded start waits, restart recovery and duplicate-start protection. Chain times use UTC and participating agents require protocol 11. Chain membership is shown under **Schedule > Backup Chains** when editing a job. Failed retention is retried independently on the agent, with repository checks before cleanup.
 - Fixed post-backup retention counting the completed current snapshot, so `keep_last` no longer retains an extra previous backup.
 
 ## Release Notes

@@ -3,7 +3,12 @@
 from croniter import croniter
 from marshmallow import ValidationError
 
-from drastic_common.agent.schemas import AgentProxmoxBackupJobConfigSchema
+from drastic_common.agent.commands import PATH_INCLUDE_EXCEPTIONS_PROTOCOL
+from drastic_common.agent.schemas import (
+    AgentFileBackupJobConfigSchema,
+    AgentProxmoxBackupJobConfigSchema,
+)
+from drastic_common.backup_selection import requires_include_exceptions
 from drastic_common.scheduling import as_cron
 from drastic_common.truenas import TrueNASBackupConfigSchema
 from drastic_server.extensions import db
@@ -153,6 +158,16 @@ def _get_job_type(job_type):
 def ensure_job_connection(agent, job_type, config=None):
     if job_type == "truenas" and (agent.protocol_version or 0) < 14:
         raise ValueError("Update the agent to use TrueNAS path selection (protocol 14 required)")
+    if (agent.protocol_version or 0) < PATH_INCLUDE_EXCEPTIONS_PROTOCOL and config is not None and job_type in {"file", "truenas"}:
+        # Updates reach this guard before normalization; reuse the input schema
+        # instead of inspecting unvalidated nested values for protocol requirements.
+        schema = TrueNASBackupConfigSchema() if job_type == "truenas" else AgentFileBackupJobConfigSchema()
+        try:
+            selection = schema.load(config)
+        except ValidationError as exc:
+            raise ValueError(f"Invalid {job_type} configuration: {exc}") from exc
+        if requires_include_exceptions(job_type, selection):
+            raise ValueError(f"Update the agent to include paths below excluded parents (protocol {PATH_INCLUDE_EXCEPTIONS_PROTOCOL} required)")
     if job_type == "proxmox" and (config or {}).get("backup_mode", "snapshot") != "snapshot":
         if (agent.protocol_version or 0) < 8:
             raise ValueError("Update the agent to use native Proxmox backups (protocol 8 required)")

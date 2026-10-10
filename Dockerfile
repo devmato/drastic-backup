@@ -3,9 +3,13 @@
 FROM python:3.13-slim-bookworm AS version-build
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 ARG DRASTIC_VERSION
+ARG DRASTIC_REVISION
 RUN --mount=type=bind,target=/source \
-    if [ -n "$DRASTIC_VERSION" ]; then printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
-    else python /source/libs/python/common/src/drastic_common/version.py --source /source --output /build-version.txt; fi
+    if [ -n "$DRASTIC_VERSION" ]; then \
+        printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
+        printf '%s\n' "$DRASTIC_REVISION" > /build-revision.txt; \
+    else python /source/libs/python/common/src/drastic_common/version.py --source /source \
+        --output /build-version.txt --revision-output /build-revision.txt; fi
 
 FROM python:3.13-slim-bookworm AS docs-build
 
@@ -43,12 +47,14 @@ WORKDIR /app
 
 COPY libs/python/common /libs/python/common
 COPY --from=version-build /build-version.txt /libs/python/common/src/drastic_common/build-version.txt
+COPY --from=version-build /build-revision.txt /libs/python/common/src/drastic_common/build-revision.txt
 COPY apps/backend/pyproject.toml apps/backend/uv.lock apps/backend/README.md ./
 RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 RUN uv sync --frozen --no-dev --no-install-project
 
 COPY apps/backend/ ./
 COPY scripts/install-drastic-agent.sh src/drastic_server/services/agent/install.sh
+COPY scripts/drastic-agent-installer.py src/drastic_server/services/agent/install.py
 RUN sed -i 's|../../libs/python/common|/libs/python/common|g' pyproject.toml uv.lock
 RUN uv sync --frozen --no-dev
 

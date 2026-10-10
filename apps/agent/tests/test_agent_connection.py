@@ -1212,7 +1212,7 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     def fake_get(url, timeout):
         calls.append(url)
         if url.endswith("SHA256SUMS"):
-            return Response(text=f"{checksum} restic_0.18.1_linux_amd64.bz2\n")
+            return Response(text=f"{checksum} restic_0.19.1_linux_amd64.bz2\n")
         return Response(content=archive_data)
 
     def fake_run(command, **kwargs):
@@ -1221,7 +1221,7 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
         with open(candidate_path, "rb") as candidate:
             assert candidate.read() == b"restic-binary"
         assert os.access(candidate_path, os.X_OK)
-        return SimpleNamespace(returncode=0, stdout="restic 0.18.1 compiled with go", stderr="")
+        return SimpleNamespace(returncode=0, stdout="restic 0.19.1 compiled with go", stderr="")
 
     real_replace = os.replace
 
@@ -1239,7 +1239,7 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     agent = Agent.__new__(Agent)
     Agent._Agent__check_restic_binary(agent)
 
-    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path = tmp_path / "bin" / "restic_0.19.1_linux_amd64"
     assert binary_path.read_bytes() == b"restic-binary"
     assert os.access(binary_path, os.X_OK)
     assert len(smoke_calls) == 1
@@ -1249,8 +1249,8 @@ def test_restic_download_verifies_sha256sum(tmp_path, monkeypatch):
     assert os.path.dirname(replacements[0][0]) == str(binary_path.parent)
     assert list(binary_path.parent.iterdir()) == [binary_path]
     assert calls == [
-        "https://github.com/restic/restic/releases/download/v0.18.1/restic_0.18.1_linux_amd64.bz2",
-        "https://github.com/restic/restic/releases/download/v0.18.1/SHA256SUMS",
+        "https://github.com/restic/restic/releases/download/v0.19.1/restic_0.19.1_linux_amd64.bz2",
+        "https://github.com/restic/restic/releases/download/v0.19.1/SHA256SUMS",
     ]
 
 
@@ -1259,7 +1259,7 @@ def test_restic_download_rejects_sha256sum_mismatch(tmp_path, monkeypatch):
 
     class Response:
         content = archive_data
-        text = "0" * 64 + " restic_0.18.1_linux_amd64.bz2\n"
+        text = "0" * 64 + " restic_0.19.1_linux_amd64.bz2\n"
 
         @staticmethod
         def raise_for_status():
@@ -1284,7 +1284,7 @@ def test_restic_download_rejects_sha256sum_mismatch(tmp_path, monkeypatch):
 
 
 def test_existing_restic_binary_requires_expected_version_without_download(tmp_path, monkeypatch):
-    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path = tmp_path / "bin" / "restic_0.19.1_linux_amd64"
     binary_path.parent.mkdir()
     binary_path.write_bytes(b"existing-restic")
     binary_path.chmod(0o755)
@@ -1292,7 +1292,7 @@ def test_existing_restic_binary_requires_expected_version_without_download(tmp_p
 
     def fake_run(command, **kwargs):
         smoke_calls.append((command, kwargs))
-        return SimpleNamespace(returncode=0, stdout="restic 0.18.1 compiled with go", stderr="")
+        return SimpleNamespace(returncode=0, stdout="restic 0.19.1 compiled with go", stderr="")
 
     monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
     monkeypatch.setattr(agent_module.Agent, "os_clean", property(lambda self: "linux"))
@@ -1318,7 +1318,7 @@ def test_existing_restic_binary_requires_expected_version_without_download(tmp_p
 def test_existing_restic_binary_with_wrong_version_is_replaced(tmp_path, monkeypatch):
     archive_data = bz2.compress(b"replacement-restic")
     checksum = hashlib.sha256(archive_data).hexdigest()
-    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path = tmp_path / "bin" / "restic_0.19.1_linux_amd64"
     binary_path.parent.mkdir()
     binary_path.write_bytes(b"old-restic")
     binary_path.chmod(0o755)
@@ -1334,11 +1334,11 @@ def test_existing_restic_binary_with_wrong_version_is_replaced(tmp_path, monkeyp
 
     def fake_get(url, timeout):
         if url.endswith("SHA256SUMS"):
-            return Response(text=f"{checksum} restic_0.18.1_linux_amd64.bz2\n")
+            return Response(text=f"{checksum} restic_0.19.1_linux_amd64.bz2\n")
         return Response(content=archive_data)
 
     def fake_run(command, **kwargs):
-        version = "0.17.3" if command[0] == str(binary_path) else "0.18.1"
+        version = "0.18.1" if command[0] == str(binary_path) else "0.19.1"
         return SimpleNamespace(returncode=0, stdout=f"restic {version} compiled with go", stderr="")
 
     monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(tmp_path))
@@ -1356,14 +1356,14 @@ def test_existing_restic_binary_with_wrong_version_is_replaced(tmp_path, monkeyp
 def test_failed_restic_smoke_test_preserves_existing_binary(tmp_path, monkeypatch):
     archive_data = bz2.compress(b"broken-replacement")
     checksum = hashlib.sha256(archive_data).hexdigest()
-    binary_path = tmp_path / "bin" / "restic_0.18.1_linux_amd64"
+    binary_path = tmp_path / "bin" / "restic_0.19.1_linux_amd64"
     binary_path.parent.mkdir()
     binary_path.write_bytes(b"partial-existing-restic")
     binary_path.chmod(0o755)
 
     class Response:
         content = archive_data
-        text = f"{checksum} restic_0.18.1_linux_amd64.bz2\n"
+        text = f"{checksum} restic_0.19.1_linux_amd64.bz2\n"
 
         @staticmethod
         def raise_for_status():

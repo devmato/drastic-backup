@@ -3,17 +3,19 @@
 FROM python:3.11-slim-bookworm AS version-build
 RUN apt-get update && apt-get install -y --no-install-recommends git && rm -rf /var/lib/apt/lists/*
 ARG DRASTIC_VERSION
+ARG DRASTIC_REVISION
 RUN --mount=type=bind,target=/source \
-    if [ -n "$DRASTIC_VERSION" ]; then printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
-    else python /source/libs/python/common/src/drastic_common/version.py --source /source --output /build-version.txt; fi
+    if [ -n "$DRASTIC_VERSION" ]; then \
+        printf '%s\n' "$DRASTIC_VERSION" > /build-version.txt; \
+        printf '%s\n' "$DRASTIC_REVISION" > /build-revision.txt; \
+    else python /source/libs/python/common/src/drastic_common/version.py --source /source \
+        --output /build-version.txt --revision-output /build-revision.txt; fi
 
 FROM python:3.11-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.10.9 /uv /opt/drastic-agent/tools/bin/uv
 
 ARG DRASTIC_AGENT_GIT_REPOSITORY=https://github.com/devmato/drastic-backup.git
-ARG DRASTIC_AGENT_REF=main
-ARG DRASTIC_AGENT_COMMIT=unknown
 
 ENV PATH="/opt/drastic-agent/tools/bin:${PATH}" \
     UV_PROJECT_ENVIRONMENT=/opt/drastic-agent/releases/image/venv \
@@ -32,6 +34,7 @@ WORKDIR /opt/drastic-agent/releases/image/source/apps/agent
 
 COPY libs/python/common ../../libs/python/common
 COPY --from=version-build /build-version.txt ../../libs/python/common/src/drastic_common/build-version.txt
+COPY --from=version-build /build-revision.txt ../../libs/python/common/src/drastic_common/build-revision.txt
 COPY apps/agent/pyproject.toml apps/agent/uv.lock apps/agent/README.md ./
 
 # Install python dependencies via uv
@@ -42,7 +45,7 @@ RUN uv sync --frozen --no-dev --no-editable
 
 COPY scripts/drastic-agent-installer.py ../../scripts/
 RUN python ../../scripts/drastic-agent-installer.py image \
-    --repository "$DRASTIC_AGENT_GIT_REPOSITORY" --ref "$DRASTIC_AGENT_REF" --commit "$DRASTIC_AGENT_COMMIT"
+    --repository "$DRASTIC_AGENT_GIT_REPOSITORY"
 
 WORKDIR /app
 COPY apps/agent/run.sh /app/run.sh

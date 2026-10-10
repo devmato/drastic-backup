@@ -6,6 +6,7 @@ REPOSITORY=${DRASTIC_AGENT_GIT_REPOSITORY:-https://github.com/devmato/drastic-ba
 REF=${DRASTIC_AGENT_REF:-}
 SERVER=${DRASTIC_SERVER:-}
 SOURCE=
+REVISION=
 REUSE_DATA=false
 ARGS=()
 while [ "$#" -gt 0 ]; do
@@ -26,20 +27,6 @@ while [ "$#" -gt 0 ]; do
         *) ARGS+=("$1"); shift ;;
     esac
 done
-
-if [ -z "$SOURCE" ] && [ -z "$REF" ]; then
-    INPUT=
-    if [ -t 0 ]; then
-        INPUT=/dev/stdin
-    elif (: </dev/tty) 2>/dev/null; then
-        INPUT=/dev/tty
-    fi
-    if [ -n "$INPUT" ]; then
-        printf 'Git branch, tag or commit [main]: ' >&2
-        read -r REF < "$INPUT" || true
-    fi
-fi
-REF=${REF:-main}
 
 root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
@@ -129,17 +116,6 @@ trap cleanup EXIT
 STAGE=$(mktemp -d)
 trap 'exit 130' INT
 trap 'exit 143' TERM
-[ "${REF#-}" = "$REF" ] || { printf 'Invalid Git ref.\n' >&2; exit 1; }
-if [ -z "$SOURCE" ]; then
-    git clone --no-checkout -- "$REPOSITORY" "$STAGE/source"
-    CHECKOUT_REF=$REF
-    if git -C "$STAGE/source" show-ref --verify --quiet "refs/remotes/origin/$REF"; then
-        CHECKOUT_REF="refs/remotes/origin/$REF"
-    fi
-    git -C "$STAGE/source" checkout --detach "$CHECKOUT_REF"
-    SOURCE=$STAGE/source
-fi
-
 UV=$ROOT/tools/bin/uv
 if ! root test -x "$UV"; then
     curl --proto '=https' --tlsv1.2 -fsSL https://astral.sh/uv/0.10.9/install.sh -o "$STAGE/uv.sh"
@@ -148,7 +124,70 @@ fi
 root env UV_PYTHON_INSTALL_DIR="$ROOT/tools/python" UV_PYTHON_INSTALL_BIN=false UV_CACHE_DIR="$ROOT/cache/uv" "$UV" python install 3.11
 PYTHON=$(root env UV_PYTHON_INSTALL_DIR="$ROOT/tools/python" UV_CACHE_DIR="$ROOT/cache/uv" "$UV" python find --managed-python 3.11)
 
-COMMAND=("$PYTHON" "$SOURCE/scripts/drastic-agent-installer.py" install --source "$SOURCE" --repository "$REPOSITORY" --ref "$REF")
+if [ -z "$SOURCE" ] && [ -z "$REF" ]; then
+    if [ -z "$SERVER" ]; then
+        if (: </dev/tty) 2>/dev/null; then
+            printf 'Server URL: ' >&2
+            read -r SERVER </dev/tty
+        fi
+        [ -n "$SERVER" ] || { printf 'Provide --server URL for unattended installation.\n' >&2; exit 1; }
+    fi
+    SERVER=${SERVER%/}
+    REVISION=$(curl --fail --silent --show-error --max-time 30 --proto '=https,http' \
+        -- "$SERVER/api/agents/installation-target" | root "$PYTHON" -c '
+import json, re, sys
+try:
+    target = json.loads(sys.stdin.read(4097))
+    revision, version = target["revision"], target["version"]
+    if not isinstance(revision, str) or not re.fullmatch(r"[0-9a-f]{40}", revision):
+        raise ValueError("Invalid revision")
+    if not isinstance(version, str) or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}-" + revision[:8], version):
+        raise ValueError("Invalid version")
+except (ValueError, KeyError, TypeError):
+    raise SystemExit("The backend has no reproducible agent installation target; use a published build or --source for local development.")
+print(revision)
+')
+fi
+[ "${REF#-}" = "$REF" ] || { printf 'Invalid Git ref.\n' >&2; exit 1; }
+if [ -z "$SOURCE" ]; then
+    if [ -n "$REVISION" ]; then
+        git init --quiet "$STAGE/source"
+        git -C "$STAGE/source" remote add -- origin "$REPOSITORY"
+        GIT_TERMINAL_PROMPT=0 git -C "$STAGE/source" fetch --depth=1 --no-tags origin "$REVISION"
+        [ "$(git -C "$STAGE/source" rev-parse 'FETCH_HEAD^{commit}')" = "$REVISION" ] || { printf 'Source does not match the backend commit.\n' >&2; exit 1; }
+        git -C "$STAGE/source" checkout --detach "$REVISION"
+    else
+        git clone --no-checkout -- "$REPOSITORY" "$STAGE/source"
+        CHECKOUT_REF=$REF
+        if git -C "$STAGE/source" show-ref --verify --quiet "refs/remotes/origin/$REF"; then
+            CHECKOUT_REF="refs/remotes/origin/$REF"
+        fi
+        git -C "$STAGE/source" checkout --detach "$CHECKOUT_REF"
+    fi
+    SOURCE=$STAGE/source
+fi
+
+# Old agent sources must not bootstrap their ref-pinned lifecycle manager.
+MANAGER=$SOURCE/scripts/drastic-agent-installer.py
+if ! root "$PYTHON" -c '
+from pathlib import Path
+import sys
+script = Path(sys.argv[1])
+sys.exit(0 if script.is_file() and "\nINDEPENDENT_LIFECYCLE = True\n" in script.read_text() else 1)
+' "$MANAGER"; then
+    if [ -z "$SERVER" ] && (: </dev/tty) 2>/dev/null; then
+        printf 'Server URL: ' >&2
+        read -r SERVER </dev/tty
+    fi
+    [ -n "$SERVER" ] || { printf 'Provide --server URL to obtain a compatible lifecycle manager.\n' >&2; exit 1; }
+    SERVER=${SERVER%/}
+    MANAGER=$STAGE/installer.py
+    curl --fail --silent --show-error --max-time 30 --proto '=https,http' \
+        -o "$MANAGER" -- "$SERVER/install.py"
+fi
+COMMAND=("$PYTHON" "$MANAGER" install --source "$SOURCE" --repository "$REPOSITORY")
+[ -z "$REVISION" ] || COMMAND+=(--revision "$REVISION")
+[ -z "$REF" ] || COMMAND+=(--ref "$REF")
 [ -z "$SERVER" ] || COMMAND+=(--server "$SERVER")
 # The pipe is consumed by bash; prompts must use the terminal instead.
 if (: </dev/tty) 2>/dev/null; then
