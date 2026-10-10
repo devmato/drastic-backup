@@ -45,7 +45,7 @@ def setup(monkeypatch, tmp_path):
             AgentSession(agent=agent, request_sid=f"sid-{i}")
         repository = Repository(user=user, name="Storage", kind="custom", location="/backup")
         retention = Retention(user=user, name="Keep two", keep_last=2)
-        jobs = [Job(agent=agent, name=f"Files {i}", type=JobType.file, config={"paths": []}) for i, agent in enumerate(agents)]
+        jobs = [Job(agent=agent, name=f"Files {i}", type=JobType.file, config={"paths": [{"path": "/data", "group": "folder"}]}) for i, agent in enumerate(agents)]
         for agent in agents:
             agent.repositories.append(repository)
         db.session.add_all([user, *agents, repository, retention, *jobs])

@@ -15,6 +15,7 @@ from drastic_server.integrations import agent as agent_command
 from drastic_server.models.agent import Agent, AgentOperationState, AgentSession
 from drastic_server.models.job import Job
 from drastic_server.models.user import User
+from drastic_server.services.agent import installer
 from drastic_server.services.agent.request import AgentRequestService
 from drastic_server.services.exceptions import ResourceNotFound
 from drastic_server.services.jobs import management as job_management
@@ -65,7 +66,7 @@ def test_job_services_enforce_ownership_and_commit_without_an_http_request(api_c
     _, agent, foreign_agent, _ = api_client
     assert not has_request_context()
     monkeypatch.setattr(agent_command.AgentService, "sync", lambda *args, **kwargs: None)
-    data = {"agent_id": agent.id, "name": "Files", "type": "file", "config": {"paths": []}}
+    data = {"agent_id": agent.id, "name": "Files", "type": "file", "config": {"paths": [{"path": "/data", "group": "folder"}]}}
     with pytest.raises(ResourceNotFound):
         job_management.create_job(foreign_agent.user_id, data)
     job = job_management.create_job(agent.user_id, data)
@@ -285,6 +286,8 @@ def test_actions_keep_dispatch_identity_permissions_and_errors(api_client, monke
     assert client.post(f"/api/agents/{foreign_agent.id}/actions/{action}").status_code == 404
     assert client.post(f"/api/agents/{agent.id}/actions/sync").status_code == 404
     if action == "update":
+        monkeypatch.setattr(installer, "get_revision", lambda: "a" * 40)
+        monkeypatch.setattr(installer, "get_version", lambda: "2026-10-10-aaaaaaaa")
         for install_type in ("manual", "docker", "release", "git"):
             agent.install_type = install_type
             db.session.commit()

@@ -184,7 +184,7 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
                 location="rest:http://repo.test/repo",
             )
             agent.repositories.append(repository)
-            job = Job(agent=agent, name="Files", type=JobType.file, config={"paths": []})
+            job = Job(agent=agent, name="Files", type=JobType.file, config={"paths": [{"path": "/data", "group": "folder"}]})
             db.session.add_all([user, agent, repository, job])
             db.session.commit()
 
@@ -265,7 +265,7 @@ def test_explicit_backup_admission_rejection_is_failed_conflict(monkeypatch):
                 location="rest:http://repo.test/repo",
             )
             agent.repositories.append(repository)
-            job = Job(agent=agent, name="Files", type=JobType.file, config={"paths": []})
+            job = Job(agent=agent, name="Files", type=JobType.file, config={"paths": [{"path": "/data", "group": "folder"}]})
             db.session.add_all([user, agent, repository, job])
             db.session.commit()
 
