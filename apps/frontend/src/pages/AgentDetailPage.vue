@@ -220,6 +220,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
+import { useUserStore } from 'stores/user'
 import AgentConnectionDialog from 'components/agents/AgentConnectionDialog.vue'
 import { getAgentConnections, getAvailableConnectionTypes } from 'src/utils/agent-connections'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -227,6 +228,7 @@ import { supportsAgentUpdate } from 'src/utils/agent-updates'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
+const userStore = useUserStore()
 const route = useRoute()
 const router = useRouter()
 const agent = computed(() => agentStore.agents.find(item => String(item.id) === String(route.params.agentId)))
@@ -264,6 +266,11 @@ const agentActions = computed(() => [
     description: 'Update from the saved Git repository and ref; tags and commits stay pinned.',
     run: () => runAction('update', 'Agent update started', 'Could not start agent update'),
   }] : []),
+  {
+    name: 'sync', title: 'Synchronize configuration', icon: 'sync', color: 'primary',
+    description: 'Reload jobs, schedules and repository access from the server. Configuration is normally synchronized automatically.',
+    run: syncAgent,
+  },
   {
     name: 'reset-known-hosts', title: 'Reset SSH host keys', icon: 'restart_alt', color: 'warning',
     description: "Clears this agent's known_hosts cache. The next SSH connection will trust hosts again on first use.",
@@ -373,6 +380,21 @@ async function removeRepository(repository) {
     $q.notify({ message: getApiErrorMessage(e), color: 'red', position: 'top' })
   } finally {
     removingRepositoryId.value = null
+  }
+}
+
+async function syncAgent() {
+  if (!agent.value?.online || pendingActions.value.sync) return
+  const agentId = agent.value.id
+  pendingActions.value.sync = true
+  try {
+    await userStore.withRecoveryKey(recoveryKey => agentStore.syncAgent(agentId, recoveryKey))
+    $q.notify({ message: 'Agent synchronized', color: 'green', position: 'top' })
+  } catch (error) {
+    if (shouldIgnoreApiError(error)) return
+    $q.notify({ message: getApiErrorMessage(error, 'Agent sync failed'), color: 'negative', position: 'top' })
+  } finally {
+    pendingActions.value.sync = false
   }
 }
 

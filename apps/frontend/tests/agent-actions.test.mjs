@@ -32,7 +32,10 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
     useAgentStore: () => ({ agents: [agent], runAction: (id, action) => {
       calls.push({ id, action })
       return new Promise((resolve, reject) => { finish = { resolve, reject } })
+    }, syncAgent: (id, recoveryKey) => {
+      calls.push({ id, action: 'sync', recoveryKey })
     } }),
+    useUserStore: () => ({ withRecoveryKey: operation => operation('recovery-key') }),
     useRoute: () => ({ params: { agentId: '1' }, query: {} }), useRouter: () => ({}),
     useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }), notify: () => {} }),
     watch: () => {}, defineOptions: () => {},
@@ -46,6 +49,8 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   finish.reject(new Error('Update failed'))
   await update
   assert.equal(page.pendingActions.value.update, false)
+  await action('sync').run()
+  assert.deepEqual(calls.at(-1), { id: 1, action: 'sync', recoveryKey: 'recovery-key' })
   for (const name of ['reset-known-hosts', 'rotate-ssh-key']) {
     const before = calls.length
     action(name).run()
@@ -85,7 +90,7 @@ test('one-shot single and bulk updates share the existing action, skip duplicate
   store.agents[4].version = agent.backend_version
   const page = runInNewContext(`${source}\n;({ startAgentUpdates, pendingUpdates })`, {
     computed, ref, hasVersionMismatch, supportsAgentUpdate, getApiErrorMessage, shouldIgnoreApiError,
-    useAgentStore: () => store, useUserStore: () => ({}), onMounted: () => {}, defineOptions: () => {},
+    useAgentStore: () => store, onMounted: () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: notification => notifications.push(notification) }),
   })
   const single = page.startAgentUpdates([1])

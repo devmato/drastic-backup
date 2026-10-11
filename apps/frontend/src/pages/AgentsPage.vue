@@ -54,7 +54,6 @@
       <template #body-cell-actions="props">
         <q-td :props="props">
           <TableActionButton icon="settings" label="Agent properties" :to="`/agents/${props.row.id}`" />
-          <TableActionButton icon="sync" label="Synchronize agent" :disable="!props.row.online" @click="syncAgent(props.row)" />
           <TableActionButton icon="description" label="Show reports" :to="`/agents/${props.row.id}/operations`" />
           <TableActionButton icon="delete" label="Delete agent" color="negative" @click="confirmDelete(props.row)" />
         </q-td>
@@ -72,13 +71,11 @@ import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
 import { useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
-import { useUserStore } from 'stores/user'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { hasVersionMismatch, supportsAgentUpdate } from 'src/utils/agent-updates'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
-const userStore = useUserStore()
 const pendingUpdates = ref([])
 const updateCandidates = computed(() => agentStore.agents.filter(agent => agent.online
   && supportsAgentUpdate(agent) && hasVersionMismatch(agent)))
@@ -131,16 +128,6 @@ function confirmDelete(agent) {
       $q.notify({ message: getApiErrorMessage(error), color: 'negative', position: 'top' })
     }
   })
-}
-
-async function syncAgent(agent) {
-  try {
-    await userStore.withRecoveryKey(recoveryKey => agentStore.syncAgent(agent.id, recoveryKey))
-    $q.notify({ message: 'Agent synchronized', color: 'green', position: 'top' })
-  } catch (error) {
-    if (shouldIgnoreApiError(error)) return
-    $q.notify({ message: getApiErrorMessage(error, 'Agent sync failed'), color: 'negative', position: 'top' })
-  }
 }
 
 onMounted(() => {
