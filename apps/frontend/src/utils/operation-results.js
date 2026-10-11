@@ -13,6 +13,10 @@ export function lastSevenDays(until = new Date()) {
   return { since: new Date(until.getTime() - 7 * 24 * 60 * 60 * 1000).toISOString(), until: until.toISOString() }
 }
 
+export function last24Hours(until = new Date()) {
+  return { since: new Date(until.getTime() - 24 * 60 * 60 * 1000).toISOString(), until: until.toISOString() }
+}
+
 export function summarizeOperationResults(counts) {
   return reportGroups.map(group => {
     const rows = counts.filter(row => group.value === 'other'

@@ -4,7 +4,7 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { getBackupState, getBackupStateColor } from '../src/utils/backup-results.js'
-import { lastSevenDays, operationFilters, operationStates, reportListRoute, summarizeOperationResults } from '../src/utils/operation-results.js'
+import { last24Hours, lastSevenDays, operationFilters, operationStates, reportListRoute, summarizeOperationResults } from '../src/utils/operation-results.js'
 
 test('report groups aggregate every type and link each status with the same period', () => {
   const types = ['backup', 'restore', 'agent_update', 'retention', 'repository_check', 'repository_unlock', 'repository_stats', 'sync', 'command']
@@ -34,13 +34,13 @@ test('report groups aggregate every type and link each status with the same peri
   assert.equal(getBackupStateColor('unknown'), 'grey-6')
 })
 
-test('status and type charts partition the same reports while first-backup guidance follows job configuration', () => {
+test('status and type charts partition the same 24-hour reports while first-backup guidance follows job configuration', () => {
   const source = readFileSync(new URL('../src/pages/IndexPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const agents = reactive({ agents: [] })
   const jobs = reactive({ agentJobs: [] })
   const { setupPrompt, reportCharts, reportCounts, reportPeriod } = runInNewContext(`${source}\n;({ setupPrompt, reportCharts, reportCounts, reportPeriod })`, {
-    computed, ref, getBackupState, lastSevenDays, operationStates, reportListRoute, summarizeOperationResults,
+    computed, ref, getBackupState, last24Hours, operationStates, reportListRoute, summarizeOperationResults,
     useAgentStore: () => agents,
     useJobStore: () => jobs,
     onMounted: () => {},
@@ -48,7 +48,8 @@ test('status and type charts partition the same reports while first-backup guida
     getApiErrorMessage: () => 'error',
   })
   assert.ok(reportCharts.value.every(chart => chart.segments.every(segment => segment.count === 0)))
-  const period = lastSevenDays(new Date('2026-10-10T12:34:56.789Z'))
+  const period = last24Hours(new Date('2026-10-10T12:34:56.789Z'))
+  assert.deepEqual(period, { since: '2026-10-09T12:34:56.789Z', until: '2026-10-10T12:34:56.789Z' })
   reportPeriod.value = period
   reportCounts.value = [
     { type: 'backup', state: 'success', count: 4 }, { type: 'backup', state: 'failed', count: 2 },

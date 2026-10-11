@@ -2,9 +2,9 @@
 
 ## Dashboard and Agent Reports
 
-The dashboard shows two charts for reports started in the last seven days across your agents. **Last 7 days (Status)** groups all reports into successful, failed, warning, cancelled, and running results. **Last 7 days (Types)** groups the same reports into **Backup**, **Restore**, **Agent update**, and **Other**. Other includes repository checks, retention, repository unlocks, repository statistics, agent synchronization, and commands. Reserved operations without a reported start time use their creation time.
+The dashboard shows two charts for reports started in the last 24 hours across your agents. **Last 24 hours (Status)** groups all reports into successful, failed, warning, cancelled, and running results. **Last 24 hours (Types)** groups the same reports into **Backup**, **Restore**, **Agent update**, and **Other**. Other includes repository checks, retention, repository unlocks, repository statistics, agent synchronization, and commands. Reserved operations without a reported start time use their creation time.
 
-Click a chart segment or legend entry to open reports filtered by its status or type. The report list uses the exact UTC time boundaries from the dashboard: the start is included and the end is excluded. You can combine type and status filters on the report page. Refresh the dashboard to advance this seven-day window.
+Click a chart segment or legend entry to open reports filtered by its status or type. The report list uses the exact UTC time boundaries from the dashboard: the start is included and the end is excluded. You can combine type and status filters on the report page. Refresh the dashboard to advance this 24-hour window. The dashboard's **Needs Attention** report warnings and failures use the same period.
 
 The report page supports filters for report type/group, state, agent, job ID, and UTC start time. Filters are stored in the URL and retained when returning from report details. **Last 7 days** updates the period; **Clear filters** shows the full history within the current agent scope. The Jobs page shows all configured jobs; filter execution outcomes on the report page.
 

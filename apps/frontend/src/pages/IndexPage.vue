@@ -83,9 +83,9 @@
           <q-card v-else flat bordered>
             <q-card-section>
               <h2 class="text-subtitle1 text-weight-medium q-my-none">Needs Attention</h2>
-              <div class="text-body2 q-mt-xs" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Report warnings and failures in the last 7 days, offline agents and jobs awaiting their first run.</div>
+              <div class="text-body2 q-mt-xs" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Report warnings and failures in the last 24 hours, offline agents and jobs awaiting their first run.</div>
             </q-card-section>
-            <EmptyState v-if="attentionItems.length === 0" icon="check_circle_outline" title="Nothing needs attention" description="No offline agents or report issues in the last 7 days." />
+            <EmptyState v-if="attentionItems.length === 0" icon="check_circle_outline" title="Nothing needs attention" description="No offline agents or report issues in the last 24 hours." />
             <q-list v-else separator>
               <q-item v-for="item in attentionItems" :key="item.key" clickable :to="item.to" class="q-py-md">
                 <q-item-section side><q-icon :name="item.icon" :color="item.color" /></q-item-section>
@@ -111,7 +111,7 @@ import AgentReportsChart from 'components/AgentReportsChart.vue'
 import { useAgentStore } from 'stores/agent'
 import { useJobStore } from 'stores/job'
 import { getBackupState } from 'src/utils/backup-results'
-import { lastSevenDays, operationStates, reportListRoute, summarizeOperationResults } from 'src/utils/operation-results'
+import { last24Hours, operationStates, reportListRoute, summarizeOperationResults } from 'src/utils/operation-results'
 import { summarizeOperations } from 'src/api/operations'
 import { getApiErrorMessage } from 'src/utils/api-error'
 
@@ -124,7 +124,7 @@ const reportPeriod = ref({})
 const reportResults = computed(() => summarizeOperationResults(reportCounts.value))
 const reportCharts = computed(() => [
   {
-    title: 'Last 7 days (Status)', icon: 'cloud_done',
+    title: 'Last 24 hours (Status)', icon: 'cloud_done',
     segments: operationStates.map(state => ({
       ...state,
       count: reportCounts.value.filter(row => row.state === state.value).reduce((sum, row) => sum + row.count, 0),
@@ -132,7 +132,7 @@ const reportCharts = computed(() => [
     })),
   },
   {
-    title: 'Last 7 days (Types)', icon: 'category',
+    title: 'Last 24 hours (Types)', icon: 'category',
     segments: reportResults.value.map(group => ({ ...group, count: group.total, to: reportListRoute(reportPeriod.value, group.value) })),
   },
 ])
@@ -156,7 +156,7 @@ const metrics = computed(() => [
 const attentionItems = computed(() => [
   ...reportResults.value.filter(group => group.segments.some(segment => ['warning', 'failed'].includes(segment.value) && segment.count > 0)).map(group => ({
     key: `reports-${group.value}`, label: group.label,
-    description: `${group.segments.filter(segment => ['warning', 'failed'].includes(segment.value)).reduce((sum, segment) => sum + segment.count, 0)} warnings / failures in the last 7 days`,
+    description: `${group.segments.filter(segment => ['warning', 'failed'].includes(segment.value)).reduce((sum, segment) => sum + segment.count, 0)} warnings / failures in the last 24 hours`,
     icon: 'error_outline', color: 'negative', to: reportListRoute(reportPeriod.value, group.value, 'attention'),
   })),
   ...agentStore.agents.filter(agent => !agent.online).map(agent => ({ key: `agent-${agent.id}`, label: agent.display_name, description: 'Agent is offline', icon: 'desktop_access_disabled', color: 'negative', to: `/agents/${agent.id}` })),
@@ -167,7 +167,7 @@ async function loadDashboard() {
   loading.value = true
   loadError.value = ''
   try {
-    const period = lastSevenDays()
+    const period = last24Hours()
     const [counts] = await Promise.all([summarizeOperations(period), agentStore.loadAgents(), jobStore.loadJobs()])
     reportPeriod.value = period
     reportCounts.value = counts
