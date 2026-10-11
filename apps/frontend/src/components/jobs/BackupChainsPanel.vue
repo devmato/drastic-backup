@@ -111,7 +111,7 @@
                   <q-item-label v-if="step.reason" caption>{{ step.reason }}</q-item-label>
                   <q-item-label v-if="step.cleanup_pending" caption>Retention / cleanup pending retry</q-item-label>
                   <q-item-label v-if="step.start_deadline && ['waiting', 'dispatching'].includes(step.state)" caption>Start deadline: {{ formatDate(step.start_deadline) }}</q-item-label>
-                  <q-btn v-if="step.operation_id" flat dense no-caps color="primary" icon="receipt_long" label="Job Protocol" :to="`/agents/${step.agent_id}/operations/${step.operation_id}`" />
+                  <q-btn v-if="step.operation_id" flat dense no-caps color="primary" icon="receipt_long" label="Job Protocol" :to="{ path: `/agents/${step.agent_id}/operations/${step.operation_id}`, query: { agent_id: String(step.agent_id) } }" />
                 </q-item-section>
                 <q-item-section side><q-badge :color="stateColor(step.state)" :text-color="['success', 'warning'].includes(step.state) ? 'black' : 'white'" :label="stateLabel(step.state)" /></q-item-section>
               </q-item>

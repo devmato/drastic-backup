@@ -54,7 +54,7 @@
       <template #body-cell-actions="props">
         <q-td :props="props">
           <TableActionButton icon="settings" label="Agent properties" :to="`/agents/${props.row.id}`" />
-          <TableActionButton icon="description" label="Show reports" :to="`/agents/${props.row.id}/operations`" />
+          <TableActionButton icon="description" label="Show reports" :to="{ path: '/agents/operations', query: { agent_id: String(props.row.id) } }" />
           <TableActionButton icon="delete" label="Delete agent" color="negative" @click="confirmDelete(props.row)" />
         </q-td>
       </template>

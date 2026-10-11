@@ -56,6 +56,7 @@ test('connection removal waits for confirmation, preserves rows on failure and r
   const page = runInNewContext(`${source}\n;({ confirmRemoveConnection, removingConnection, connections })`, {
     computed, ref, getAgentConnections, getAvailableConnectionTypes, supportsAgentUpdate,
     useAgentStore: () => store,
+    useUserStore: () => ({}),
     useRoute: () => route,
     useRouter: () => ({}),
     useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }), notify: () => {} }),

@@ -60,7 +60,7 @@
           </template>
           <template v-slot:body-cell-last_run="props">
             <q-td :props="props">
-              <router-link v-if="props.row.last_operation" :to="`/agents/${props.row.agent_id}/operations/${props.row.last_operation.id}`" class="row items-center no-wrap q-gutter-x-sm text-primary" style="text-decoration: none" aria-label="Show latest backup operation">
+              <router-link v-if="props.row.last_operation" :to="{ path: `/agents/${props.row.agent_id}/operations/${props.row.last_operation.id}`, query: { agent_id: String(props.row.agent_id) } }" class="row items-center no-wrap q-gutter-x-sm text-primary" style="text-decoration: none" aria-label="Show latest backup operation">
                 <q-spinner v-if="props.row.last_operation.state === 'running'" :color="stateColor(props.row.last_operation.state)" size="sm" />
                 <q-icon v-else :name="backupStates.find(state => state.value === props.row.last_operation.state)?.icon || 'help_outline'" :color="stateColor(props.row.last_operation.state)" />
                 <span>{{ formatDate(props.row.last_operation.started) }}</span>
@@ -257,11 +257,11 @@ function showRestore(job) {
 
 function onRestoreStarted(result) {
   $q.notify({ message: result.msg || 'Restore started', color: 'green', position: 'top' })
-  router.push(`/agents/${result.agent_id}/operations?type=restore&job_id=${result.job_id}`)
+  router.push({ path: '/agents/operations', query: { agent_id: String(result.agent_id), type: 'restore', job_id: String(result.job_id) } })
 }
 
 function openJobReports(job) {
-  router.push(`/agents/${job.agent_id}/operations?type=backup&job_id=${job.id}`)
+  router.push({ path: '/agents/operations', query: { agent_id: String(job.agent_id), type: 'backup', job_id: String(job.id) } })
 }
 
 async function onRunSubmit() {
@@ -282,13 +282,22 @@ async function onRunSubmit() {
 }
 
 function confirmCancel(job) {
+  if (job.last_operation?.state !== 'running') return
+  const operationId = job.last_operation.id
   $q.dialog({
     title: 'Cancel Job',
     message: 'Cancel running backup job?',
-    cancel: true,
+    cancel: { label: 'Keep running', flat: true, noCaps: true },
+    ok: { label: 'Request cancellation', color: 'negative', noCaps: true },
   }).onOk(async () => {
-    await jobStore.cancelJob(job.id)
-    $q.notify({ message: 'Job canceled', color: 'green', position: 'top' })
+    const currentJob = getAgentForJob(job)?.jobs.find(item => item.id === job.id)
+    if (currentJob?.last_operation?.id !== operationId || currentJob.last_operation.state !== 'running') return
+    try {
+      await jobStore.cancelJob(job.id)
+      $q.notify({ message: 'Operation cancellation requested', color: 'info' })
+    } catch (error) {
+      if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+    }
   })
 }
 

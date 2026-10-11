@@ -5,6 +5,14 @@ import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { getBackupState, getBackupStateColor } from '../src/utils/backup-results.js'
 import { last24Hours, lastSevenDays, operationFilters, operationStates, reportListRoute, summarizeOperationResults } from '../src/utils/operation-results.js'
+import routes from '../src/router/routes.js'
+
+test('legacy agent report URLs preserve filters when redirecting to the shared overview', () => {
+  const route = routes.find(route => route.path === '/agents').children.find(route => route.path === ':agentId/operations')
+  assert.deepEqual(route.redirect({ params: { agentId: '1' }, query: { type: 'backup', job_id: '3', agent_id: '2' }, hash: '#reports' }), {
+    path: '/agents/operations', query: { type: 'backup', job_id: '3', agent_id: '1' }, hash: '#reports',
+  })
+})
 
 test('report groups aggregate every type and link each status with the same period', () => {
   const types = ['backup', 'restore', 'agent_update', 'retention', 'repository_check', 'repository_unlock', 'repository_stats', 'sync', 'command']
@@ -91,12 +99,16 @@ test('report filters persist in URLs and background reloads use applied filters'
   const period = lastSevenDays(new Date('2026-10-10T12:34:56.789Z'))
   const route = reactive({ params: {}, query: { ...period, group: 'other', state: 'failed', agent_id: '2', job_id: '3' } })
   const requests = [], links = []
-  const page = runInNewContext(`${source}\n;({ syncFiltersFromRoute, filterType, filterState, filterSince, filterUntil, applyFilters, loadOperations, showOperation, operations })`, {
+  const page = runInNewContext(`${source}\n;({ syncFiltersFromRoute, filterType, filterState, filterSince, filterUntil, filterAgentId, filterJobId, jobOptions, resetJobForAgent, applyFilters, loadOperations, showOperation, operations })`, {
     computed, ref, operationStates, operationFilters, lastSevenDays,
     useRoute: () => route,
     useRouter: () => ({ push: async link => { links.push(JSON.parse(JSON.stringify(link))); if (!link.path) route.query = link.query } }),
     useQuasar: () => ({ notify: () => assert.fail('unexpected error') }),
     useAgentStore: () => ({ agents: [] }),
+    useJobStore: () => ({ agentJobs: [
+      { id: 1, display_name: 'Host A', jobs: [{ id: 1, name: 'Files' }] },
+      { id: 2, display_name: 'Host B', jobs: [{ id: 3, name: 'Files' }] },
+    ] }),
     listOperations: async params => { requests.push(JSON.parse(JSON.stringify(params))); return [{ id: 7, agent_id: 2 }] },
     createQueuedReload: callback => callback,
     subscribeToSocketEvents: async () => () => {},
@@ -113,9 +125,20 @@ test('report filters persist in URLs and background reloads use applied filters'
   assert.deepEqual(links[0].query, { group: 'other', state: 'warning', agent_id: '2', job_id: '3', ...period })
   page.showOperation(page.operations.value[0])
   assert.equal(links[1].path, '/agents/2/operations/7')
-  assert.equal(links[1].query.scope, 'all')
+  assert.deepEqual(links[1].query, links[0].query)
   assert.equal(links[1].query.group, 'other')
-  route.params.agentId = '1'
+  route.query.agent_id = '1'
+  page.syncFiltersFromRoute()
   await page.loadOperations()
   assert.equal(requests[1].agent_id, '1')
+  assert.equal(page.jobOptions.value[0].label, 'Files')
+  assert.equal(page.jobOptions.value[0].value, '1')
+  page.filterAgentId.value = null
+  assert.deepEqual(Array.from(page.jobOptions.value, option => option.label), ['Files · Host A', 'Files · Host B'])
+  page.resetJobForAgent('2')
+  assert.equal(page.filterJobId.value, '3')
+  page.filterAgentId.value = '1'
+  page.resetJobForAgent('1')
+  assert.equal(page.filterJobId.value, null)
+  assert.equal(page.jobOptions.value.length, 1)
 })

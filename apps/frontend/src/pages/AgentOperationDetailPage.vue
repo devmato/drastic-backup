@@ -12,12 +12,12 @@
       <template #actions>
         <q-btn
           v-if="operation" flat round color="primary" icon="info" aria-label="Technical details"
-          :aria-expanded="showTechnicalDetails" aria-controls="operation-technical-details"
-          @click="showTechnicalDetails = !showTechnicalDetails"
+          aria-haspopup="dialog"
+          @click="showTechnicalDetails = true"
         >
           <q-tooltip>Technical details</q-tooltip>
         </q-btn>
-        <q-btn v-if="canCancelOperation" flat round color="negative" icon="cancel" aria-label="Cancel operation" :loading="cancelling" @click="cancelOperation">
+        <q-btn v-if="canCancelOperation" flat round color="negative" icon="cancel" aria-label="Cancel operation" :loading="cancelling" @click="confirmCancelOperation">
           <q-tooltip>Cancel operation</q-tooltip>
         </q-btn>
         <q-btn flat round color="primary" icon="refresh" aria-label="Refresh operation" :loading="loading" @click="loadOperation()">
@@ -79,21 +79,6 @@
               </q-item>
             </q-list>
 
-            <div v-show="showTechnicalDetails" id="operation-technical-details" class="text-body2">
-              <div v-for="field in technicalDetails" :key="field.label" class="row no-wrap items-center q-mt-sm">
-                <span class="col-auto q-mr-sm">{{ field.label }}:</span>
-                <span class="col db-break-word">
-                  {{ field.value }}
-                </span>
-                <q-btn
-                  v-if="field.label === 'Snapshot'"
-                  flat dense round size="sm" icon="content_copy" aria-label="Copy snapshot ID"
-                  @click="copySnapshot"
-                >
-                  <q-tooltip>Copy snapshot ID</q-tooltip>
-                </q-btn>
-              </div>
-            </div>
           </div>
         </q-card-section>
       </q-card>
@@ -180,6 +165,29 @@
         </q-card-section>
       </q-card>
     </div>
+    <q-dialog v-model="showTechnicalDetails" aria-labelledby="operation-technical-details-title">
+      <q-card class="db-dialog-card-md">
+        <q-card-section>
+          <h2 id="operation-technical-details-title" class="text-h6 q-my-none">Technical details</h2>
+        </q-card-section>
+        <q-card-section class="text-body2">
+          <div v-for="field in technicalDetails" :key="field.label" class="row no-wrap items-center q-mt-sm">
+            <span class="col-auto q-mr-sm">{{ field.label }}:</span>
+            <span class="col db-break-word">{{ field.value }}</span>
+            <q-btn
+              v-if="field.label === 'Snapshot'"
+              flat dense round size="sm" icon="content_copy" aria-label="Copy snapshot ID"
+              @click="copySnapshot"
+            >
+              <q-tooltip>Copy snapshot ID</q-tooltip>
+            </q-btn>
+          </div>
+        </q-card-section>
+        <q-card-actions align="right" class="q-pa-md">
+          <q-btn flat no-caps color="primary" label="Close" v-close-popup />
+        </q-card-actions>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -195,6 +203,7 @@ import { subscribeToSocketEvents } from 'src/utils/socket'
 import { createQueuedReload } from 'src/utils/queued-reload'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { backupStates, getBackupStateColor as stateColor } from 'src/utils/backup-results'
+import { operationFilters } from 'src/utils/operation-results'
 import { recordBrowserDiagnostic } from 'src/utils/diagnostics'
 
 const route = useRoute()
@@ -204,8 +213,19 @@ const operationStore = useOperationStore()
 const cancelling = ref(false)
 const showTechnicalDetails = ref(false)
 
-async function cancelOperation() {
+function confirmCancelOperation() {
   if (!canCancelOperation.value || cancelling.value) return
+  const operationId = operation.value.id
+  $q.dialog({
+    title: isRestoreOperation.value ? 'Cancel Restore' : 'Cancel Job',
+    message: isRestoreOperation.value ? 'Cancel running restore?' : 'Cancel running backup job?',
+    cancel: { label: 'Keep running', flat: true, noCaps: true },
+    ok: { label: 'Request cancellation', color: 'negative', noCaps: true },
+  }).onOk(() => cancelOperation(operationId))
+}
+
+async function cancelOperation(operationId) {
+  if (operation.value?.id !== operationId || !canCancelOperation.value || cancelling.value) return
   cancelling.value = true
   try {
     if (isRestoreOperation.value) {
@@ -241,8 +261,8 @@ const pageTitle = computed(() => {
 })
 
 const operationListRoute = computed(() => ({
-  path: route.query.scope === 'all' ? '/agents/operations' : `/agents/${route.params.agentId}/operations`,
-  query: { ...route.query, scope: undefined },
+  path: '/agents/operations',
+  query: operationFilters(route.query),
 }))
 
 const sortedLogs = computed(() => {
@@ -508,7 +528,7 @@ const summaryColumns = computed(() => {
       ...(current.repository_id ? [{ label: 'Repository', value: current.repository_name || `#${current.repository_id}` }] : []),
     ],
     [
-      { label: 'Device', value: agentDisplayName.value, to: { path: `/agents/${route.params.agentId}/operations`, query: { ...route.query, scope: undefined, agent_id: undefined } } },
+      { label: 'Device', value: agentDisplayName.value, to: { path: '/agents/operations', query: { ...operationFilters(route.query), agent_id: String(route.params.agentId) } } },
       ...metricCards.value,
     ],
   ]

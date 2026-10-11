@@ -17,7 +17,10 @@ function setup(protocol) {
   const writes = [], notices = []
   const loads = { jobs: 0, agents: 0 }
   const agent = { id: 1, protocol_version: protocol }
+  let confirm
   const jobStore = {
+    agentJobs: [{ ...agent, jobs: [job] }],
+    cancelJob: async id => { writes.push(['cancel', id]) },
     updateJob: async (id, data) => { writes.push(['job', id, data]); job.name = data.name },
     getJob: async () => job, loadJobs: async () => { loads.jobs++ },
     updateSchedule: async (id, data) => { writes.push(['schedule', id, data]) },
@@ -25,11 +28,11 @@ function setup(protocol) {
     deleteSchedule: async id => { writes.push(['delete-schedule', id]) },
   }
   const page = runInNewContext(`${source}
-    ;({ onJobSubmit, editingJob, currentAgentId, showJobDialog, jobDialogSubmitting })`, {
+    ;({ onJobSubmit, editingJob, currentAgentId, showJobDialog, jobDialogSubmitting, confirmCancel })`, {
     ref, computed, backupStates: [], watch: () => {}, onMounted: () => {}, defineOptions: () => {},
     useJobEditor: runInNewContext(`${editorSource}\n;useJobEditor`, { ref, sameSchedule, jobsApi: jobStore }),
     useRoute: () => ({ query: {} }), useRouter: () => ({}),
-    useQuasar: () => ({ notify: notice => notices.push(notice) }),
+    useQuasar: () => ({ notify: notice => notices.push(notice), dialog: () => ({ onOk: callback => { confirm = callback } }) }),
     useJobStore: () => jobStore, useAgentStore: () => ({ agents: [agent], loadAgents: async () => { loads.agents++ } }),
     useRepositoryStore: () => ({ repositories: [] }), useOperationStore: () => ({}),
     useUserStore: () => ({ withRecoveryKey: operation => operation(null) }),
@@ -41,8 +44,25 @@ function setup(protocol) {
   const payload = () => ({ name: 'Renamed', config: {}, actions: [], schedules: [
     { ...original, timing: scheduleTiming(original), config: JSON.parse(JSON.stringify(original.config)) },
   ] })
-  return { page, payload, writes, notices, original, jobStore, loads }
+  return { page, payload, writes, notices, original, jobStore, loads, job, confirm: () => confirm() }
 }
+
+test('job cancellation waits for confirmation and ignores completed or replaced runs', async () => {
+  const { page, job, jobStore, writes, confirm } = setup(12)
+  job.last_operation = { id: 10, state: 'running' }
+  page.confirmCancel(job)
+  assert.equal(writes.length, 0)
+  await confirm()
+  assert.deepEqual(writes, [['cancel', 1]])
+  page.confirmCancel(job)
+  job.last_operation.state = 'success'
+  await confirm()
+  job.last_operation.state = 'running'
+  page.confirmCancel(job)
+  jobStore.agentJobs[0].jobs = [{ ...job, last_operation: { id: 11, state: 'running' } }]
+  await confirm()
+  assert.equal(writes.length, 1)
+})
 
 test('renaming a job on protocol 11 does not resubmit unchanged legacy schedules', async () => {
   const { page, payload, writes, notices } = setup(11)

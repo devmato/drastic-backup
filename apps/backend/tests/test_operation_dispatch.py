@@ -236,6 +236,10 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
             assert detail.json["agent_hostname"] == "backup-host"
             assert detail.json["job_name"] == "Files"
             assert detail.json["repository_name"] == "Repo"
+            reports = client.get("/api/agents/operations", query_string={"agent_id": agent.id})
+            assert reports.status_code == 200
+            assert reports.json[0]["job_name"] == "Files"
+            assert reports.json[0]["repository_name"] == "Repo"
 
             operation.job = None
             operation.repository = None
@@ -244,6 +248,10 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
             assert detail.status_code == 200
             assert detail.json["job_name"] is None
             assert detail.json["repository_name"] is None
+            reports = client.get("/api/agents/operations", query_string={"agent_id": agent.id})
+            assert reports.status_code == 200
+            assert reports.json[0]["job_name"] is None
+            assert reports.json[0]["repository_name"] is None
         finally:
             db.session.remove()
             db.drop_all()

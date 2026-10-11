@@ -1,7 +1,7 @@
 """Owner-scoped operation history and deletion constraints."""
 
 from sqlalchemy import func
-from sqlalchemy.orm import contains_eager
+from sqlalchemy.orm import contains_eager, joinedload
 
 from drastic_common.agent.enums import AgentOperationState, AgentOperationType
 from drastic_server.extensions import db
@@ -52,7 +52,9 @@ def _filtered_operations(user_id, agent_id, filters):
 
 def list_operations(user_id, agent_id, filters):
     """Return filtered history; agent_id=None includes all agents owned by the user."""
-    return _filtered_operations(user_id, agent_id, filters).options(contains_eager(AgentOperation.agent)).order_by(
+    return _filtered_operations(user_id, agent_id, filters).options(
+        contains_eager(AgentOperation.agent), joinedload(AgentOperation.job), joinedload(AgentOperation.repository),
+    ).order_by(
         func.coalesce(AgentOperation.started, AgentOperation.created).desc(), AgentOperation.id.desc(),
     ).all()
 

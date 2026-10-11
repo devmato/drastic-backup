@@ -166,6 +166,8 @@ class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
 
 class AgentOperationListResponseSchema(AgentOperationResponseSchema):
     agent_display_name = fields.String(attribute="agent.display_name", allow_none=True)
+    job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
+    repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
 
     class Meta:
         exclude = ("logs", "log", "artifacts", "data")

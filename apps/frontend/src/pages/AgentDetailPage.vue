@@ -8,7 +8,7 @@
         </q-breadcrumbs>
       </template>
       <template v-if="agent" #actions>
-        <q-btn flat no-caps no-wrap color="primary" icon="description" label="Reports" :to="`/agents/${agent.id}/operations`" />
+        <q-btn flat no-caps no-wrap color="primary" icon="description" label="Reports" :to="{ path: '/agents/operations', query: { agent_id: String(agent.id) } }" />
       </template>
     </PageHeader>
     <q-banner v-if="loadError" rounded class="bg-red-1 text-red-10 q-mb-lg" role="alert">

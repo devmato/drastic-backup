@@ -5,17 +5,18 @@ import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
 import { backupStates, getBackupStateColor } from '../src/utils/backup-results.js'
 import { createQueuedReload } from '../src/utils/queued-reload.js'
+import { operationFilters } from '../src/utils/operation-results.js'
 
 test('background operation updates stay quiet and preserve data on failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const route = reactive({ params: { operationId: '1', agentId: '1' }, query: {} })
-  let resolveRequest
+  let resolveRequest, confirm
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const cancellations = []
-  const quasar = { notify: () => assert.fail('background error notification') }
-  const page = runInNewContext(`${source}\n;({ operation, operationListRoute, cancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
-    computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload,
+  const quasar = { notify: () => assert.fail('background error notification'), dialog: () => ({ onOk: callback => { confirm = callback } }) }
+  const page = runInNewContext(`${source}\n;({ operation, operationListRoute, confirmCancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+    computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload, operationFilters,
     useRoute: () => route,
     useAgentStore: () => store,
     useOperationStore: () => ({ cancelRestore: async id => cancellations.push(['restore', id]) }),
@@ -77,15 +78,17 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(field(page.summaryColumns.value[0], 'Job'), 'Documents')
   assert.equal(field(page.summaryColumns.value[0], 'Repository'), 'Offsite')
   assert.equal(field(page.summaryColumns.value[1], 'Device'), 'Backup host')
-  route.query = { scope: 'all', group: 'other', state: 'failed', since: '2026-10-03T00:00:00Z', until: '2026-10-10T00:00:00Z' }
+  route.query = { group: 'other', state: 'failed', since: '2026-10-03T00:00:00Z', until: '2026-10-10T00:00:00Z' }
   assert.equal(page.operationListRoute.value.path, '/agents/operations')
   assert.equal(page.operationListRoute.value.query.group, 'other')
   assert.equal(page.operationListRoute.value.query.since, route.query.since)
   const deviceLink = page.summaryColumns.value[1].find(item => item.label === 'Device').to
-  assert.equal(deviceLink.path, '/agents/1/operations')
+  assert.equal(deviceLink.path, '/agents/operations')
+  assert.equal(deviceLink.query.agent_id, '1')
   assert.equal(deviceLink.query.state, 'failed')
-  route.query.scope = undefined
-  assert.equal(page.operationListRoute.value.path, '/agents/1/operations')
+  route.query.agent_id = '1'
+  assert.equal(page.operationListRoute.value.path, '/agents/operations')
+  assert.equal(page.operationListRoute.value.query.agent_id, '1')
   assert.equal(field(page.metricCards.value, 'Files processed'), '1')
   assert.equal(field(page.metricCards.value, 'Changes'), '1 new')
   assert.equal(field(page.metricCards.value, 'Data transferred'), '256 B')
@@ -451,7 +454,18 @@ test('background operation updates stay quiet and preserve data on failure', asy
   quasar.notify = () => {}
   for (const type of ['backup', 'restore']) {
     page.operation.value = { id: 1, job_id: 2, type, state: 'running', data: {} }
-    await page.cancelOperation()
+    const before = cancellations.length
+    page.confirmCancelOperation()
+    assert.equal(cancellations.length, before, 'cancellation must wait for confirmation')
+    await confirm()
   }
   assert.deepEqual(cancellations, [['backup', 2], ['restore', 1]])
+  page.confirmCancelOperation()
+  page.operation.value.state = 'success'
+  await confirm()
+  page.operation.value.state = 'running'
+  page.confirmCancelOperation()
+  page.operation.value = { id: 3, job_id: 4, type: 'backup', state: 'running', data: {} }
+  await confirm()
+  assert.equal(cancellations.length, 2, 'stale confirmation must not cancel a completed or different operation')
 })

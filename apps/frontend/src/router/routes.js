@@ -17,7 +17,9 @@ const routes = [
       { path: 'install', component: () => import('pages/AgentInstallPage.vue') },
       { path: 'operations', component: () => import('pages/AgentReportsPage.vue') },
       { path: ':agentId', component: () => import('pages/AgentDetailPage.vue') },
-      { path: ':agentId/operations', component: () => import('pages/AgentReportsPage.vue') },
+      { path: ':agentId/operations', redirect: to => ({
+        path: '/agents/operations', query: { ...to.query, agent_id: to.params.agentId }, hash: to.hash,
+      }) },
       { path: ':agentId/operations/:operationId', component: () => import('pages/AgentOperationDetailPage.vue') },
     ],
     meta: { auth: true, title: 'Agents' }
