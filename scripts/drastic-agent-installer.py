@@ -430,11 +430,23 @@ def prepare_release(args, state, server):
             checkout = Path(args.source).resolve()
             if checkout == ROOT or checkout in ROOT.parents or not (checkout / 'apps/agent/pyproject.toml').is_file():
                 fail('The source must be a project checkout outside the installation root or one of its source snapshots.')
-            shutil.copytree(checkout, source, symlinks=True,
-                            ignore=shutil.ignore_patterns('.git', '.venv', 'node_modules', 'data',
-                                                         'storage', 'dist', 'site', '__pycache__',
-                                                          '.pytest_cache', '.ruff_cache', '.env*',
-                                                          'build-version.txt', 'build-revision.txt'))
+            build_files = shutil.ignore_patterns('.git', '.venv', 'node_modules', '.quasar',
+                                                'dist', 'site', '__pycache__', '*.egg-info',
+                                                '.pytest_cache', '.ruff_cache', '.env*',
+                                                'build-version.txt', 'build-revision.txt')
+            runtime_directories = {
+                checkout: {'data', 'storage'},
+                checkout / 'apps/agent': {'data', 'data-dev-native'},
+                checkout / 'apps/backend': {'data', 'storage', 'import'},
+            }
+
+            def ignore_checkout_files(directory, names):
+                ignored = build_files(directory, names)
+                # Package names such as drastic_agent.storage are source, not host state.
+                ignored.update(set(names) & runtime_directories.get(Path(directory), set()))
+                return ignored
+
+            shutil.copytree(checkout, source, symlinks=True, ignore=ignore_checkout_files)
             commit = run('git', '-c', f'safe.directory={Path(args.source).resolve()}',
                          '-C', args.source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
         elif revision:
@@ -468,7 +480,10 @@ def prepare_release(args, state, server):
         run(ROOT / 'tools/bin/uv', 'sync', '--project', source / 'apps/agent', '--frozen',
             '--no-dev', '--no-editable', '--refresh-package', 'drastic-agent',
             '--refresh-package', 'drastic-common', '--python', sys.executable, env=environment)
-        run(release / 'venv/bin/drastic-agent', '--help', stdout=subprocess.DEVNULL)
+        # CLI imports initialize SQLite; never migrate live state while staging a release.
+        with tempfile.TemporaryDirectory(dir=release, prefix='.preflight-') as probe_data:
+            run(release / 'venv/bin/drastic-agent', '--help', stdout=subprocess.DEVNULL,
+                env={**environment, 'DRASTIC_AGENT_DATA_DIR': probe_data})
         if CONTAINER:
             run(sys.executable, source / 'scripts/drastic-agent-installer.py', 'run', '--help',
                 stdout=subprocess.DEVNULL)

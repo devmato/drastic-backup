@@ -7,6 +7,7 @@ import json
 import os
 import plistlib
 import pty
+import shutil
 import signal
 import subprocess
 import sys
@@ -998,6 +999,47 @@ def test_local_source_preserves_dirty_version_without_git(installer, monkeypatch
     stamp = release / "source/libs/python/common/src/drastic_common/build-version.txt"
     assert stamp.read_text().strip() == installer.read_state()["version"]
     assert installer.read_state()["version"].endswith(installer.read_state()["commit"][:8] + "-dirty")
+
+
+def test_source_release_installs_real_cli_without_copying_or_touching_host_state(installer, monkeypatch, repository):
+    project = Path(__file__).resolve().parents[3]
+    for package in ("apps/agent", "libs/python/common"):
+        shutil.copy2(project / package / "pyproject.toml", repository / package / "pyproject.toml")
+        shutil.copytree(project / package / "src", repository / package / "src", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "*.egg-info"))
+    for name in ("README.md", "uv.lock"):
+        shutil.copy2(project / "apps/agent" / name, repository / "apps/agent" / name)
+    runtime_paths = ("data", "storage", "apps/agent/data", "apps/agent/data-dev-native",
+                     "apps/backend/data", "apps/backend/storage", "apps/backend/import")
+    for path in runtime_paths:
+        directory = repository / path
+        directory.mkdir(parents=True)
+        (directory / "private.txt").write_text("Host state must not be copied")
+    (repository / ".env.private").write_text("PRIVATE=test-only\n")
+
+    uv = shutil.which("uv")
+    assert uv, "The installer package smoke test requires uv"
+    command = installer.ROOT / "tools/bin/uv"
+    command.parent.mkdir(parents=True)
+    command.symlink_to(uv)
+    # Reuse the test runner's dependency cache, while exercising the actual frozen install.
+    cache = installer.ROOT / "cache"
+    cache.mkdir()
+    cache_path = subprocess.check_output([uv, "cache", "dir"], text=True).strip()
+    (cache / "uv").symlink_to(cache_path, target_is_directory=True)
+    live_data = installer.ROOT / "data"
+    live_data.mkdir()
+    live_database = live_data / "database.db"
+    live_database.write_bytes(b"Existing agent database must remain untouched")
+    monkeypatch.setenv("DRASTIC_AGENT_DATA_DIR", str(live_data))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    monkeypatch.setattr(installer, "prepare_restic", lambda *args: None)
+    release, _ = installer.prepare_release(arguments(source=str(repository)), {}, "https://backup.example.net")
+    assert not list(release.glob(".preflight-*"))
+    assert live_database.read_bytes() == b"Existing agent database must remain untouched"
+    assert list((release / "venv").glob("lib/python*/site-packages/drastic_agent/storage/database.py"))
+    assert not any((release / "source" / path).exists() for path in runtime_paths)
+    assert not (release / "source/.env.private").exists()
 
 
 def test_preserved_identity_cannot_be_moved_to_another_server(installer):
