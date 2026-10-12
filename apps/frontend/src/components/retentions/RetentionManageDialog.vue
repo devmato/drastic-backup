@@ -10,13 +10,14 @@
           <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
           <q-btn-toggle v-model="form.rtype" :options="typeOptions" class="q-mb-sm" />
 
-          <q-input v-if="form.rtype === 'count'" outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_last" label="Keep last snapshots" type="number" :rules="[val => val >= 1 || 'Must be at least 1']" />
+          <q-input v-if="form.rtype === 'count'" outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_last" label="Keep last backup runs" type="number" :rules="[val => val >= 1 || 'Must be at least 1']" />
 
           <template v-if="form.rtype === 'date'">
             <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_hourly" label="Keep hourly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
             <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_weekly" label="Keep weekly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
             <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_monthly" label="Keep monthly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
             <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_yearly" label="Keep yearly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
+            <div class="text-caption">0 disables this rule.</div>
           </template>
         </q-card-section>
 

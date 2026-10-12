@@ -1,6 +1,6 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader title="Retention Policies" description="Define how long backup snapshots are kept.">
+    <PageHeader title="Retention Policies" description="Define which backup runs are kept.">
       <template #actions>
         <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Retention Policy" @click="showManageDialog(null)" />
       </template>
@@ -23,13 +23,13 @@
       <template v-slot:body-cell-policy="props">
         <q-td :props="props">
           <span v-if="props.row.rtype === 'count'">
-            <strong>Last:</strong> {{ props.row.keep_last }} snapshots
+            <strong>Last:</strong> {{ props.row.keep_last }} backup runs
           </span>
           <span v-else>
-            <strong>Hourly:</strong> {{ props.row.keep_hourly || 'Forever' }}
-            <strong>Weekly:</strong> {{ props.row.keep_weekly || 'Forever' }}
-            <strong>Monthly:</strong> {{ props.row.keep_monthly || 'Forever' }}
-            <strong>Yearly:</strong> {{ props.row.keep_yearly || 'Forever' }}
+            <strong>Hourly:</strong> {{ props.row.keep_hourly || 'Disabled' }}
+            <strong>Weekly:</strong> {{ props.row.keep_weekly || 'Disabled' }}
+            <strong>Monthly:</strong> {{ props.row.keep_monthly || 'Disabled' }}
+            <strong>Yearly:</strong> {{ props.row.keep_yearly || 'Disabled' }}
           </span>
         </q-td>
       </template>
