@@ -25,7 +25,7 @@
       </div>
       <q-separator />
 
-      <q-scroll-area class="col">
+      <q-scroll-area class="col" :content-style="{ width: '100%' }">
         <q-list v-if="entryRows.length > 0" separator>
           <q-item
             v-for="entry in entryRows"
@@ -37,7 +37,7 @@
               <q-icon :name="entry.icon || (entry.file ? 'description' : 'folder')" :color="entry.group === 'dataset' || entry.file ? 'blue-grey-6' : 'amber-8'" />
             </q-item-section>
             <q-item-section>
-              <q-item-label>{{ entry.name }}</q-item-label>
+              <q-item-label class="ellipsis" :title="entry.name">{{ entry.name }}</q-item-label>
               <q-item-label caption>
                 {{ entryCaption(entry) }}
               </q-item-label>
