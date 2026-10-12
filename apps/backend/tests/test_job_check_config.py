@@ -5,7 +5,11 @@ from marshmallow import ValidationError
 
 from drastic_common.agent.schemas import AgentJobSchema
 from drastic_server.models.job import Job, JobType
-from drastic_server.schemas.job import JobCreateInputSchema, ScheduleCreateInputSchema
+from drastic_server.schemas.job import (
+    JobCreateInputSchema,
+    ProxmoxGuestsResponseSchema,
+    ScheduleCreateInputSchema,
+)
 from drastic_server.schemas.repository import CheckInputSchema
 from drastic_server.services.jobs.configuration import (
     build_schedule_cron_string,
@@ -73,6 +77,16 @@ def test_proxmox_exclusions_survive_create_update_and_agent_serialization():
     update_job_instance(job, {"config": {"selection_mode": "all", "exclude_guest_ids": [104, 102]}})
     assert job.config == {"selection_mode": "all", "guest_ids": [], "exclude_guest_ids": [102, 104], "backup_mode": "snapshot", "fleecing_storage": ""}
     assert AgentJobSchema().dump(job)["config"] == job.config
+
+
+def test_proxmox_guest_response_preserves_known_unknown_and_legacy_sizes():
+    guest = {"vmid": 101, "name": "VM", "node": "pve", "status": "running", "type": "qemu"}
+    response = {"guests": [
+        {**guest, "disk_bytes": 32 * 1024**3},
+        {**guest, "vmid": 102, "disk_bytes": None},
+        {**guest, "vmid": 103},
+    ]}
+    assert ProxmoxGuestsResponseSchema().dump(response) == response
 
 
 @pytest.mark.parametrize("ids", [[99], [101, 101], ["invalid"], None, "101"])

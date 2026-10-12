@@ -2,6 +2,7 @@ import os
 import platform
 import re
 import shutil
+from decimal import Decimal
 
 import requests
 
@@ -147,7 +148,7 @@ class QemuVolumeGuestDriver:
 
         return volid
 
-    def has_backup_volumes(self, config):
+    def _backup_volumes(self, config):
         for key, value in (config or {}).items():
             if not self._QEMU_VOLUME_KEYS.match(str(key)):
                 continue
@@ -157,9 +158,18 @@ class QemuVolumeGuestDriver:
                 continue
 
             if self._extract_volid(value):
-                return True
+                yield value
 
-        return False
+    def _backup_size_bytes(self, volumes):
+        """Sum configured capacities, leaving incomplete metadata unknown."""
+        total = 0
+        for volume in volumes:
+            size = re.search(r"(?:^|,)size=(\d+(?:\.\d+)?)([KMGT]?)(?:,|$)", volume)
+            if size is None:
+                return None
+            unit_power = ("", "K", "M", "G", "T").index(size[2])
+            total += int(Decimal(size[1]) * 1024**unit_power)
+        return total
 
     def list_supported_guests(self, api):
         guests = []
@@ -170,7 +180,8 @@ class QemuVolumeGuestDriver:
                 continue
 
             config = api.get_qemu_config(vmid)
-            if self.has_backup_volumes(config):
+            volumes = list(self._backup_volumes(config))
+            if volumes:
                 guests.append(
                     {
                         "vmid": vmid,
@@ -178,6 +189,7 @@ class QemuVolumeGuestDriver:
                         "node": api.get_node(),
                         "status": guest.get("status"),
                         "type": "qemu",
+                        "disk_bytes": self._backup_size_bytes(volumes),
                     }
                 )
 

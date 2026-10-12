@@ -37,6 +37,33 @@ def test_guest_discovery_requires_at_least_one_backupable_volume():
     assert [guest["vmid"] for guest in QemuVolumeGuestDriver().list_supported_guests(api)] == [105, 106, 107]
 
 
+@pytest.mark.parametrize("size, expected", [
+    ("512", 512), ("512K", 512 * 1024), ("4M", 4 * 1024**2),
+    ("1.5G", 3 * 1024**3 // 2), ("2T", 2 * 1024**4),
+    (None, None), ("", None), ("invalid", None), ("-1G", None), ("1GB", None),
+])
+def test_guest_discovery_sums_only_backup_volume_capacities(size, expected):
+    config = {
+        "scsi0": "local-lvm:vm-101-disk-0,size=32G",
+        "virtio1": "local-lvm:vm-101-disk-1" + (f",size={size}" if size is not None else ""),
+        "efidisk0": "local-lvm:vm-101-disk-2,size=4M,efitype=4m",
+        "tpmstate0": "local-lvm:vm-101-disk-3,size=4M,version=v2.0",
+        "sata0": "local-lvm:vm-101-disk-4,size=100G,backup=0",
+        "ide2": "local:iso/test.iso,media=cdrom",
+        "unused0": "local-lvm:vm-101-disk-5",
+        "scsi1": "/dev/disk/by-id/disk",
+    }
+    calls = []
+    def get_config(vmid):
+        calls.append(vmid)
+        return config
+    api = SimpleNamespace(list_qemu_guests=lambda: [{"vmid": 101}],
+                          get_qemu_config=get_config, get_node=lambda: "pve")
+    guest = QemuVolumeGuestDriver().list_supported_guests(api)[0]
+    assert guest["disk_bytes"] == (32 * 1024**3 + 8 * 1024**2 + expected if expected is not None else None)
+    assert calls == [101], "size discovery must reuse the existing configuration request"
+
+
 @pytest.mark.parametrize("size", [4096, None, "invalid"])
 def test_snapshot_preflight_reads_optional_sizes_without_activating_disks(tmp_path, size):
     if not shutil.which("perl"):

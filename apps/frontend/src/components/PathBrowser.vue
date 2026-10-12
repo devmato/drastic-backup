@@ -25,8 +25,28 @@
       </div>
       <q-separator />
 
-      <q-scroll-area class="col" :content-style="{ width: '100%' }">
-        <q-list v-if="entryRows.length > 0" separator>
+      <q-scroll-area class="col" :content-style="{ width: '100%' }" :aria-busy="loading">
+        <q-list v-if="loading" separator role="status" aria-label="Loading entries">
+          <q-item v-for="index in 3" :key="index" aria-hidden="true">
+            <q-item-section avatar>
+              <q-skeleton type="circle" size="24px" />
+            </q-item-section>
+            <q-item-section>
+              <q-item-label><q-skeleton type="text" /></q-item-label>
+              <q-item-label caption><q-skeleton type="text" /></q-item-label>
+            </q-item-section>
+            <q-item-section side>
+              <q-skeleton type="text" width="5em" class="text-caption" />
+            </q-item-section>
+            <q-item-section v-if="mode !== 'pick-directory'" side>
+              <div class="row no-wrap q-gutter-xs">
+                <q-skeleton type="QBtn" size="32px" />
+                <q-skeleton v-if="mode === 'include-exclude'" type="QBtn" size="32px" />
+              </div>
+            </q-item-section>
+          </q-item>
+        </q-list>
+        <q-list v-else-if="entryRows.length > 0" separator>
           <q-item
             v-for="entry in entryRows"
             :key="entry.path"
@@ -76,7 +96,7 @@
             </q-item-section>
           </q-item>
         </q-list>
-        <div v-else-if="!loading" class="text-grey q-pa-md">{{ emptyLabel }}</div>
+        <div v-else class="text-grey q-pa-md">{{ emptyLabel }}</div>
       </q-scroll-area>
     </div>
   </q-card>

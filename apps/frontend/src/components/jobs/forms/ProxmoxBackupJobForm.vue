@@ -73,6 +73,7 @@ function guestEntry(vmid) {
   const guest = guests.value?.find(guest => guest.vmid === vmid)
   const label = guest?.name ? `${guest.name} (VM ${vmid})` : `VM ${vmid}`
   return { path: `/host/${vmid}`, name: label, label, vmid, group: 'vm', icon: 'computer', file: true,
+    size: guest?.disk_bytes == null ? null : Math.round(guest.disk_bytes / (1024 * 1024) * 100) / 100,
     caption: guest ? `${guest.type || 'qemu'} | ${guest.status || 'unknown'}` : 'Details unavailable',
     selectionEntry: { vmid } }
 }

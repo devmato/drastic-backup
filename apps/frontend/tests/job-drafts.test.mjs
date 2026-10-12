@@ -209,7 +209,8 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   const original = { selection_mode: 'include', guest_ids: [101, 999], exclude_guest_ids: [101], backup_mode: 'native_cbt', fleecing_storage: 'local-thin' }
   const props = reactive({ modelValue: original, agentId: 1, agentOnline: true })
   const agent = reactive({ id: 1, hostname: 'pve.example', protocol_version: 14 })
-  const known = [{ vmid: 101, name: 'first', node: 'pve' }, { vmid: 102, name: 'second', node: 'pve' }]
+  const known = [{ vmid: 101, name: 'first', node: 'pve', disk_bytes: 32 * 1024 ** 3 + 4096 },
+    { vmid: 102, name: 'second', node: 'pve' }]
   let fail = false
   const panel = runInNewContext(`${script('jobs/forms/ProxmoxBackupJobForm')}\n;({ loadEntries, selection, updateConfig, updateSelection, refresh, backupModeOptions })`, {
     computed, ref,
@@ -231,7 +232,7 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
     defineEmits: () => (event, value) => { if (event === 'update:selection') panel.updateSelection(value) },
   }
-  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath, entryRows, breadcrumbs })`, { ...context })
+  const browser = runInNewContext(`${script('PathBrowser')}\n;({ setInclude, setExclude, navigate, parentPath, entryRows, breadcrumbs, formatSize })`, { ...context })
   const selected = runInNewContext(`${script('PathSelectionPanel')}\n;({ removePath, selectionRows })`, { ...context })
   const root = await panel.loadEntries('/')
   const host = root.entries[0]
@@ -244,6 +245,13 @@ test('Proxmox host and VM browser preserves scope and supports inherited selecti
   ])
   const vms = (await panel.loadEntries(host.path)).entries
   assert.deepEqual(Array.from(vms, vm => vm.vmid), [101, 102])
+  assert.equal(browser.formatSize(vms[0]), '32768 MB')
+  assert.equal(browser.formatSize(vms[1]), '', 'older agents without size metadata remain supported')
+  assert.equal(browser.formatSize(panel.selection.value.paths[1]), '', 'undiscovered VMs have no size')
+  known[1].disk_bytes = null
+  assert.equal(browser.formatSize((await panel.loadEntries(host.path)).entries[1]), '', 'unknown sizes remain empty')
+  known[1].disk_bytes = 4 * 1024 ** 2 + 4096
+  assert.equal(browser.formatSize((await panel.loadEntries(host.path)).entries[1]), '4 MB')
   assert.equal(browser.entryRows.value.find(vm => vm.vmid === 101).state, 'include', 'inactive exclusions do not change existing include jobs')
   assert.deepEqual(Array.from(selected.selectionRows.value, row => row.label), ['first (VM 101)', 'VM 999'])
   browser.setInclude(vms[1])

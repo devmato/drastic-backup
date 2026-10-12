@@ -324,6 +324,7 @@ class ProxmoxGuestSchema(Schema):
     node = fields.String(required=True)
     status = fields.String(allow_none=True)
     type = fields.String(required=True, validate=validate.OneOf(_PROXMOX_GUEST_TYPES))
+    disk_bytes = fields.Integer(allow_none=True)
 
 
 class ProxmoxGuestsResponseSchema(Schema):
