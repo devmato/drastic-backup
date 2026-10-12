@@ -7,6 +7,46 @@ import { getAgentConnections, getAvailableConnectionTypes } from '../src/utils/a
 import { hasVersionMismatch, supportsAgentUpdate } from '../src/utils/agent-updates.js'
 import { getApiErrorMessage, shouldIgnoreApiError } from '../src/utils/api-error.js'
 
+test('install cards share native setup and copy the complete prepared command', async () => {
+  const source = readFileSync(new URL('../src/pages/AgentInstallPage.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const user = reactive({ environment: 'prod' })
+  let copied
+  const page = runInNewContext(`${source}\n;({ platformCards, copyAction })`, {
+    computed, ref, useUserStore: () => user, useAgentStore: () => ({}), useQuasar: () => ({ notify: () => {} }),
+    copyToClipboard: text => { copied = text },
+    window: { location: { origin: 'https://backup.example.net' } }, onMounted: () => {}, defineOptions: () => {},
+  })
+  const [linux, mac, docker] = page.platformCards.value
+  assert.deepEqual(Array.from(page.platformCards.value, card => card.title), ['Linux', 'macOS', 'Docker'])
+  assert.notEqual(linux.icon, mac.icon)
+  assert.equal(linux.actions[0].snippet, mac.actions[0].snippet)
+  assert.equal(mac.actions[0].snippet, "curl -fsSL 'https://backup.example.net/install' | bash")
+  assert.equal(linux.actions.length, 1)
+  assert.equal(mac.actions.length, 1)
+  assert.equal(docker.actions.length, 2)
+  await page.copyAction(docker.actions[1])
+  assert.equal(copied, docker.actions[1].snippet)
+  assert.ok(copied.endsWith('docker compose -f /opt/drastic-agent/docker-compose.yaml up -d'))
+  user.environment = 'dev'
+  assert.equal(page.platformCards.value[0].actions[1].type, 'develop')
+  assert.equal(page.platformCards.value[1].actions.length, 1)
+})
+
+test('install card selects an action and falls back when that action disappears', () => {
+  const source = readFileSync(new URL('../src/components/agents/AgentInstallCard.vue', import.meta.url), 'utf8')
+    .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
+  const props = reactive({ card: { actions: [{ id: 'setup' }, { id: 'develop' }] } })
+  const card = runInNewContext(`${source}\n;({ selectedActionId, activeAction })`, {
+    computed, ref, defineProps: () => props, defineEmits: () => () => {},
+  })
+  assert.equal(card.activeAction.value.id, 'setup')
+  card.selectedActionId.value = 'develop'
+  assert.equal(card.activeAction.value.id, 'develop')
+  props.card.actions = [props.card.actions[0]]
+  assert.equal(card.activeAction.value.id, 'setup')
+})
+
 test('agent list flags differing known builds without claiming an update is available', () => {
   const backend_version = '2026-10-08-a1b2c3d4'
   for (const version of [backend_version, undefined, null, '', 'unknown']) {
@@ -74,6 +114,12 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   assert.equal(action('update'), undefined)
   agent.install_type = 'docker'
   agent.os = 'Windows'
+  assert.equal(action('update'), undefined)
+  agent.os = 'Darwin'
+  assert.equal(action('update'), undefined)
+  agent.install_type = 'git'
+  assert.equal(action('update').name, 'update')
+  agent.install_type = 'manual'
   assert.equal(action('update'), undefined)
 })
 

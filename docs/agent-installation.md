@@ -59,13 +59,13 @@ Agent software, update metadata, caches and Debian package changes stay in the c
 
 ## Native Agent
 
-For Linux hosts with systemd (amd64 or arm64), use the pipe installer:
+For Linux hosts with systemd (amd64 or arm64) and macOS (Intel or Apple Silicon), use the same pipe installer:
 
 ```bash
 curl -fsSL https://backup.example.net/install | bash
 ```
 
-It installs directly from Git, including a private `uv`, Python 3.11 and virtual environment. The host needs `bash`, `curl`, `git`, systemd and root or sudo access. No system Python installation or package-manager changes are needed. SSH/SFTP jobs additionally require the host's OpenSSH client; Proxmox jobs require their existing host tools.
+It installs directly from Git, including a private `uv`, Python 3.11 and virtual environment. The host needs `bash`, `curl`, `git`, root or sudo access, and systemd on Linux or launchd on macOS. No system Python installation or Homebrew is needed. On a fresh Mac, install Apple's Command Line Tools with `xcode-select --install` first if using the system Git. SSH/SFTP jobs additionally require the host's OpenSSH client; Proxmox jobs require their existing Linux host tools.
 
 The backend supplies the server URL and `DRASTIC_AGENT_GIT_REPOSITORY`. The script selects the exact backend commit automatically; there is no branch prompt or fallback to `main`. Unknown, dirty or mismatched backend build metadata is rejected. Local `--source` installs remain available for uncommitted development work.
 
@@ -97,6 +97,36 @@ bash scripts/install-drastic-agent.sh --source "$PWD" \
 
 The checkout is copied into the managed installation, without local environment files or runtime directories. Future `update` commands resolve the backend commit; use `install --source PATH` again to deploy local changes.
 
+### macOS Permissions and First Backup
+
+The native Mac agent runs as a root LaunchDaemon, including when no user is logged in (after any FileVault boot unlock). It supports file selection, exclusions, manual/scheduled file backups, retention and file restores through the same web UI. Linux host integrations such as Proxmox and TrueNAS snapshot mounts are not available on macOS.
+
+`sudo` installs the service but does **not** grant macOS privacy permissions. For protected folders:
+
+1. After installation, open **System Settings > Privacy & Security > Full Disk Access**. The pipe installer attempts to open this page when run from your logged-in user's terminal.
+2. Add and enable the **actual private Python executable** and **restic executable** printed by the installer. Use **+**, then **Cmd+Shift+G** to enter each full path. `sudo drastic-agent status` prints these paths again. Granting access only to Terminal or the shell wrapper does not authorize the background service.
+3. Restart the service: `sudo launchctl kickstart -k system/net.drastic.agent`.
+4. In the web UI, create a file job for a small test folder inside `Documents`, assign a repository, run the backup and check its report. This tests the background service's actual access, not the terminal's permissions. Permission failures and incomplete Restic backups must not be accepted as successful backups.
+5. Restore into a new, empty directory and compare the files. Use physical paths: for example `/private/tmp/drastic-restore` rather than the macOS `/tmp` symlink, because restore destination symlinks are deliberately rejected.
+
+The installed Python executable lives under `tools/python`; macOS restic executables live under `tools/restic` so the permission picker can reach them without opening the private `data/` directory. Installation explicitly grants read/traverse access to those programs and their parent directories, even with a restrictive `umask`; `data/`, keys and settings retain their private permissions. A missing `/opt` is created with mode `0755`. If an existing `/opt` blocks the permission picker, installation stops with a permission-repair instruction instead of changing that shared directory. The executable paths remain unchanged for ordinary agent-code updates, but macOS may require renewed permission after Python/restic changes. Check the paths and run another backup after such updates; a stable path alone does not guarantee preservation of macOS permissions. The installer never edits the TCC database or changes SIP.
+
+The tool roots `tools/bin`, `tools/python` and `tools/restic` must not be symlinks. Permission preparation validates every resolved program and parent path before changing any permissions. Executable links within the private `tools/` tree remain supported; links escaping it are rejected.
+
+A sleeping Mac cannot run scheduled jobs. Keep it awake for the initial backup/restore test. The existing scheduler and reconnect behavior apply after waking; the agent does not configure automatic wake-up or APFS snapshots. File backups read the live filesystem. Files stored only in iCloud must be downloaded locally before relying on them being backed up.
+
+### Testing a Published macOS Branch
+
+Until the backend includes macOS support, its `/install` script may still reject Macs. Download the bootstrap from the **same published macOS-capable ref** that you want to install:
+
+```bash
+REF=your-published-macos-branch
+curl -fsSL "https://raw.githubusercontent.com/devmato/drastic-backup/$REF/scripts/install-drastic-agent.sh" | bash -s -- \
+  --ref "$REF" --server https://backup.example.net
+```
+
+Replace the ref and server URL. This requires committed, pushed source; it cannot install unpublished edits on another computer. While testing against an older backend, use `sudo drastic-agent update --ref "$REF"` for subsequent test builds. Plain `update` and web updates still follow the backend commit, and the installer rejects targets predating macOS support before stopping the active release. The macOS web-update action also requires the updated backend/frontend.
+
 ### Layout and Updates
 
 All managed files live under one root:
@@ -114,7 +144,7 @@ All managed files live under one root:
 └── install.json
 ```
 
-Outside that root, the installer creates only `/usr/local/bin/drastic-agent` (a symlink) and `/etc/systemd/system/drastic-agent.service`. The service runs as root, starts at boot, and logs to the system journal.
+Outside that root, the installer creates `/usr/local/bin/drastic-agent` (a symlink) and the service definition: `/etc/systemd/system/drastic-agent.service` on Linux or `/Library/LaunchDaemons/net.drastic.agent.plist` on macOS. The service runs as root and starts at boot. Linux logs to the system journal:
 
 ```bash
 sudo drastic-agent status
@@ -123,13 +153,23 @@ sudo drastic-agent update --ref 2026-10-08-a1b2c3d4
 journalctl -u drastic-agent.service
 ```
 
+On macOS, use the same `status`, `update` and `uninstall` commands. Service output is in `/opt/drastic-agent/data/net.drastic.agent.log`; independent web-updater output is in `/opt/drastic-agent/data/net.drastic.agent.update.log`. Each log rotates at 1 MiB and keeps two previous files (`.1`, `.2`), all with mode `0600`. Ownership and path checks run before opening logs; rejected unsafe paths do not produce log writes. The controller captures stdout/stderr from worker startup and subprocesses in bounded chunks, forwards stop signals and waits for its child to exit:
+
+```bash
+sudo drastic-agent status
+sudo tail -f /opt/drastic-agent/data/net.drastic.agent.log
+sudo tail -f /opt/drastic-agent/data/net.drastic.agent.update.log
+```
+
 Updates follow the backend commit, ignoring any branch/tag previously saved in `install.json`. Dependencies are installed with `uv sync --frozen --no-dev --no-editable`. A new source/venv directory and its pinned restic binary are prepared and checked before stopping the running service. If the new service fails its startup checks, the old installation is restored. Agent data and additional environment settings (for example Proxmox credentials) are retained. This rollback covers program files, not changes made by the running agent to its data.
 
 The wrapper and Docker launcher use the independent `bin/installer.py` controller. Selecting an older agent with `--ref` keeps the backend-following controller instead of restoring that release's legacy ref-pinned updater. Compatible newer controllers update with their target release; startup rollback restores the previous controller and wrapper together.
 
-**Agent Properties > Actions > Update** starts the same command for managed native Linux agents using protocol 1 or later. Running/queued operations and duplicate updates are rejected; new executions and schedules wait until the installer finishes, including its startup checks. The UI acknowledges the start and refreshes the version after reconnect. Check completion and errors with `journalctl -u drastic-agent-update.service`.
+**Agent Properties > Actions > Update** starts the same command for managed native Linux/macOS agents using protocol 1 or later. Running/queued operations and duplicate updates are rejected; new executions and schedules wait until the independent updater finishes, including its startup checks. Linux uses `systemd-run`; macOS uses a separate one-shot launchd job, `net.drastic.agent.update`, so stopping the agent cannot terminate its updater. The UI acknowledges the start and refreshes the version after reconnect. Check completion under Reports, with `journalctl -u drastic-agent-update.service` on Linux, or in the macOS updater log above.
 
 If the service cannot be stopped during rollback, both releases remain on disk and the installer reports the blocked rollback. Stop `drastic-agent.service` before retrying. An interrupted first installation cleans up its new runtime files; any existing or newly registered agent identity remains available for a retry.
+
+On macOS, a failed stop retains `stopping.pid` until the unloaded agent process has actually exited. A retry checks that PID before replacing or deleting files. If the PID has been reused, inspect it and confirm that the old agent is stopped before removing this marker and retrying. A launchctl inspection error is not treated as proof that the service is stopped.
 
 The install page uses `DRASTIC_PUBLIC_URL` for the setup URL when configured, otherwise the browser origin. Native installations report their install type as `git`; Docker installations continue to report `docker`.
 
@@ -139,7 +179,7 @@ Older installed lifecycle managers still follow their saved branch/tag. Update t
 
 ### restic Version
 
-restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and changes together with the selected Drastic build. Native and managed Docker updates use the target's checksum-verified downloader before activation; pre-refactor targets use their standalone CI download script without loading the old agent runtime or database. The agent checks the binary version again on startup. Different versions use separate paths under `data/bin`, so a failed download does not replace the previous release's executable. No independent `restic self-update` is needed.
+restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and changes together with the selected Drastic build. Native and managed Docker updates use the target's checksum-verified downloader before activation; pre-refactor Linux targets use their standalone CI download script without loading the old agent runtime or database. The agent checks the binary version again on startup. Different versions use separate paths under `data/bin` (`tools/restic` on managed macOS), so a failed download does not replace the previous release's executable. No independent `restic self-update` is needed.
 
 ### Protocol Compatibility
 

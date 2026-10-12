@@ -75,7 +75,7 @@ Override the server URL explicitly:
 
 ## Test Native Installer From Git
 
-For installer and systemd testing, start the development stack without the Docker agent. A clean backend checkout provides its exact commit as the native installation target:
+For native installer testing, start the development stack without the Docker agent. A clean backend checkout provides its exact commit as the native installation target:
 
 ```bash
 ./scripts/dev.sh up --no-agent
@@ -87,7 +87,7 @@ curl -fsSL http://127.0.0.1:5050/install | bash -s -- \
   --password admin
 ```
 
-The target host needs `git`, `curl`, systemd and root or sudo access. Python and `uv` are installed privately under `/opt/drastic-agent`. The backend commit must be pushed to the configured agent repository. Dirty or unknown backend builds have no automatic installation target; for uncommitted changes use `bash scripts/install-drastic-agent.sh --source "$PWD" --server http://127.0.0.1:5050`. Manage the installed agent locally:
+The target host needs `git`, `curl`, root or sudo access, and systemd (Linux) or launchd (macOS). Python and `uv` are installed privately under `/opt/drastic-agent`. The backend commit must be pushed to the configured agent repository. Dirty or unknown backend builds have no automatic installation target; for uncommitted changes use `bash scripts/install-drastic-agent.sh --source "$PWD" --server http://127.0.0.1:5050`. Manage the installed agent locally:
 
 ```bash
 sudo drastic-agent update
@@ -100,6 +100,20 @@ sudo drastic-agent uninstall
 If the installer runs from another host or VM, set `DRASTIC_PUBLIC_URL` to a URL reachable by that host before rendering `/install`.
 
 `--ref <branch|tag|commit>` explicitly overrides one installation/update; subsequent updates use the backend again. Docker builds stamp both product version and full revision. When supplying `DRASTIC_VERSION` manually (for example from a linked Git worktree), also pass `DRASTIC_REVISION=<full-commit-sha>`.
+
+### macOS Acceptance Check
+
+Linux-side tests simulate launchctl for install/update/rollback/removal and exercise the unchanged shared file-backup/restore code. They cannot establish macOS TCC permission behavior or filesystem fidelity. Follow [macOS installation and permissions](agent-installation.md#macos-permissions-and-first-backup) on a real Mac:
+
+1. Install from the same published ref as the bootstrap, grant access and create a file job using a small protected test folder. Include spaces/Unicode names, a symlink, an excluded file and a file with an extended attribute.
+2. Run the backup **through the web UI**, restore to a separate physical directory and compare content, exclusions, modes, symlink targets and extended attributes.
+3. Run another backup after changing a file; verify the matching parent and restore the new version. Exercise a scheduled run and retention with a disposable repository.
+4. With permission removed, verify the report does not claim a complete successful backup. Restore permission, restart the daemon and repeat successfully.
+5. Restart the Mac, unlock FileVault if enabled, check reconnection, then test waking from sleep.
+6. Update via CLI and the web action against a macOS-capable backend; verify identity, configuration and permissions, then run another backup/restore. Test startup rollback with a deliberately failing test build. During older-backend development, use explicit CLI refs instead.
+7. Uninstall without purge and reinstall; the identity must survive. Check purge separately using only disposable agent state.
+
+Run the acceptance check on both Intel and Apple Silicon before claiming both are verified. macOS system logs and the agent/update logs named in the installation guide are the relevant evidence when a check fails.
 
 ## Reset Local State
 

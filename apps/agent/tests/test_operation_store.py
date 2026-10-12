@@ -3,6 +3,7 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from types import SimpleNamespace
 
 import pytest
 
@@ -89,9 +90,11 @@ def test_running_report_is_failed_during_recovery():
 
 
 @pytest.mark.parametrize("outcome", ["success", "failed", "interrupted"])
-def test_update_report_survives_restart_and_retries_delivery(tmp_path, monkeypatch, outcome):
+@pytest.mark.parametrize("os_name", ["linux", "darwin"])
+def test_update_report_survives_restart_and_retries_delivery(tmp_path, monkeypatch, outcome, os_name):
     import drastic_agent.runtime.agent as agent_module
 
+    monkeypatch.setattr(agent_module.updates, "sys", SimpleNamespace(platform=os_name))
     root = tmp_path / "installation"
     root.mkdir()
     data = tmp_path / "mounted-data"
@@ -115,7 +118,8 @@ def test_update_report_survives_restart_and_retries_delivery(tmp_path, monkeypat
         return {"success": accepted}
 
     monkeypatch.setattr(agent, "_Agent__send_request", send)
-    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = (os.open(root / ".installer.lock", os.O_RDWR | os.O_CREAT, 0o600)
+                  if os_name == "darwin" else os.open(root, os.O_RDONLY | os.O_DIRECTORY))
     try:
         fcntl.flock(descriptor, fcntl.LOCK_EX)
         agent._Agent__read_update_reports()

@@ -142,10 +142,12 @@ def run_action(user_id, agent_id, action):
     agent = get_agent(user_id, agent_id)
     if not agent.online:
         raise ValueError("Agent is offline")
-    if command == AgentCommandName.update and (str(agent.os or "").lower() != "linux" or not (
-        agent.install_type == "git" or (agent.install_type == "docker" and (agent.protocol_version or 0) >= 4)
-    )):
-        raise ValueError("Updates require a managed Linux installation; Docker agents require protocol 4")
+    os_name = str(agent.os or "").lower()
+    if command == AgentCommandName.update and not (
+        (agent.install_type == "git" and os_name in {"linux", "darwin"})
+        or (agent.install_type == "docker" and os_name == "linux" and (agent.protocol_version or 0) >= 4)
+    ):
+        raise ValueError("Updates require a managed Linux/macOS installation; Docker agents require protocol 4")
     if command == AgentCommandName.update:
         # Reject unreproducible backend builds before pausing a remote agent.
         installation_target()

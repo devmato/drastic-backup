@@ -32,10 +32,20 @@ root() {
     if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi
 }
 
-[ "$(uname -s)" = Linux ] || { printf 'Linux with systemd is required.\n' >&2; exit 1; }
-for command in curl git systemctl; do
+case "$(uname -s)" in
+    Linux) SERVICE_COMMAND=systemctl ;;
+    Darwin)
+        SERVICE_COMMAND=launchctl
+        xcode-select -p >/dev/null 2>&1 || {
+            printf 'Git requires Apple Command Line Tools. Run xcode-select --install, then retry.\n' >&2
+            exit 1
+        } ;;
+    *) printf 'Linux with systemd or macOS is required.\n' >&2; exit 1 ;;
+esac
+for command in curl git "$SERVICE_COMMAND"; do
     command -v "$command" >/dev/null || { printf '%s is required.\n' "$command" >&2; exit 1; }
 done
+git --version >/dev/null
 if [ "$(id -u)" -ne 0 ]; then
     command -v sudo >/dev/null || { printf 'Root or sudo is required.\n' >&2; exit 1; }
     sudo -v
@@ -51,12 +61,19 @@ root bash -s -- "$REUSE_DATA" <<'CHECK'
 set -euo pipefail
 root=/opt/drastic-agent
 fail() { printf '%s\n' "$*" >&2; exit 1; }
+service=/etc/systemd/system/drastic-agent.service
+if [ "$(uname -s)" = Darwin ]; then service=/Library/LaunchDaemons/net.drastic.agent.plist; fi
 [ ! -L /opt ] && [ ! -L "$root" ] || fail 'Installation paths must not be symlinks.'
 if [ -e "$root/agentctl" ]; then
     fail 'Legacy installation found. Run sudo drastic-agent uninstall (without --purge), then run this installer again. The agent identity will be retained.'
 fi
 if [ -e "$root" ]; then
-    [ -d "$root" ] && [ "$(stat -c %u "$root")" = 0 ] || fail 'Installation directory must be owned by root.'
+    [ -d "$root" ] || fail 'Installation path must be a directory.'
+    if [ "$(uname -s)" = Darwin ]; then
+        [ "$(stat -f %u "$root")" = 0 ] || fail 'Installation directory must be owned by root.'
+    else
+        [ "$(stat -c %u "$root")" = 0 ] || fail 'Installation directory must be owned by root.'
+    fi
     [ ! -L "$root/.managed-by-drastic-agent" ] || fail 'Invalid installation marker.'
 fi
 if [ ! -f "$root/.managed-by-drastic-agent" ]; then
@@ -66,13 +83,22 @@ if [ ! -f "$root/.managed-by-drastic-agent" ]; then
         [ "$path" = "$root/data" ] && [ -d "$path" ] && [ ! -L "$path" ] || fail 'Installation directory is not empty or managed.'
     done
     [ ! -e /usr/local/bin/drastic-agent ] && [ ! -L /usr/local/bin/drastic-agent ] &&
-        [ ! -e /etc/systemd/system/drastic-agent.service ] && [ ! -L /etc/systemd/system/drastic-agent.service ] || fail 'An unmanaged command or service already exists.'
+        [ ! -e "$service" ] && [ ! -L "$service" ] || fail 'An unmanaged command or service already exists.'
+fi
+for path in tools tools/bin tools/python tools/restic cache; do
+    [ ! -L "$root/$path" ] || fail 'Private runtime paths must not be symlinks.'
+done
+if [ "$(uname -s)" = Darwin ]; then
+    # mkdir -p would otherwise create a missing /opt with the caller's private umask.
+    if [ ! -e /opt ]; then mkdir -m 755 /opt; fi
+    [ -d /opt ] || fail '/opt must be a directory.'
+    mode=$(stat -f %Lp /opt)
+    [ "$((8#$mode & 5))" -eq 5 ] || fail '/opt blocks the Full Disk Access picker. Grant read/traverse access to /opt, then retry (sudo chmod o+rx /opt).'
 fi
 mkdir -p "$root"
 chmod 700 "$root"
-for path in tools cache; do
-    [ ! -L "$root/$path" ] || fail 'Private runtime paths must not be symlinks.'
-done
+# The macOS permission picker must be able to reach executables; data stays private.
+if [ "$(uname -s)" = Darwin ]; then chmod 755 "$root"; fi
 touch "$root/.managed-by-drastic-agent"
 CHECK
 
@@ -85,17 +111,32 @@ cleanup() {
         if ! root bash -s -- "$DATA_BEFORE" <<'CLEANUP'
 set -euo pipefail
 root=/opt/drastic-agent
-[ -d "$root" ] && [ ! -L "$root" ] && [ "$(stat -c %u "$root")" = 0 ] &&
+service=/etc/systemd/system/drastic-agent.service
+if [ "$(uname -s)" = Darwin ]; then
+    service=/Library/LaunchDaemons/net.drastic.agent.plist
+    [ "$(stat -f %u "$root")" = 0 ] || exit 0
+else
+    [ "$(stat -c %u "$root")" = 0 ] || exit 0
+fi
+[ -d "$root" ] && [ ! -L "$root" ] &&
     [ -f "$root/.managed-by-drastic-agent" ] && [ ! -L "$root/.managed-by-drastic-agent" ] || exit 0
 # An active or partly committed installation must stay available for recovery.
-if systemctl is-active --quiet drastic-agent.service ||
+service_active() {
+    if [ "$(uname -s)" = Darwin ]; then
+        launchctl print system/net.drastic.agent >/dev/null 2>&1
+    else
+        systemctl is-active --quiet drastic-agent.service
+    fi
+}
+if service_active ||
+    [ -e "$root/stopping.pid" ] || [ -L "$root/stopping.pid" ] ||
     [ -e "$root/current" ] || [ -L "$root/current" ] ||
     [ -e "$root/install.json" ] || [ -e "$root/drastic-agent.env" ] ||
     [ -e /usr/local/bin/drastic-agent ] || [ -L /usr/local/bin/drastic-agent ] ||
-    [ -e /etc/systemd/system/drastic-agent.service ] || [ -L /etc/systemd/system/drastic-agent.service ]; then
+    [ -e "$service" ] || [ -L "$service" ]; then
     exit 0
 fi
-for path in tools cache releases bin data; do
+for path in tools cache releases bin data .installer.lock stopping.pid; do
     [ ! -L "$root/$path" ] || exit 0
 done
 rm -rf "$root/tools" "$root/cache" "$root/releases" "$root/bin"
@@ -103,6 +144,7 @@ if [ "$1" = true ] || { [ -d "$root/data" ] && [ -n "$(ls -A "$root/data")" ]; }
     exit 0  # Keep existing data or newly registered credentials and the marker for a retry.
 fi
 rmdir "$root/data" 2>/dev/null || true
+rm -f "$root/.installer.lock"
 rm "$root/.managed-by-drastic-agent"
 rmdir "$root" 2>/dev/null || true
 CLEANUP
@@ -185,14 +227,25 @@ sys.exit(0 if script.is_file() and "\nINDEPENDENT_LIFECYCLE = True\n" in script.
     curl --fail --silent --show-error --max-time 30 --proto '=https,http' \
         -o "$MANAGER" -- "$SERVER/install.py"
 fi
+if [ "$(uname -s)" = Darwin ] && ! root "$PYTHON" -c '
+from pathlib import Path
+import sys
+sys.exit(0 if "\nMACOS_LIFECYCLE = True\n" in Path(sys.argv[1]).read_text() else 1)
+' "$MANAGER"; then
+    printf 'This installer version does not support macOS. Use a macOS-capable backend or test branch.\n' >&2
+    exit 1
+fi
 COMMAND=("$PYTHON" "$MANAGER" install --source "$SOURCE" --repository "$REPOSITORY")
 [ -z "$REVISION" ] || COMMAND+=(--revision "$REVISION")
 [ -z "$REF" ] || COMMAND+=(--ref "$REF")
 [ -z "$SERVER" ] || COMMAND+=(--server "$SERVER")
 # The pipe is consumed by bash; prompts must use the terminal instead.
 if (: </dev/tty) 2>/dev/null; then
-    root "${COMMAND[@]}" "${ARGS[@]}" </dev/tty
+    root "${COMMAND[@]}" ${ARGS[@]+"${ARGS[@]}"} </dev/tty
 else
-    root "${COMMAND[@]}" "${ARGS[@]}"
+    root "${COMMAND[@]}" ${ARGS[@]+"${ARGS[@]}"}
 fi
 INSTALLED=true
+if [ "$(uname -s)" = Darwin ] && [ "$(id -u)" -ne 0 ]; then
+    open 'x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles' || true
+fi

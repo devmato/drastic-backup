@@ -72,8 +72,9 @@ def test_public_installation_target_requires_reproducible_backend(monkeypatch, r
         assert "no reproducible agent installation target" in response.json["message"]
 
 
-def test_web_update_rejects_dirty_backend_before_remote_dispatch(monkeypatch):
-    agent = SimpleNamespace(online=True, os="linux", install_type="git", protocol_version=15)
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
+def test_web_update_rejects_dirty_backend_before_remote_dispatch(monkeypatch, os_name):
+    agent = SimpleNamespace(online=True, os=os_name, install_type="git", protocol_version=15)
     monkeypatch.setattr(management, "get_agent", lambda user_id, agent_id: agent)
     monkeypatch.setattr(installer, "get_revision", lambda: "a" * 40)
     monkeypatch.setattr(installer, "get_version", lambda: "2026-10-10-aaaaaaaa-dirty")

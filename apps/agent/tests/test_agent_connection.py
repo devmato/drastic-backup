@@ -1,5 +1,6 @@
 import bz2
 import configparser
+import fcntl
 import hashlib
 import json
 import os
@@ -125,25 +126,33 @@ def managed_agent(tmp_path, monkeypatch):
         agent._Agent__execution.shutdown()
 
 
-def test_update_uses_installer_and_keeps_work_paused_until_unit_finishes(managed_agent, monkeypatch):
+@pytest.mark.parametrize("os_name", ["linux", "darwin"])
+def test_update_uses_installer_and_keeps_work_paused_until_unit_finishes(managed_agent, monkeypatch, os_name):
     agent = managed_agent
+    monkeypatch.setattr(agent_module.updates, "sys", SimpleNamespace(platform=os_name))
+    if os_name == "darwin":
+        agent_module.AGENT_INSTALL_ROOT.mkdir()
     calls = []
     state = "activating"
     launch_error = False
 
     def run(command, **kwargs):
         calls.append((command, kwargs))
-        if launch_error and command[0] == "systemd-run":
+        if launch_error and (command[0] == "systemd-run" or command[-1] == "start-update"):
             raise subprocess.TimeoutExpired(command, 10)
-        return SimpleNamespace(returncode=0, stdout=state, stderr="")
+        output = state
+        if os_name == "darwin":
+            output = {"activating": "state = spawn scheduled", "active": "state = running\npid = 42",
+                      "deactivating": "state = waiting", "inactive": "state = not running\nlast exit code = 0"}[state]
+        return SimpleNamespace(returncode=0, stdout=output, stderr="")
 
     monkeypatch.setattr(subprocess, "run", run)
     assert agent.cmd_update().state == AgentReportState.success
     assert calls[0][0] == [str(agent_module.AGENT_COMMAND), "status"]
-    assert calls[1][0] == [
+    assert calls[1][0] == ([str(agent_module.AGENT_COMMAND), "start-update"] if os_name == "darwin" else [
         "systemd-run", "--collect", "--unit=drastic-agent-update.service",
         "--", str(agent_module.AGENT_COMMAND), "update",
-    ]
+    ])
     manager = agent._Agent__execution
     assert manager.submit(lambda: None) is None
     assert agent.cmd_update().state == AgentReportState.failed
@@ -169,6 +178,49 @@ def test_update_uses_installer_and_keeps_work_paused_until_unit_finishes(managed
     agent._Agent__next_update_check_at = 0
     assert not agent._Agent__check_update()
     manager.submit(lambda: None).result(timeout=2)
+
+
+def test_macos_unknown_updater_state_keeps_admission_paused(managed_agent, monkeypatch):
+    monkeypatch.setattr(agent_module.updates, "sys", SimpleNamespace(platform="darwin"))
+    agent_module.AGENT_INSTALL_ROOT.mkdir()
+    result = SimpleNamespace(returncode=113, stdout="", stderr="Not privileged")
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: result)
+    assert managed_agent._Agent__check_update(startup=True)
+    assert managed_agent._Agent__execution.submit(lambda: None) is None
+    result.returncode, result.stderr = 0, ""
+    result.stdout = "state = not running\nlast exit code = (never exited)"
+    managed_agent._Agent__next_update_check_at = 0
+    assert managed_agent._Agent__check_update()
+    result.returncode, result.stderr = 113, "Could not find service"
+    with (agent_module.AGENT_INSTALL_ROOT / ".installer.lock").open("rb") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        managed_agent._Agent__next_update_check_at = 0
+        assert managed_agent._Agent__check_update()  # A CLI installer still owns the startup check.
+    managed_agent._Agent__next_update_check_at = 0
+    assert not managed_agent._Agent__check_update()
+    managed_agent._Agent__execution.submit(lambda: None).result(timeout=2)
+
+
+def test_macos_directory_permission_error_is_actionable(managed_agent, monkeypatch, tmp_path):
+    monkeypatch.setattr(agent_module.platform, "system", lambda: "Darwin")
+
+    def denied(path):
+        raise PermissionError("Operation not permitted")
+
+    monkeypatch.setattr(os, "listdir", denied)
+    report = managed_agent.cmd_get_dirlist(str(tmp_path))
+    assert report.state == AgentReportState.failed
+    assert "Full Disk Access" in report.log
+    assert report.data["dirlist"] == []
+
+
+def test_managed_macos_restic_is_outside_private_data(managed_agent, monkeypatch):
+    monkeypatch.setattr(agent_module.platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(agent_module.platform, "machine", lambda: "arm64")
+    calls = []
+    monkeypatch.setattr(agent_module, "ensure_binary", lambda *args: calls.append(args) or "restic")
+    managed_agent._Agent__check_restic_binary()
+    assert calls == [(agent_module.AGENT_INSTALL_ROOT / "tools/restic", "darwin", "arm64")]
 
 
 @pytest.mark.parametrize("failure", ["busy", "manual", "docker", "wrong-data", "preflight"])

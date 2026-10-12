@@ -48,6 +48,7 @@ Important paths:
 - `apps/frontend/src/layouts` -- Application layouts and top-level navigation.
 - `apps/frontend/src/pages` -- Route pages.
 - `apps/frontend/src/components` -- Reusable UI components.
+- `apps/frontend/src/components/agents/AgentInstallCard.vue` -- Shared platform installation card with local method selection; `AgentInstallPage.vue` prepares commands and handles copying.
 - `apps/frontend/src/stores` -- Pinia stores.
 - `apps/frontend/src/api` -- HTTP endpoint calls without UI or store dependencies.
 - `apps/frontend/src/composables` -- Reactive workflows such as job editing.
@@ -65,7 +66,8 @@ Important paths:
 - `apps/agent/src/drastic_agent/agent` -- Operation/report state, action execution and protocol-facing schemas.
 - `apps/agent/src/drastic_agent/services` -- Restore, retention, connection settings, repository access and credentials.
 - `apps/agent/src/drastic_agent/integrations` -- Host-tool adapters, including verified restic installation.
-- `scripts/drastic-agent-installer.py` -- Shared native/Docker lifecycle manager; installed independently as `/opt/drastic-agent/bin/installer.py` and stages backend-matched source, dependencies and restic before activation.
+- `scripts/install-drastic-agent.sh` -- Shared Linux/macOS pipe bootstrap, including a private Python runtime.
+- `scripts/drastic-agent-installer.py` -- Shared native Linux/macOS and Docker lifecycle manager; installed independently as `/opt/drastic-agent/bin/installer.py` and stages backend-matched source, dependencies and restic before activation. Uses systemd on Linux and launchd on macOS.
 - `apps/agent/src/drastic_agent/proxmox.py` -- Proxmox guest discovery and backup streaming.
 - `apps/agent/data` -- Local development agent state.
 

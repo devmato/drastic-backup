@@ -4,6 +4,8 @@ export function hasVersionMismatch({ version, backend_version }) {
 }
 
 export function supportsAgentUpdate(agent) {
-  return Boolean(agent && (agent.protocol_version || 0) >= 1 && agent.os?.toLowerCase() === 'linux'
-    && (agent.install_type === 'git' || (agent.install_type === 'docker' && agent.protocol_version >= 4)))
+  const os = agent?.os?.toLowerCase()
+  return Boolean(agent && (agent.protocol_version || 0) >= 1
+    && ((agent.install_type === 'git' && ['linux', 'darwin'].includes(os))
+      || (agent.install_type === 'docker' && os === 'linux' && agent.protocol_version >= 4)))
 }

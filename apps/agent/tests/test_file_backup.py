@@ -4,6 +4,7 @@ import pytest
 
 from drastic_agent.agent.enums import AgentOperationType
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.jobs import file_backup
 from drastic_agent.jobs.file_backup import FileBackupJobHandler
 from drastic_common.restic.exceptions import ResticFailedError
 
@@ -14,10 +15,12 @@ class _FailingResticApi:
 
     @staticmethod
     def backup(**kwargs):
-        raise ResticFailedError("backup failed", snapshot_id="partial-snap")
+        raise ResticFailedError("backup failed: operation not permitted", snapshot_id="partial-snap")
 
 
-def test_file_backup_rejects_empty_scope_and_keeps_failed_snapshot_id():
+@pytest.mark.parametrize("os_name", ["linux", "darwin"])
+def test_file_backup_rejects_empty_scope_and_keeps_failed_snapshot_id(monkeypatch, os_name):
+    monkeypatch.setattr(file_backup.sys, "platform", os_name)
     agent = type("Agent", (), {"resticapi": _FailingResticApi()})()
     handler = FileBackupJobHandler(
         agent=agent,
@@ -29,11 +32,13 @@ def test_file_backup_rejects_empty_scope_and_keeps_failed_snapshot_id():
     handler.start_artifact = lambda artifact_key, report=None: artifact
     handler.finish_artifact = lambda current, **kwargs: current.update(kwargs) or current
 
+    report = AgentReport.command_report()
     with pytest.raises(ResticFailedError, match="backup failed"):
-        handler.run_backup(AgentReport.command_report())
+        handler.run_backup(report)
 
     assert artifact["state"].name == "failed"
     assert artifact["snapshot_id"] == "partial-snap"
+    assert ("Full Disk Access" in report.log) == (os_name == "darwin")
     handler.job["config"]["exclude_patterns"] = [{"path": "/data", "group": "folder"}]
     with pytest.raises(ValueError, match="Select at least one path"):
         handler.run_backup(AgentReport.command_report())

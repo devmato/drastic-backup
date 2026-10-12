@@ -5,11 +5,13 @@ import importlib.util
 import io
 import json
 import os
+import plistlib
 import pty
 import signal
 import subprocess
 import sys
 import termios
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,17 +19,26 @@ import pytest
 
 
 @pytest.fixture
-def installer(tmp_path, monkeypatch):
+def installer(tmp_path, monkeypatch, request):
     script = Path(__file__).resolve().parents[3] / "scripts/drastic-agent-installer.py"
     spec = importlib.util.spec_from_file_location("installer", script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    module.MACOS = getattr(request, "param", False)
     root = tmp_path / "agent"
     root.mkdir()
     (root / module.MARKER).touch()
     monkeypatch.setattr(module, "ROOT", root)
     monkeypatch.setattr(module, "WRAPPER", tmp_path / "bin/drastic-agent")
     monkeypatch.setattr(module, "SERVICE", tmp_path / "drastic-agent.service")
+    if module.MACOS:
+        python = root / "tools/python/bin/python3"
+        python.parent.mkdir(parents=True)
+        executable = python.with_name("python3.11")
+        executable.write_text(f'#!/bin/sh\nexec "{sys.executable}" "$@"\n')
+        executable.chmod(0o755)
+        python.symlink_to(executable.name)
+        monkeypatch.setattr(module, "sys", SimpleNamespace(**{**vars(sys), "executable": str(python)}))
     monkeypatch.setattr(module.time, "sleep", lambda _: None)
     return module
 
@@ -42,11 +53,49 @@ def arguments(command="install", **overrides):
 
 def mock_runtime(installer, monkeypatch, *, mock_packages=False):
     service = {"active": False, "enabled": False, "fail_start": False, "refuse_stop": False, "stop_error": False,
-               "restic_checks": 0, "fail_restic": False}
+               "loaded": False, "restic_checks": 0, "fail_restic": False}
     real_run = installer.run
+    real_kill = os.kill
+
+    def kill(pid, sig):
+        if pid != 999777:
+            return real_kill(pid, sig)
+        if not service["active"]:
+            raise ProcessLookupError()
+
+    if installer.MACOS:
+        monkeypatch.setattr(os, "kill", kill)
 
     def run(*args, **kwargs):
         args = [str(arg) for arg in args]
+        if installer.MACOS and args[1:2] == ["-c"] and 'controller["service_text"]' in args[2]:
+            # Model a private interpreter's sys.executable while executing the target renderer.
+            return real_run(sys.executable, '-c', 'import sys; sys.executable = sys.argv.pop(1); ' + args[2],
+                            installer.sys.executable, *args[3:], **kwargs)
+        if args[0] == "launchctl":
+            action = args[1]
+            if action == "print-disabled":
+                return subprocess.CompletedProcess(args, 0, stdout=f'"net.drastic.agent" => {str(not service["enabled"]).lower()}')
+            if action == "print":
+                if not service["loaded"] or args[2].endswith(".update"):
+                    return subprocess.CompletedProcess(args, 113, stdout="", stderr="Could not find service")
+                state = "state = running\npid = 999777" if service["active"] else "state = not running\nlast exit code = 1"
+                return subprocess.CompletedProcess(args, 0, stdout=state, stderr="")
+            if action == "bootstrap":
+                plist = plistlib.loads(Path(args[3]).read_bytes())
+                assert plist["RunAtLoad"] and plist["KeepAlive"]
+                service["loaded"] = True
+                service["active"] = not service["fail_start"]
+                service["fail_start"] = False
+            elif action == "bootout":
+                if service["stop_error"]:
+                    raise subprocess.CalledProcessError(5, args)
+                service["loaded"] = False
+                if not service["refuse_stop"]:
+                    service["active"] = False
+            elif action in {"enable", "disable"}:
+                service["enabled"] = action == "enable"
+            return subprocess.CompletedProcess(args, 0)
         if args[0] == "systemctl":
             action = args[1]
             if action == "show":
@@ -74,10 +123,15 @@ def mock_runtime(installer, monkeypatch, *, mock_packages=False):
                 data.write_text("[AGENT]\nidentifier = original-id\nsecret = original-secret\n"
                                 "[SERVER]\nurl = https://backup.example.net\n")
             return subprocess.CompletedProcess(args, 0)
-        if args[0].endswith("venv/bin/python") and args[1] == "-c":
-            assert "drastic_agent.integrations.restic_binary import ensure_binary" in args[2]
-            assert args[3] == str(installer.data_directory() / "bin")
+        if (args[0].endswith("venv/bin/python") and args[1] == "-c"
+                and "drastic_agent.integrations.restic_binary import ensure_binary" in args[2]):
+            assert args[3] == str(installer.ROOT / "tools/restic" if installer.MACOS else installer.data_directory() / "bin")
+            assert args[4] == ("darwin" if installer.MACOS else "linux")
             service["restic_checks"] += 1
+            if installer.MACOS:
+                folder = installer.ROOT / "tools/restic"
+                folder.mkdir(parents=True, exist_ok=True)
+                (folder / "restic_0.19.1_darwin_arm64").touch()
             if service["fail_restic"]:
                 raise subprocess.CalledProcessError(1, args)
             return subprocess.CompletedProcess(args, 0)
@@ -114,7 +168,7 @@ def repository(tmp_path, installer, monkeypatch):
     subprocess.run(["git", "init", "-b", "main", str(repo)], check=True, capture_output=True)
     (repo / "version").write_text("one")
     (repo / "scripts").mkdir()
-    (repo / "scripts/drastic-agent-installer.py").write_text("# test lifecycle manager\n")
+    (repo / "scripts/drastic-agent-installer.py").write_text("# test lifecycle manager\nMACOS_LIFECYCLE = True\n")
     restic_module = repo / "apps/agent/src/drastic_agent/integrations/restic_binary.py"
     restic_module.parent.mkdir(parents=True)
     restic_module.touch()
@@ -132,6 +186,7 @@ def repository(tmp_path, installer, monkeypatch):
     return repo
 
 
+@pytest.mark.parametrize("installer", [False, True], indirect=True)
 def test_install_update_rollback_and_uninstall(installer, monkeypatch, repository):
     service = mock_runtime(installer, monkeypatch)
     installer.check_owned()
@@ -140,6 +195,7 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     identity = (root / "data/config.ini").read_bytes()
     old = (root / "current").resolve()
     old_manager = (root / "bin/installer.py").read_bytes()
+    old_service = installer.SERVICE.read_bytes()
     stamp = old / "source/libs/python/common/src/drastic_common/build-version.txt"
     installed_version = stamp.read_text().strip()
     assert installed_version.endswith(installer.read_state()["commit"][:8])
@@ -173,6 +229,7 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
     assert (root / "data/config.ini").read_bytes() == identity
     assert "keep-me" in env.read_text()
     assert (root / "bin/installer.py").read_bytes() == old_manager
+    assert installer.SERVICE.read_bytes() == old_service
     failed = json.loads(next((root / "data").glob("update-*.json")).read_text())
     assert failed["state"] == "failed"
     assert [log["message"] for log in failed["logs"]][-2:] == [
@@ -197,6 +254,10 @@ def test_install_update_rollback_and_uninstall(installer, monkeypatch, repositor
         installer.uninstall(arguments(purge=True))
     assert (root / "current").exists() and installer.SERVICE.exists()
     service["refuse_stop"] = False
+    if installer.MACOS:
+        with pytest.raises(RuntimeError, match="still running"):
+            installer.uninstall(arguments(purge=True))
+        service["active"] = False  # The unloaded process eventually finishes shutdown.
     service["stop_error"] = True
     installer.uninstall(arguments())
     assert not installer.WRAPPER.is_symlink() and not installer.SERVICE.exists()
@@ -353,6 +414,7 @@ def test_update_rolls_back_when_stop_reports_error_but_service_is_inactive(insta
     assert service["active"]
 
 
+@pytest.mark.parametrize("installer", [False, True], indirect=True)
 def test_update_preserves_both_releases_when_rollback_cannot_stop_service(installer, monkeypatch, repository):
     service = mock_runtime(installer, monkeypatch)
     installer.install(arguments(repository=str(repository), ref="v1"))
@@ -392,6 +454,7 @@ def test_foreign_paths_are_not_removed(installer, tmp_path):
     assert external.exists()
 
 
+@pytest.mark.parametrize("installer", [False, True], indirect=True)
 def test_updates_replace_legacy_ref_with_exact_backend_commit_and_preserve_service_on_failure(installer, monkeypatch, repository):
     service = mock_runtime(installer, monkeypatch)
     subprocess.run(["git", "-C", str(repository), "checkout", "-b", "develop"], check=True)
@@ -431,6 +494,7 @@ def test_updates_replace_legacy_ref_with_exact_backend_commit_and_preserve_servi
     assert service["active"]
 
 
+@pytest.mark.parametrize("installer", [False, True], indirect=True)
 def test_restic_preflight_failure_keeps_running_release_and_identity(installer, monkeypatch, repository):
     service = mock_runtime(installer, monkeypatch)
     installer.install(arguments(repository=str(repository), ref="v1"))
@@ -448,6 +512,334 @@ def test_restic_preflight_failure_keeps_running_release_and_identity(installer, 
     status = json.loads(next((installer.ROOT / "data").glob("update-*.json")).read_text())
     assert status["state"] == "failed"
     assert not any("Stopping agent" in log["message"] for log in status["logs"])
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_rejects_incompatible_target_before_stopping(installer, monkeypatch, repository):
+    service = mock_runtime(installer, monkeypatch)
+    installer.install(arguments(repository=str(repository), ref="v1"))
+    current = (installer.ROOT / "current").resolve()
+    controller = (installer.ROOT / "bin/installer.py").read_bytes()
+    (repository / "scripts/drastic-agent-installer.py").write_text("\nINDEPENDENT_LIFECYCLE = True\n")
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: incompatible release"], check=True, capture_output=True)
+    with pytest.raises(RuntimeError, match="does not support macOS"):
+        installer.install(arguments("update", server=None))
+    assert service["active"]
+    assert (installer.ROOT / "current").resolve() == current
+    assert (installer.ROOT / "bin/installer.py").read_bytes() == controller
+    assert list((installer.ROOT / "releases").iterdir()) == [current]
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_service_environment_and_permission_paths(installer, monkeypatch, capsys):
+    root = installer.ROOT
+    (root / 'data').mkdir(mode=0o700)
+    python = root / "tools/python/test/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.touch()
+    venv = root / "current/venv/bin/python"
+    venv.parent.mkdir(parents=True)
+    venv.symlink_to(python)
+    constant = root / "current/source/libs/python/common/src/drastic_common/restic/constants.py"
+    constant.parent.mkdir(parents=True)
+    constant.write_text('RESTIC_VERSION = "0.19.1"\n')
+    (root / 'drastic-agent.env').write_text(
+        '# Settings\nDRASTIC_AGENT_DATA_DIR="/opt/drastic-agent/data"\n'
+        'DRASTIC_SERVER="https://example.net"\nCUSTOM="spaces # and quotes \\"ok\\""\n'
+    )
+    called = []
+    monkeypatch.setattr(installer.os, "execve", lambda *args: called.append(args))
+    monkeypatch.setattr(installer.platform, "machine", lambda: "arm64")
+    installer.run_macos()
+    executable, args, env = called[0]
+    assert executable == venv and args == [str(venv), "-m", "drastic_agent"]
+    assert env["CUSTOM"] == 'spaces # and quotes "ok"'
+    assert env["DRASTIC_AGENT_DATA_DIR"] == "/opt/drastic-agent/data"
+    assert "/usr/bin" in env["PATH"].split(":")
+    installer.macos_permissions()
+    output = capsys.readouterr().out
+    assert str(python) in output
+    assert str(root / "tools/restic/restic_0.19.1_darwin_arm64") in output
+    assert (root / 'data').stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_updater_is_independent_and_rejects_duplicate_or_uncertain_jobs(installer, monkeypatch):
+    (installer.ROOT / "bin").mkdir()
+    state = None
+    calls = []
+    monkeypatch.setattr(installer, "launchd_state", lambda label: state)
+    monkeypatch.setattr(installer, "run", lambda *args, **kwargs: calls.append(args))
+    installer.start_macos_update()
+    plist = plistlib.loads((installer.ROOT / "bin/update.plist").read_bytes())
+    assert plist["Label"] == "net.drastic.agent.update"
+    assert plist["ProgramArguments"][-2:] == ["log", "update"]
+    assert plist["RunAtLoad"] and not plist["KeepAlive"]
+    assert "current" not in plist["ProgramArguments"][1]
+    assert calls[-1] == ("launchctl", "bootstrap", "system", installer.ROOT / "bin/update.plist")
+    calls.clear()
+    for job_state in ("state = running\npid = 42", "state = spawn scheduled", "state = not running",
+                      "state = not running\nlast exit code = (never exited)"):
+        state = job_state
+        with pytest.raises(RuntimeError, match="already running"):
+            installer.start_macos_update()
+        assert not calls
+    state = "state = not running\nlast exit code = 1"
+    installer.start_macos_update()
+    assert calls[0] == ("launchctl", "bootout", "system/net.drastic.agent.update")
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_launchctl_errors_do_not_allow_removal(installer, monkeypatch):
+    installer.SERVICE.write_text(installer.service_text())
+    monkeypatch.setattr(installer, "run", lambda *args, **kwargs:
+                        subprocess.CompletedProcess(args, 1, stdout="", stderr="Not privileged"))
+    with pytest.raises(RuntimeError, match="Could not inspect"):
+        installer.uninstall(arguments(purge=True))
+    assert installer.ROOT.exists() and installer.SERVICE.exists()
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_update_uses_target_service_template_and_accepts_previous_python(installer, monkeypatch, repository):
+    service = mock_runtime(installer, monkeypatch)
+    installer.install(arguments(repository=str(repository), ref="v1"))
+    old_definition = installer.SERVICE.read_bytes()
+    target = Path(installer.__file__).read_text().replace("'ThrottleInterval': 5", "'ThrottleInterval': 9")
+    (repository / "scripts/drastic-agent-installer.py").write_text(target)
+    subprocess.run(["git", "-C", str(repository), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(repository), "-c", "user.name=Test", "-c", "user.email=test@example.net",
+                    "commit", "-m", "test: changed service template"], check=True, capture_output=True)
+    installer.install(arguments("update", server=None))
+    assert service["active"]
+    assert plistlib.loads(installer.SERVICE.read_bytes())["ThrottleInterval"] == 9
+    installer.check_owned()
+    # A new bootstrap interpreter must recognize services installed by an older private Python.
+    monkeypatch.setattr(installer.sys, "executable", str(installer.ROOT / "tools/python/new/bin/python3"))
+    installer.check_owned()
+    installer.SERVICE.write_bytes(old_definition)
+    installer.check_owned()
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+@pytest.mark.parametrize("field,value", [
+    ("Label", "foreign.agent"),
+    ("ProgramArguments", ["/usr/bin/python3", "/foreign/installer.py", "run"]),
+])
+def test_macos_foreign_service_is_rejected(installer, field, value):
+    definition = plistlib.loads(installer.service_text().encode())
+    definition[field] = value
+    installer.SERVICE.write_bytes(plistlib.dumps(definition))
+    with pytest.raises(RuntimeError, match="not managed"):
+        installer.check_owned()
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+@pytest.mark.parametrize("unsafe", ["writable", "foreign-owner", "symlink"])
+def test_macos_service_ownership_checks_remain_strict(installer, monkeypatch, unsafe):
+    installer.SERVICE.write_text(installer.service_text())
+    if unsafe == "writable":
+        installer.SERVICE.chmod(0o666)
+    elif unsafe == "foreign-owner":
+        monkeypatch.setattr(installer.os, "geteuid", lambda: installer.SERVICE.stat().st_uid + 1)
+    else:
+        target = installer.SERVICE.with_suffix('.foreign')
+        installer.SERVICE.rename(target)
+        installer.SERVICE.symlink_to(target)
+    with pytest.raises(RuntimeError, match="not managed"):
+        installer.check_owned()
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_tool_paths_are_readable_with_private_umask(installer, monkeypatch, repository):
+    mock_runtime(installer, monkeypatch)
+    private = installer.ROOT / "data"
+    private.mkdir(mode=0o700)
+    secret = private / "config.ini"
+    secret.write_text("[AGENT]\nidentifier = retained\n[SERVER]\nurl = https://backup.example.net\n")
+    secret.chmod(0o600)
+    python = Path(installer.sys.executable)
+    for parent in python.parents:
+        parent.chmod(0o700)
+        if parent == installer.ROOT:
+            break
+    previous = os.umask(0o077)
+    try:
+        installer.install(arguments(repository=str(repository), ref="v1"))
+    finally:
+        os.umask(previous)
+    restic = installer.ROOT / "tools/restic/restic_0.19.1_darwin_arm64"
+    for program in (python, restic):
+        assert program.stat().st_mode & 0o555 == 0o555
+        for parent in program.parents:
+            assert parent.stat().st_mode & 0o555 == 0o555
+            if parent == installer.ROOT:
+                break
+    assert private.stat().st_mode & 0o777 == 0o700
+    assert secret.stat().st_mode & 0o777 == 0o600
+
+
+@pytest.mark.parametrize("escape", ["directory", "nested-directory", "file", "return-link"])
+def test_macos_permission_helper_rejects_external_targets_before_any_chmod(installer, tmp_path, escape):
+    outside = tmp_path / "private-tools"
+    outside.mkdir(mode=0o700)
+    external_program = outside / "python3"
+    external_program.write_text("private executable")
+    external_program.chmod(0o640)
+    valid_program = installer.ROOT / "tools/bin/program"
+    valid_program.parent.mkdir(parents=True)
+    valid_program.write_text("managed executable")
+    valid_program.chmod(0o600)
+    if escape == "file":
+        program = installer.ROOT / "tools/python3"
+        program.symlink_to(external_program)
+    else:
+        link = installer.ROOT / ("tools/python/package" if escape == "nested-directory" else "tools/restic")
+        link.parent.mkdir(parents=True, exist_ok=True)
+        link.symlink_to(outside, target_is_directory=True)
+        if escape == "return-link":
+            external_program.unlink()
+            external_program.symlink_to(valid_program)
+        program = link / external_program.name
+    original = (outside.stat().st_mode, external_program.lstat().st_mode,
+                external_program.read_bytes(), valid_program.stat().st_mode)
+    with pytest.raises(RuntimeError, match="must resolve inside"):
+        installer.macos_program_permissions(valid_program, program)
+    assert (outside.stat().st_mode, external_program.lstat().st_mode,
+            external_program.read_bytes(), valid_program.stat().st_mode) == original
+
+
+@pytest.mark.parametrize("tool_path", ["tools/bin", "tools/python", "tools/restic"])
+def test_tool_directory_links_are_rejected_before_bootstrap_writes(installer, tmp_path, tool_path):
+    outside = tmp_path / "private-tools"
+    outside.mkdir(mode=0o700)
+    executable = outside / "program"
+    executable.write_text("private contents")
+    executable.chmod(0o640)
+    link = installer.ROOT / tool_path
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(outside, target_is_directory=True)
+    original = (outside.stat().st_mode, executable.stat().st_mode, executable.read_bytes())
+    with pytest.raises(RuntimeError, match="Unexpected symlink"):
+        installer.check_owned()
+    script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
+    guard = script.read_text().split("<<'CHECK'\n", 1)[1].split("\nCHECK", 1)[0]
+    guard = (guard.replace("/opt/drastic-agent", str(installer.ROOT))
+             .replace("/opt", str(tmp_path))
+             .replace("= 0 ]", f"= {os.getuid()} ]"))
+    result = subprocess.run(["bash", "-s", "--", "false"], input=guard, text=True, capture_output=True)
+    assert result.returncode != 0
+    assert "Private runtime paths must not be symlinks" in result.stderr
+    assert set(path.name for path in outside.iterdir()) == {"program"}
+    assert (outside.stat().st_mode, executable.stat().st_mode, executable.read_bytes()) == original
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+@pytest.mark.parametrize("command", ["run", "update"])
+def test_macos_logs_rotate_large_output_and_preserve_startup_failure(installer, command):
+    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGINT)}
+    (installer.ROOT / "bin").mkdir()
+    (installer.ROOT / "data").mkdir(mode=0o700)
+    (installer.ROOT / "bin/installer.py").write_text(
+        'import subprocess, sys\n'
+        'assert sys.argv[1:] == ' + repr([command, *(["--wait-lock"] if command == "update" else [])]) + '\n'
+        'subprocess.run([sys.executable, "-c", "import os; os.write(1, b\'x\' * (4 * 1024 * 1024))"], check=True)\n'
+        'sys.stderr.write("startup failed\\n")\nraise SystemExit(7)\n'
+    )
+    assert installer.run_logged(command) == 7
+    label = installer.SERVICE_LABEL if command == "run" else installer.UPDATE_LABEL
+    files = list((installer.ROOT / "data").glob(f"{label}.log*"))
+    assert len(files) == 3
+    assert all(path.stat().st_size <= 1024 * 1024 for path in files)
+    assert all(path.stat().st_mode & 0o777 == 0o600 for path in files)
+    assert (installer.ROOT / "data" / f"{label}.log").read_text().endswith("startup failed\n")
+    assert {sig: signal.getsignal(sig) for sig in previous_handlers} == previous_handlers
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+@pytest.mark.parametrize("command", ["run", "update"])
+def test_macos_log_wrapper_rejects_symlinked_data_without_touching_target(installer, monkeypatch, tmp_path, command):
+    outside = tmp_path / "foreign-data"
+    outside.mkdir()
+    label = installer.SERVICE_LABEL if command == "run" else installer.UPDATE_LABEL
+    for suffix in ("", ".1", ".2"):
+        path = outside / f"{label}.log{suffix}"
+        path.write_text("foreign log contents\n")
+        path.chmod(0o640)
+    original = {path.name: (path.read_bytes(), path.stat().st_mode) for path in outside.iterdir()}
+    (installer.ROOT / "data").symlink_to(outside, target_is_directory=True)
+
+    def unexpected_spawn(*args, **kwargs):
+        pytest.fail("An unowned installation must not spawn a worker")
+
+    monkeypatch.setattr(installer.subprocess, "Popen", unexpected_spawn)
+    with pytest.raises(RuntimeError, match="Unexpected symlink"):
+        installer.run_logged(command)
+    assert {path.name: (path.read_bytes(), path.stat().st_mode) for path in outside.iterdir()} == original
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+def test_macos_log_process_forwards_shutdown_and_waits_for_child(installer):
+    (installer.ROOT / "bin").mkdir()
+    (installer.ROOT / "data").mkdir(mode=0o700)
+    ready = installer.ROOT / "ready"
+    (installer.ROOT / "bin/installer.py").write_text(
+        'import signal, time\nfrom pathlib import Path\n'
+        'def stop(sig, frame):\n    print("child stopped", flush=True)\n    raise SystemExit(42)\n'
+        'signal.signal(signal.SIGTERM, stop)\n'
+        f'Path({str(ready)!r}).touch()\n'
+        'time.sleep(60)\n'
+    )
+    supervisor = (
+        'import runpy, sys; from pathlib import Path; '
+        'controller = runpy.run_path(sys.argv[1]); run = controller["run_logged"]; '
+        'root = Path(sys.argv[2]); '
+        'run.__globals__.update(ROOT=root, SERVICE=root / "service", WRAPPER=root / "command"); '
+        'sys.exit(run("run"))'
+    )
+    process = subprocess.Popen([sys.executable, '-c', supervisor, installer.__file__, str(installer.ROOT)])
+    try:
+        deadline = time.monotonic() + 5
+        while not ready.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert ready.exists()
+        process.terminate()
+        assert process.wait(timeout=5) == 42
+        assert (installer.ROOT / "data/net.drastic.agent.log").read_text() == "child stopped\n"
+    finally:
+        if process.poll() is None:
+            process.terminate()
+            process.wait(timeout=5)
+
+
+@pytest.mark.parametrize("installer", [True], indirect=True)
+@pytest.mark.parametrize("wait", [False, True])
+def test_macos_updater_waits_for_launchers_lock_but_normal_commands_do_not(installer, monkeypatch, wait):
+    monkeypatch.setattr(sys, "argv", ["installer", "update", *(["--wait-lock"] if wait else [])])
+    monkeypatch.setattr(installer, "sys", SimpleNamespace(**{
+        **vars(sys), "platform": "darwin",
+    }))
+    monkeypatch.setattr(installer.os, "geteuid", lambda: 0)
+    attempts = []
+    installed = []
+
+    def lock(fd, flags):
+        assert os.fstat(fd).st_ino == (installer.ROOT / ".installer.lock").stat().st_ino
+        attempts.append(flags)
+        if len(attempts) == 1:
+            raise BlockingIOError("Launcher is still returning its acknowledgement")
+
+    monkeypatch.setattr(installer.fcntl, "flock", lock)
+    monkeypatch.setattr(installer, "install", lambda args: installed.append(args.command))
+    if wait:
+        installer.main()
+        assert installed == ["update"] and len(attempts) == 2
+    else:
+        with pytest.raises(SystemExit) as error:
+            installer.main()
+        assert error.value.code == 1
+        assert not installed and len(attempts) == 1
 
 
 @pytest.fixture
@@ -647,11 +1039,13 @@ def test_piped_bootstrap_never_prompts_for_branch_and_preserves_explicit_ref():
         assert "Git branch" not in result.stderr
 
 @pytest.mark.parametrize("dirty,explicit_ref", [(False, False), (True, False), (False, True)])
-def test_bootstrap_fetches_backend_commit_and_rejects_dirty_target(installer, repository, tmp_path, dirty, explicit_ref):
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
+def test_bootstrap_fetches_backend_commit_and_rejects_dirty_target(installer, repository, tmp_path, dirty, explicit_ref, os_name):
     manager = repository / "scripts/drastic-agent-installer.py"
     manager.write_text("raise SystemExit('Legacy controller must not run')\n")
     backend_manager = (
         '\nINDEPENDENT_LIFECYCLE = True\n'
+        '\nMACOS_LIFECYCLE = True\n'
         'import json, subprocess, sys\n'
         'source = sys.argv[sys.argv.index("--source") + 1]\n'
         'print(json.dumps({"args": sys.argv[1:], "commit": subprocess.check_output('
@@ -672,6 +1066,15 @@ def test_bootstrap_fetches_backend_commit_and_rejects_dirty_target(installer, re
     uv.chmod(0o755)
     tools = tmp_path / "test-bin"
     tools.mkdir()
+    for name, body in {
+        "uname": f'printf "%s\\n" "{os_name}"',
+        "stat": f'if [ "$2" = %Lp ]; then printf "755\\n"; else printf "%s\\n" "{os.getuid()}"; fi',
+        "xcode-select": 'exit 0', "open": 'exit 0',
+        "launchctl": 'exit 113',
+    }.items():
+        tool = tools / name
+        tool.write_text(f'#!/bin/sh\n{body}\n')
+        tool.chmod(0o755)
     curl = tools / "curl"
     curl.write_text(f'''#!{sys.executable}
 from pathlib import Path
@@ -686,11 +1089,13 @@ else:
     script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
     bootstrap = (script.read_text()
                  .replace("/opt/drastic-agent", str(installer.ROOT))
+                 .replace("/opt", str(tmp_path))
                  .replace("/usr/local/bin/drastic-agent", str(installer.WRAPPER))
                  .replace("/etc/systemd/system/drastic-agent.service", str(installer.SERVICE))
                  .replace('if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi', '"$@"')
                  .replace('if [ "$(id -u)" -ne 0 ]; then', 'if false; then')
-                 .replace('"$(stat -c %u "$root")" = 0', f'"$(stat -c %u "$root")" = {os.getuid()}'))
+                 .replace('"$(stat -c %u "$root")" = 0', f'"$(stat -c %u "$root")" = {os.getuid()}')
+                 .replace('"$(stat -f %u "$root")" = 0', f'"$(stat -f %u "$root")" = {os.getuid()}'))
     result = subprocess.run(
         ["bash", "-s", "--", "--server", "https://backup.example.net", "--repository", str(repository),
          *(["--ref", revision] if explicit_ref else [])],
@@ -707,6 +1112,48 @@ else:
         flag = "--ref" if explicit_ref else "--revision"
         assert installed["args"][installed["args"].index(flag) + 1] == revision
         assert ("--ref" in installed["args"]) == explicit_ref
+
+
+@pytest.mark.parametrize("parent_state", ["missing", "readable", "private"])
+def test_macos_bootstrap_handles_opt_permissions_before_creating_agent(tmp_path, parent_state):
+    parent = tmp_path / "install-parent"
+    root = parent / "agent"
+    if parent_state != "missing":
+        parent.mkdir()
+        parent.chmod(0o755 if parent_state == "readable" else 0o700)
+        (parent / "keep").write_text("existing contents")
+    commands = tmp_path / "commands"
+    commands.mkdir()
+    uname = commands / "uname"
+    uname.write_text('#!/bin/sh\nprintf "Darwin\\n"\n')
+    uname.chmod(0o755)
+    stat = commands / "stat"
+    stat.write_text(f'#!{sys.executable}\nimport os, sys\n'
+                    'info = os.stat(sys.argv[-1])\n'
+                    'print(format(info.st_mode & 0o7777, "o") if sys.argv[2] == "%Lp" else info.st_uid)\n')
+    stat.chmod(0o755)
+    script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
+    guard = script.read_text().split("<<'CHECK'\n", 1)[1].split("\nCHECK", 1)[0]
+    guard = (guard.replace("/opt/drastic-agent", str(root))
+             .replace("/opt", str(parent))
+             .replace("/usr/local/bin/drastic-agent", str(tmp_path / "command"))
+             .replace("/Library/LaunchDaemons/net.drastic.agent.plist", str(tmp_path / "service"))
+             .replace("= 0 ]", f"= {os.getuid()} ]"))
+    result = subprocess.run(["bash", "-s", "--", "false"], input="umask 077\n" + guard,
+                            text=True, capture_output=True,
+                            env={**os.environ, "PATH": f"{commands}:{os.environ['PATH']}"})
+    if parent_state == "private":
+        assert result.returncode != 0
+        assert "Full Disk Access picker" in result.stderr and "chmod o+rx" in result.stderr
+        assert not root.exists()
+        assert parent.stat().st_mode & 0o777 == 0o700
+    else:
+        assert result.returncode == 0, result.stderr
+        assert parent.stat().st_mode & 0o777 == 0o755
+        assert root.stat().st_mode & 0o777 == 0o755
+        assert (root / ".managed-by-drastic-agent").is_file()
+    if parent_state != "missing":
+        assert (parent / "keep").read_text() == "existing contents"
 
 
 def test_bootstrap_requires_explicit_adoption_and_rejects_legacy_or_foreign_files(installer):
@@ -738,15 +1185,23 @@ def test_bootstrap_requires_explicit_adoption_and_rejects_legacy_or_foreign_file
 
 
 @pytest.mark.parametrize("data_state", ["none", "existing", "new"])
-def test_failed_first_bootstrap_removes_only_new_runtime(tmp_path, data_state):
+@pytest.mark.parametrize("os_name", ["Linux", "Darwin"])
+def test_failed_first_bootstrap_removes_only_new_runtime(tmp_path, data_state, os_name):
     root = tmp_path / "agent"
     if data_state == "existing":
         (root / "data").mkdir(parents=True)
         (root / "data/config.ini").write_text("original identity")
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    for name, body in {"uname": f'printf "%s\\n" "{os_name}"',
+                       "stat": f'if [ "$2" = %Lp ]; then printf "755\\n"; else printf "%s\\n" "{os.getuid()}"; fi',
+                       "xcode-select": 'exit 0', "launchctl": 'exit 113'}.items():
+        tool = bin_dir / name
+        tool.write_text(f'#!/bin/sh\n{body}\n')
+        tool.chmod(0o755)
     curl = bin_dir / "curl"
     curl.write_text('#!/bin/sh\nmkdir -p "$TEST_ROOT/tools/bin" "$TEST_ROOT/cache/uv"\n'
+                    'if [ "$TEST_MACOS" = true ]; then : > "$TEST_ROOT/.installer.lock"; fi\n'
                     'if [ "$TEST_NEW_IDENTITY" = true ]; then\n'
                     '  mkdir -p "$TEST_ROOT/data"\n'
                     '  printf "new identity" > "$TEST_ROOT/data/config.ini"\n'
@@ -756,17 +1211,21 @@ def test_failed_first_bootstrap_removes_only_new_runtime(tmp_path, data_state):
     script = Path(__file__).resolve().parents[3] / "scripts/install-drastic-agent.sh"
     bootstrap = (script.read_text()
                  .replace("/opt/drastic-agent", str(root))
+                 .replace("/opt", str(tmp_path))
                  .replace("/usr/local/bin/drastic-agent", str(tmp_path / "command"))
                  .replace("/etc/systemd/system/drastic-agent.service", str(tmp_path / "service"))
+                 .replace("/Library/LaunchDaemons/net.drastic.agent.plist", str(tmp_path / "service"))
                  .replace('if [ "$(id -u)" -eq 0 ]; then "$@"; else sudo "$@"; fi', '"$@"')
                  .replace('if [ "$(id -u)" -ne 0 ]; then', 'if false; then')
                  .replace('systemctl is-active --quiet drastic-agent.service', 'false')
-                 .replace('"$(stat -c %u "$root")" = 0', f'"$(stat -c %u "$root")" = {os.getuid()}'))
+                 .replace('"$(stat -c %u "$root")" = 0', f'"$(stat -c %u "$root")" = {os.getuid()}')
+                 .replace('"$(stat -f %u "$root")" = 0', f'"$(stat -f %u "$root")" = {os.getuid()}'))
     result = subprocess.run(
         ["bash", "-s", "--", "--source", str(tmp_path / "unused"),
          *(["--reuse-data"] if data_state == "existing" else [])],
         input=bootstrap, text=True, capture_output=True,
         env={**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "TEST_ROOT": str(root),
+             "TEST_MACOS": str(os_name == "Darwin").lower(),
              "TEST_NEW_IDENTITY": str(data_state == "new").lower()},
     )
 
@@ -776,7 +1235,9 @@ def test_failed_first_bootstrap_removes_only_new_runtime(tmp_path, data_state):
             "original identity" if data_state == "existing" else "new identity"
         )
         assert (root / ".managed-by-drastic-agent").exists()
-        assert {path.name for path in root.iterdir()} == {"data", ".managed-by-drastic-agent"}
+        assert {path.name for path in root.iterdir()} == {
+            "data", ".managed-by-drastic-agent", *([".installer.lock"] if os_name == "Darwin" else []),
+        }
     else:
         assert not root.exists()
 

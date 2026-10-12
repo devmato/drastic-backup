@@ -3,7 +3,9 @@
 import json
 import logging
 import os
+import re
 import subprocess
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -25,6 +27,32 @@ def check_state(install_type, manager, *, startup, install_root, unit):
             logging.info("Container update finished; resuming execution. Details: container logs")
         return manager.maintenance
     try:
+        if sys.platform == "darwin":
+            import fcntl
+
+            result = subprocess.run(["launchctl", "print", "system/net.drastic.agent.update"],
+                                    capture_output=True, text=True, timeout=5, check=False)
+            if result.returncode and "Could not find service" not in result.stderr:
+                raise OSError(result.stderr.strip())
+            finished = result.returncode != 0 or (
+                re.search(r"^\s*state = not running\s*$", result.stdout, re.M)
+                and re.search(r"^\s*last (exit code = -?\d+|terminating signal = [^\n]*\b[1-9]\d*)\s*$", result.stdout, re.M)
+            )
+            # CLI installs have no updater job, but must also finish startup checks first.
+            descriptor = os.open(install_root / ".installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+            try:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    finished = False
+            finally:
+                os.close(descriptor)
+            if startup and not finished:
+                manager.start_maintenance(lambda: None)
+            elif finished and manager.maintenance:
+                manager.finish_maintenance()
+                logging.info("macOS update finished; resuming execution")
+            return manager.maintenance
         result = subprocess.run(["systemctl", "is-active", unit],
                                 capture_output=True, text=True, timeout=5, check=False)
         state = result.stdout.strip()
@@ -34,6 +62,8 @@ def check_state(install_type, manager, *, startup, install_root, unit):
             manager.finish_maintenance()
             logging.info("Update unit finished; resuming execution. Details: journalctl -u %s", unit)
     except (OSError, subprocess.SubprocessError) as exc:
+        if startup and sys.platform == "darwin":
+            manager.start_maintenance(lambda: None)
         logging.warning("Could not check update unit: %s", exc)
     return manager.maintenance
 
@@ -45,7 +75,8 @@ def read_reports(data_dir, install_root, operations):
     if not paths:
         return
     # The installer lock distinguishes a slow update from a host/container restart.
-    descriptor = os.open(install_root, os.O_RDONLY | os.O_DIRECTORY)
+    descriptor = (os.open(install_root / ".installer.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+                  if sys.platform == "darwin" else os.open(install_root, os.O_RDONLY | os.O_DIRECTORY))
     try:
         updating = False
         try:
@@ -92,12 +123,14 @@ def start(install_type, manager, *, data_dir, install_root, command, unit):
     if install_type not in {"git", "docker"} or (
         install_type == "git" and Path(data_dir).resolve() != install_root / "data"
     ):
-        report.log_message("Updates require a managed Linux installation running as root", final_state=AgentReportState.failed)
+        report.log_message("Updates require a managed Linux/macOS installation running as root", final_state=AgentReportState.failed)
         return report.finish()
 
     def launch():
         args = [str(command), "update"]
-        if install_type != "docker":
+        if install_type == "git" and sys.platform == "darwin":
+            args = [str(command), "start-update"]
+        elif install_type != "docker":
             args = ["systemd-run", "--collect", f"--unit={unit}", "--", *args]
         subprocess.run(args, check=True, capture_output=True, text=True, timeout=10)
 

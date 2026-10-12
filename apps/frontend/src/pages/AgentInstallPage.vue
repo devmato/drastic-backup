@@ -1,6 +1,6 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader title="Add Agent" description="Install the Linux agent directly from Git or run the Docker agent. Copy the install snippet for the selected target.">
+    <PageHeader title="Add Agent" description="Install the Linux or macOS agent directly from Git or run the Docker agent. Copy the install snippet for the selected target.">
       <template #breadcrumbs>
         <q-breadcrumbs>
           <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
@@ -20,63 +20,9 @@
       <q-spinner color="primary" size="40px" />
     </div>
 
-    <div v-else class="row q-col-gutter-md q-row-gutter-md">
-      <div v-for="card in platformCards" :key="card.id" class="col-12 col-md-6">
-        <q-card bordered flat class="full-height column no-wrap">
-          <q-card-section class="col-auto">
-            <div class="row items-center no-wrap q-col-gutter-sm">
-              <div class="col-auto">
-                <q-icon :name="card.icon" size="32px" color="primary" />
-              </div>
-              <div class="col">
-                <h2 class="text-subtitle1 text-weight-medium q-my-none">{{ card.title }}</h2>
-                <div class="row q-gutter-xs q-mt-xs">
-                  <q-chip v-for="chip in card.chips" :key="chip" dense square color="grey-2" text-color="dark">
-                    {{ chip }}
-                  </q-chip>
-                </div>
-              </div>
-            </div>
-          </q-card-section>
-
-          <q-card-section class="col-auto q-pt-none">
-            <q-tabs
-              :class="$q.dark.isActive ? 'text-grey-3' : 'text-grey-9'"
-              :model-value="selectedActionId(card)"
-              dense
-              no-caps
-              active-color="primary"
-              indicator-color="primary"
-              align="left"
-              narrow-indicator
-              @update:model-value="setSelectedAction(card, $event)"
-            >
-              <q-tab v-for="action in card.actions" :key="action.id" :name="action.id" :label="action.label" />
-            </q-tabs>
-          </q-card-section>
-
-          <q-separator />
-
-          <q-card-section class="col-auto">
-            <q-tab-panels :model-value="selectedActionId(card)" class="bg-transparent q-pa-none">
-              <q-tab-panel v-for="action in card.actions" :key="action.id" :name="action.id" class="q-pa-none">
-                <div class="text-subtitle2">{{ action.description }}</div>
-                <div class="text-body2 q-mt-xs" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">{{ action.note }}</div>
-                <q-card flat bordered class="q-mt-sm">
-                  <q-card-section class="row items-center q-pa-sm">
-                    <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Install snippet</div>
-                    <q-space />
-                    <q-btn dense flat color="primary" icon="content_copy" label="Copy" no-caps @click="copyAction(action)" />
-                  </q-card-section>
-                  <q-separator />
-                  <q-card-section class="q-pa-none">
-                    <pre class="db-code-block db-code-block--wrap q-ma-none">{{ buildActionSnippet(action) }}</pre>
-                  </q-card-section>
-                </q-card>
-              </q-tab-panel>
-            </q-tab-panels>
-          </q-card-section>
-        </q-card>
+    <div v-else class="row items-stretch q-col-gutter-md">
+      <div v-for="card in platformCards" :key="card.id" class="col-12 col-md-6 col-lg-4 column">
+        <AgentInstallCard :card="card" @copy="copyAction" />
       </div>
     </div>
   </q-page>
@@ -84,6 +30,7 @@
 
 <script setup>
 import PageHeader from 'components/PageHeader.vue'
+import AgentInstallCard from 'components/agents/AgentInstallCard.vue'
 import { computed, onMounted, ref } from 'vue'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
@@ -97,7 +44,6 @@ const userStore = useUserStore()
 const loading = ref(false)
 const loadError = ref('')
 const installOptions = ref({ server_url: '', targets: [] })
-const selectedActions = ref({})
 const showDevelopTab = computed(() => ['dev', 'test'].includes(userStore.environment))
 const publicBaseUrl = computed(() => (installOptions.value.server_url || window.location.origin).replace(/\/$/, ''))
 
@@ -109,14 +55,14 @@ const platformCards = computed(() => {
       id: 'linux',
       title: 'Linux',
       icon: 'fa-brands fa-linux',
-      chips: ['systemd', 'amd64/arm64'],
+      chips: ['systemd', 'amd64 / arm64'],
       actions: [
         {
           id: 'linux-setup',
           label: 'Setup Script',
           type: 'setup',
           description: 'Install from Git',
-          note: 'Installs a private Python runtime and systemd service under /opt/drastic-agent. Requires git, curl and root or sudo. Prompts for registration credentials.',
+          note: 'Requires Git, curl and sudo. Installs a private Python runtime and systemd service.',
         },
         ...(showDevelopTab.value
           ? [
@@ -125,17 +71,32 @@ const platformCards = computed(() => {
                 label: 'Develop',
                 type: 'develop',
                 description: 'Local development agent',
-                note: 'Runs the agent from the current repository checkout using scripts/dev.sh agent-local. Configure credentials in .env.dev.override when needed.',
+                note: 'Runs from a local checkout. Configure registration credentials in .env.dev.override.',
               },
             ]
           : []),
       ],
     },
     {
+      id: 'macos',
+      title: 'macOS',
+      icon: 'fa-brands fa-apple',
+      chips: ['launchd', 'Intel / Apple Silicon'],
+      actions: [
+        {
+          id: 'macos-setup',
+          label: 'Setup Script',
+          type: 'setup',
+          description: 'Install from Git',
+          note: 'Requires Git (Apple Command Line Tools) and sudo. After setup, grant Full Disk Access as instructed.',
+        },
+      ],
+    },
+    {
       id: 'docker',
       title: 'Docker',
       icon: 'fa-brands fa-docker',
-      chips: ['Docker', 'Compose', 'amd64/arm64'],
+      chips: ['Container', 'amd64 / arm64'],
       actions: [
         {
           id: 'docker-run',
@@ -143,7 +104,7 @@ const platformCards = computed(() => {
           type: 'docker-run',
           image: dockerImage(dockerTargets),
           description: 'Docker run agent',
-          note: 'Runs the agent container with persistent data and readonly host access.',
+          note: 'Requires Docker. Runs with persistent agent data and read-only access to host files.',
         },
         {
           id: 'docker-compose',
@@ -151,20 +112,15 @@ const platformCards = computed(() => {
           type: 'docker-compose',
           image: dockerImage(dockerTargets),
           description: 'Docker Compose agent',
-          note: 'Creates a standalone Compose file under /opt/drastic-agent and starts the agent service.',
+          note: 'Requires Docker Compose. Creates the agent service with persistent data and host access.',
         },
       ],
     },
-  ]
+  ].map(card => ({
+    ...card,
+    actions: card.actions.map(action => ({ ...action, snippet: buildActionSnippet(action) })),
+  }))
 })
-
-function selectedActionId(card) {
-  return selectedActions.value[card.id] || card.actions[0]?.id || ''
-}
-
-function setSelectedAction(card, actionId) {
-  selectedActions.value = { ...selectedActions.value, [card.id]: actionId }
-}
 
 function buildActionSnippet(action) {
   if (action.type === 'setup') {
@@ -250,7 +206,7 @@ function quoteShell(value) {
 
 async function copyAction(action) {
   try {
-    await copyToClipboard(buildActionSnippet(action))
+    await copyToClipboard(action.snippet)
     $q.notify({ message: `${action.label} snippet copied`, color: 'green', position: 'top' })
   } catch {
     $q.notify({ message: 'Could not copy snippet', color: 'red', position: 'top' })

@@ -223,7 +223,9 @@ class Agent:
         return agent_version()
 
     def __check_restic_binary(self):
-        binary_path = ensure_binary(_agent_data_path("bin"), self.os_clean, self.arch)
+        # macOS's permission picker needs a readable program path outside private agent data.
+        folder = AGENT_INSTALL_ROOT / "tools/restic" if self.os_clean == "darwin" and self.install_type == "git" else _agent_data_path("bin")
+        binary_path = ensure_binary(folder, self.os_clean, self.arch)
         shutdown_event = getattr(self, "_Agent__shutdown_event", None)
         if shutdown_event is None:
             shutdown_event = Event()
@@ -1047,7 +1049,13 @@ class Agent:
             )
             return report.finish()
 
-        directories = os.listdir(base_directory)
+        try:
+            directories = os.listdir(base_directory)
+        except PermissionError as exc:
+            hint = (" Grant Full Disk Access to the background agent; sudo drastic-agent status lists its executable path."
+                    if self.os_clean == "darwin" else "")
+            report.log_message(f"Cannot read directory: {exc}.{hint}", final_state=AgentReportState.failed)
+            return report.finish()
 
         for directory in directories:
             dir_path = os.path.join(base_directory, directory)

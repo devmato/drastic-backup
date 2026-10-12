@@ -1,5 +1,6 @@
 """File backups with job-scoped parent selection."""
 
+import sys
 from datetime import datetime
 
 from drastic_agent.agent.enums import AgentOperationState
@@ -47,6 +48,9 @@ class FileBackupJobHandler(BackupJobHandler):
                     callback_throttle=500,
                 )
         except Exception as exc:
+            if sys.platform == "darwin" and any(text in str(exc).lower() for text in ("operation not permitted", "permission denied")):
+                report.log_message("macOS denied file access. Check Full Disk Access for the background agent and restic; "
+                                   "sudo drastic-agent status lists their executable paths. Restart the service after granting access.")
             self.finish_artifact(
                 artifact,
                 state=AgentOperationState.failed,
