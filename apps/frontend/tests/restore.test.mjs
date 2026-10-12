@@ -15,7 +15,7 @@ function createRestoreDialog(type = 'file') {
   const requests = []
   const dialog = runInNewContext(`${source}\n;({ resetDialog, snapshots, selectedSnapshotId, activeSection,
     sections, canGoNext, onFormSubmit, submitRestore, selectedAgentId, selectedMode, includePaths,
-    overwritePolicy, overwriteConfirmed, crossAgentConfirmed, proxmoxSelection, proxmoxPanel })`, {
+    overwritePolicy, overwriteConfirmed, proxmoxSelection, proxmoxPanel })`, {
     computed, ref, watch: () => {}, defineProps: () => props,
     defineModel: () => ref(false), defineEmits: () => () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: () => {} }),
@@ -103,7 +103,7 @@ test('file restores share steps and retain selections and guest sessions when na
   }
 })
 
-test('restore start requires file confirmations or a ready VM target', async () => {
+test('restore to another agent only requires overwrite confirmation or a ready VM target', async () => {
   const { dialog, requests } = createRestoreDialog()
   dialog.selectedAgentId.value = 4
   dialog.onFormSubmit()
@@ -114,15 +114,13 @@ test('restore start requires file confirmations or a ready VM target', async () 
   assert.equal(requests.length, 0)
   dialog.overwriteConfirmed.value = true
   await dialog.onFormSubmit()
-  assert.equal(requests.length, 0)
-  dialog.crossAgentConfirmed.value = true
-  await dialog.onFormSubmit()
   assert.equal(requests.length, 1)
   assert.equal(requests[0].agent_id, 4)
   assert.equal(requests[0].overwrite_policy, 'overwrite')
   assert.deepEqual([...requests[0].include_paths], ['/documents'])
 
   const vm = createRestoreDialog('proxmox')
+  vm.dialog.selectedAgentId.value = 4
   assert.deepEqual([...vm.dialog.sections.value].map(section => section.name), ['source', 'target'])
   vm.dialog.onFormSubmit()
   vm.dialog.proxmoxPanel.value = { canSubmit: false }
@@ -132,5 +130,6 @@ test('restore start requires file confirmations or a ready VM target', async () 
   vm.dialog.proxmoxPanel.value = { canSubmit: true, handOff: () => {} }
   await vm.dialog.onFormSubmit()
   assert.equal(vm.requests[0].mode, 'proxmox_vm')
+  assert.equal(vm.requests[0].agent_id, 4)
   assert.equal(vm.requests[0].restore_location, null)
 })

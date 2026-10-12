@@ -99,10 +99,6 @@
                   <q-option-group class="q-mt-md" v-model="overwritePolicy" type="radio" :options="overwriteOptions" :disable="submitting" />
                   <q-checkbox v-if="overwritePolicy === 'overwrite'" v-model="overwriteConfirmed" :disable="submitting" label="I understand that existing files at the restore destination may be replaced" />
                 </template>
-                <q-banner v-if="isCrossAgentRestore" class="q-mt-md bg-orange-1 text-orange-10">
-                  Cross-agent restore: this snapshot was created by a different agent.
-                  <q-checkbox v-model="crossAgentConfirmed" :disable="submitting" label="Restore it to the selected agent" />
-                </q-banner>
               </div>
             </div>
           </div>
@@ -158,7 +154,6 @@ const submitting = ref(false)
 const showTargetBrowserDialog = ref(false)
 const overwritePolicy = ref('fail_if_exists')
 const overwriteConfirmed = ref(false)
-const crossAgentConfirmed = ref(false)
 const proxmoxSelection = ref({})
 const proxmoxPanel = ref(null)
 const restoreForm = ref(null)
@@ -189,7 +184,6 @@ const restoreSource = computed(() => ({ job_id: props.job?.id, agent_id: selecte
 const sourceKey = computed(() => `${JSON.stringify(restoreSource.value)}:${selectedMode.value}`)
 const canLoadSnapshots = computed(() => Boolean(props.job?.id && selectedAgentId.value && selectedRepositoryId.value))
 const snapshotOptions = computed(() => snapshots.value.filter(snapshot => !isProxmoxMode.value || (snapshot.proxmox_archive && !snapshot.restore_error)).map(snapshot => ({ label: snapshotLabel(snapshot), value: snapshot.id })))
-const isCrossAgentRestore = computed(() => Boolean(selectedAgentId.value && props.job?.agent_id && selectedAgentId.value !== props.job.agent_id))
 const sourceReady = computed(() => canLoadSnapshots.value && !loadingSnapshots.value
   && agentOptions.value.some(agent => agent.value === selectedAgentId.value)
   && repositoryOptions.value.some(repository => repository.value === selectedRepositoryId.value)
@@ -200,8 +194,7 @@ const selectionReady = computed(() => !isFileMode.value || (selectedMode.value =
 const canGoNext = computed(() => sourceReady.value && (activeSection.value === 'source' || selectionReady.value))
 const canSubmit = computed(() => sourceReady.value && selectionReady.value
   && (isFileMode.value ? Boolean(restoreLocation.value.trim()) : Boolean(proxmoxPanel.value?.canSubmit))
-  && (!isFileMode.value || overwritePolicy.value !== 'overwrite' || overwriteConfirmed.value)
-  && (!isCrossAgentRestore.value || crossAgentConfirmed.value))
+  && (!isFileMode.value || overwritePolicy.value !== 'overwrite' || overwriteConfirmed.value))
 const overwriteOptions = [
   { label: 'Fail if selected files already exist (recommended)', value: 'fail_if_exists' },
   { label: 'Overwrite existing files', value: 'overwrite' },
@@ -234,7 +227,6 @@ function resetDialog() {
   showTargetBrowserDialog.value = false
   overwritePolicy.value = 'fail_if_exists'
   overwriteConfirmed.value = false
-  crossAgentConfirmed.value = false
 }
 
 async function loadSnapshots() {
@@ -310,7 +302,6 @@ watch(sourceKey, () => {
   restoreForm.value?.resetValidation()
   includePaths.value = []
   proxmoxSelection.value = {}
-  crossAgentConfirmed.value = false
   overwriteConfirmed.value = false
 })
 
@@ -329,7 +320,6 @@ watch([dialogVisible, selectedAgentId, selectedRepositoryId], async () => {
   snapshots.value = []
   selectedSnapshotId.value = null
   includePaths.value = []
-  crossAgentConfirmed.value = false
   await loadSnapshots()
 })
 
