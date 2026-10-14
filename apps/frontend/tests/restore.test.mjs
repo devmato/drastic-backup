@@ -4,18 +4,19 @@ import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, ref } from 'vue'
 
-function createRestoreDialog(type = 'file') {
+function createRestoreDialog(type = 'file', protocol = 17) {
   const source = readFileSync(new URL('../src/components/restore/RestoreDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const repository = { id: 2, name: 'Backups', location: '/backups' }
   const props = { job: { id: 3, agent_id: 1, type }, agents: [
-    { id: 1, display_name: 'Source agent', online: true, repositories: [repository] },
+    { id: 1, display_name: 'Source agent', online: true, protocol_version: protocol, repositories: [repository] },
     { id: 4, display_name: 'Other agent', online: true, repositories: [repository] },
   ], repositories: [repository] }
   const requests = []
   const dialog = runInNewContext(`${source}\n;({ resetDialog, snapshots, selectedSnapshotId, activeSection,
     sections, canGoNext, onFormSubmit, submitRestore, selectedAgentId, selectedMode, includePaths,
-    overwritePolicy, overwriteConfirmed, proxmoxSelection, proxmoxPanel })`, {
+    overwritePolicy, overwriteConfirmed, proxmoxSelection, proxmoxPanel, advancedOpen,
+    ownershipByName, skipXattrs, supportsRestoreMetadataOptions })`, {
     computed, ref, watch: () => {}, defineProps: () => props,
     defineModel: () => ref(false), defineEmits: () => () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: () => {} }),
@@ -132,4 +133,35 @@ test('restore to another agent only requires overwrite confirmation or a ready V
   assert.equal(vm.requests[0].mode, 'proxmox_vm')
   assert.equal(vm.requests[0].agent_id, 4)
   assert.equal(vm.requests[0].restore_location, null)
+})
+
+test('Restic metadata options are opt-in, independent and only sent to supported plain file restores', async () => {
+  for (const mode of ['plain_file', 'proxmox_files', 'proxmox_vm']) {
+    for (const protocol of [16, 17]) {
+      const { dialog, requests } = createRestoreDialog('proxmox', protocol)
+      dialog.selectedMode.value = mode
+      dialog.activeSection.value = 'target'
+      dialog.includePaths.value = ['/documents']
+      dialog.proxmoxSelection.value = { session_id: 'session', volume: '/dev/sda1', include_paths: ['/documents'] }
+      dialog.proxmoxPanel.value = { canSubmit: true, handOff: () => {} }
+      assert.equal(dialog.advancedOpen.value, false)
+      assert.equal(dialog.ownershipByName.value, false)
+      assert.equal(dialog.skipXattrs.value, false)
+      assert.equal(dialog.supportsRestoreMetadataOptions.value, protocol === 17)
+      await dialog.submitRestore()
+      assert.ok(!requests[0].ownership_by_name && !requests[0].skip_xattrs)
+      for (const [ownership, xattrs] of [[true, false], [false, true], [true, true]]) {
+        dialog.ownershipByName.value = ownership
+        dialog.skipXattrs.value = xattrs
+        await dialog.submitRestore()
+        const sent = requests.at(-1)
+        const supported = protocol === 17 && mode === 'plain_file'
+        assert.equal(sent.ownership_by_name, supported ? ownership : undefined)
+        assert.equal(sent.skip_xattrs, supported ? xattrs : undefined)
+      }
+      dialog.resetDialog()
+      assert.equal(dialog.ownershipByName.value, false)
+      assert.equal(dialog.skipXattrs.value, false)
+    }
+  }
 })

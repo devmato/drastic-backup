@@ -684,6 +684,8 @@ class ResticApi:
         callback_pid=False,
         callback_throttle=None,
         overwrite_policy="fail_if_exists",
+        ownership_by_name=False,
+        skip_xattrs=False,
     ):
         if not include_paths:
             raise ValueError("Restore requires at least one include path")
@@ -700,6 +702,8 @@ class ResticApi:
             target=target,
             include=include_paths,
             overwrite=overwrite,
+            ownership_by_name=ownership_by_name,
+            exclude_xattr="*" if skip_xattrs else None,
         )
         return self.__execute_command(
             cmd,

@@ -98,6 +98,23 @@
                   </q-input>
                   <q-option-group class="q-mt-md" v-model="overwritePolicy" type="radio" :options="overwriteOptions" :disable="submitting" />
                   <q-checkbox v-if="overwritePolicy === 'overwrite'" v-model="overwriteConfirmed" :disable="submitting" label="I understand that existing files at the restore destination may be replaced" />
+                  <div v-if="selectedMode === 'plain_file'" class="row justify-end q-mt-sm">
+                    <q-btn flat dense no-caps label="Advanced" :icon-right="advancedOpen ? 'expand_less' : 'expand_more'"
+                      :aria-expanded="advancedOpen" aria-controls="restore-advanced" @click="advancedOpen = !advancedOpen" />
+                  </div>
+                  <div v-if="selectedMode === 'plain_file'" v-show="advancedOpen" id="restore-advanced" class="q-mt-sm">
+                    <q-checkbox v-model="ownershipByName" :disable="submitting || !supportsRestoreMetadataOptions"
+                      label="Match ownership by user and group names" aria-describedby="restore-ownership-help" />
+                    <div id="restore-ownership-help" class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
+                      Matches backed-up owners to local accounts by name instead of numeric IDs. File permissions and ACLs remain unchanged.
+                    </div>
+                    <q-checkbox class="q-mt-sm" v-model="skipXattrs" :disable="submitting || !supportsRestoreMetadataOptions"
+                      label="Skip restoring extended attributes" aria-describedby="restore-xattrs-help" />
+                    <div id="restore-xattrs-help" class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
+                      Does not restore extended attributes, including ACLs stored as extended attributes. Other extended metadata is also omitted. Existing attributes are not removed.
+                    </div>
+                    <div v-if="!supportsRestoreMetadataOptions" class="text-caption q-mt-xs">Update the agent to use these options (protocol 17 required).</div>
+                  </div>
                 </template>
               </div>
             </div>
@@ -154,6 +171,9 @@ const submitting = ref(false)
 const showTargetBrowserDialog = ref(false)
 const overwritePolicy = ref('fail_if_exists')
 const overwriteConfirmed = ref(false)
+const advancedOpen = ref(false)
+const ownershipByName = ref(false)
+const skipXattrs = ref(false)
 const proxmoxSelection = ref({})
 const proxmoxPanel = ref(null)
 const restoreForm = ref(null)
@@ -171,6 +191,7 @@ const modeOptions = computed(() => [
 ])
 const isProxmoxMode = computed(() => selectedMode.value !== 'plain_file')
 const isFileMode = computed(() => selectedMode.value !== 'proxmox_vm')
+const supportsRestoreMetadataOptions = computed(() => (props.agents.find(agent => agent.id === selectedAgentId.value)?.protocol_version || 0) >= 17)
 const proxmoxSection = computed(() => isFileMode.value ? 'selection' : 'target')
 const sections = computed(() => [
   { name: 'source', label: 'Source', icon: 'backup' },
@@ -227,6 +248,9 @@ function resetDialog() {
   showTargetBrowserDialog.value = false
   overwritePolicy.value = 'fail_if_exists'
   overwriteConfirmed.value = false
+  advancedOpen.value = false
+  ownershipByName.value = false
+  skipXattrs.value = false
 }
 
 async function loadSnapshots() {
@@ -271,6 +295,8 @@ async function submitRestore() {
       include_paths: selectedMode.value === 'plain_file' ? includePaths.value : [],
       overwrite_policy: overwritePolicy.value,
       ...(isProxmoxMode.value ? proxmoxSelection.value : {}),
+      ...(selectedMode.value === 'plain_file' && supportsRestoreMetadataOptions.value
+        ? { ownership_by_name: ownershipByName.value, skip_xattrs: skipXattrs.value } : {}),
     })
     proxmoxPanel.value?.handOff()
     emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job.id })
@@ -306,10 +332,14 @@ watch(sourceKey, () => {
 })
 
 watch(selectedMode, () => {
+  ownershipByName.value = false
+  skipXattrs.value = false
   selectedSnapshotId.value = snapshotOptions.value[0]?.value || null
 })
 
 watch(selectedAgentId, () => {
+  ownershipByName.value = false
+  skipXattrs.value = false
   if (!assignedRepositories.value.some(repo => repo.id === selectedRepositoryId.value)) {
     selectedRepositoryId.value = assignedRepositories.value[0]?.id || null
   }

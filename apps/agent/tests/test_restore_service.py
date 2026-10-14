@@ -53,8 +53,13 @@ def test_agent_rejects_all_root_target_spellings(target):
 
 def run_restore(monkeypatch, tmp_path, snapshots, **overrides):
     report = FakeReport()
+
+    def create_report(**kwargs):
+        report.data.update(kwargs["data"])
+        return report
+
     monkeypatch.setattr(
-        "drastic_agent.services.restore.AgentReport.restore_report", lambda **kwargs: report
+        "drastic_agent.services.restore.AgentReport.restore_report", create_report
     )
     monkeypatch.setattr(
         "drastic_agent.services.restore.AgentReport.process_restore_status", lambda *args, **kwargs: None
@@ -155,3 +160,29 @@ def test_agent_marks_failed_started_restore_as_partial(monkeypatch, tmp_path):
     assert report.final_state == AgentReportState.failed
     assert report.data["partial_failure"] is True
     assert report.data["destination_may_contain_restored_data"] is True
+
+
+@pytest.mark.parametrize("ownership_by_name,skip_xattrs", [(False, False), (True, False), (False, True), (True, True)])
+def test_agent_passes_and_reports_restore_metadata_options(monkeypatch, tmp_path, ownership_by_name, skip_xattrs):
+    report, restic = run_restore(
+        monkeypatch, tmp_path, [{"id": "snapshot-full-id", "tags": ["job_uuid:job-uuid"]}],
+        ownership_by_name=ownership_by_name, skip_xattrs=skip_xattrs,
+    )
+    assert report.final_state == AgentReportState.success
+    assert report.data["restore_completed"] is True
+    assert restic.restore_calls[0]["target"] == str(tmp_path / "restore")
+    for key, value in (("ownership_by_name", ownership_by_name), ("skip_xattrs", skip_xattrs)):
+        assert restic.restore_calls[0][key] is value
+        assert report.data[key] is value
+
+
+@pytest.mark.parametrize("options", [
+    {"ownership_by_name": "true"}, {"skip_xattrs": 1},
+    {"mode": "proxmox_vm", "ownership_by_name": True},
+    {"mode": "proxmox_prepare", "skip_xattrs": True},
+    {"mode": "proxmox_files", "skip_xattrs": True},
+])
+def test_agent_rejects_invalid_restore_metadata_options(monkeypatch, tmp_path, options):
+    report, restic = run_restore(monkeypatch, tmp_path, [], **options)
+    assert report.final_state == AgentReportState.failed
+    assert restic.restore_calls == []

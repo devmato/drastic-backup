@@ -586,6 +586,28 @@ def test_restore_maps_overwrite_policy_to_restic(monkeypatch):
     assert popen_calls[0][-2:] == ["--overwrite", "always"]
 
 
+@pytest.mark.parametrize("ownership_by_name,skip_xattrs", [(False, False), (True, False), (False, True), (True, True)])
+def test_restore_maps_metadata_options_to_native_flags(monkeypatch, ownership_by_name, skip_xattrs):
+    commands = []
+
+    def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
+        commands.append(cmd)
+        return _FakeResticProcess(cmd, stdin=stdin)
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    ResticApi(binary_path="restic").restore(
+        snapshot_id="snap-1", target="/restore", include_paths=["/etc/hosts"],
+        ownership_by_name=ownership_by_name, skip_xattrs=skip_xattrs,
+    )
+    expected = ["restic", "--json", "restore", "snap-1", "--target", "/restore",
+                "--include", "/etc/hosts", "--overwrite", "never"]
+    if ownership_by_name:
+        expected += ["--ownership-by-name"]
+    if skip_xattrs:
+        expected += ["--exclude-xattr", "*"]
+    assert commands == [expected]
+
+
 def _write_executable(path, source):
     path.write_text(f"#!/usr/bin/env python3\n{source}", encoding="utf-8")
     path.chmod(0o755)

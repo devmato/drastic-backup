@@ -97,6 +97,8 @@ class RestoreStartInputSchema(Schema):
         load_default="fail_if_exists",
         validate=validate.OneOf(("fail_if_exists", "overwrite")),
     )
+    ownership_by_name = fields.Boolean(load_default=False)
+    skip_xattrs = fields.Boolean(load_default=False)
     vmid = fields.Integer(strict=True, validate=validate.Range(min=100, max=999999999))
     storage = fields.String(validate=validate.Regexp(r"^[A-Za-z][A-Za-z0-9_.-]*$"))
     unique = fields.Boolean(load_default=True)
@@ -105,6 +107,8 @@ class RestoreStartInputSchema(Schema):
 
     @post_load
     def normalize_paths(self, data, **kwargs):
+        if (data["ownership_by_name"] or data["skip_xattrs"]) and data["mode"] != "plain_file":
+            raise ValidationError("Restore metadata options are only supported for plain file restores")
         if data["mode"] in ("plain_file", "proxmox_files"):
             if not data["restore_location"] or not data["include_paths"]:
                 raise ValidationError("Restore location and at least one include path are required")

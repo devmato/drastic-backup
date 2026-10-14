@@ -1,5 +1,7 @@
 # Unreleased
 
+- Plain file restores offer **Target → Advanced → Match ownership by user and group names** and **Skip restoring extended attributes**, mapped directly to Restic's `--ownership-by-name` and `--exclude-xattr '*'`. Both are off by default and require agent protocol 17; update the backend before agents.
+
 - **Changed exclusion precedence with restic 0.19.1:** File and TrueNAS backups now keep explicitly selected files and folders even when an exclude pattern matches them. Directory contents remain filtered by free-form patterns. Browser path rules use the most specific include/exclude: explicit children can reopen excluded parents without including their siblings, including across TrueNAS datasets. These exceptions require agent protocol 16 and also apply to existing rules. Proxmox keeps explicit VM selections visible alongside a host selection and retains them when the host is removed.
 
 - Managed agent installation and updates now select the exact running backend commit without a branch prompt. Dirty/unknown backend builds require an explicit local source. Existing native installations transition once by rerunning `/install`; Docker agents need one image update while preserving their data mount. Explicit `--ref` overrides apply only to that invocation. restic is pinned to 0.19.1 and verified before activating an updated agent, so download failures leave the running release intact.

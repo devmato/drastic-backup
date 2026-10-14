@@ -1,4 +1,4 @@
-from drastic_common.agent.commands import AgentCommandName
+from drastic_common.agent.commands import RESTORE_METADATA_OPTIONS_PROTOCOL, AgentCommandName
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
@@ -204,6 +204,12 @@ class RestoreService:
         if data["mode"] not in allowed:
             raise RestoreServiceException("Unsupported restore mode")
 
+        if data.get("ownership_by_name") or data.get("skip_xattrs"):
+            if data["mode"] != RESTORE_MODE_PLAIN_FILE:
+                raise RestoreServiceException("Restore metadata options are only supported for plain file restores")
+            if (agent.protocol_version or 0) < RESTORE_METADATA_OPTIONS_PROTOCOL:
+                raise RestoreServiceException("Update the agent to use restore metadata options (protocol 17)")
+
         proxmox = data["mode"] != RESTORE_MODE_PLAIN_FILE
         snapshot = cls._ensure_snapshot_belongs_to_job(agent, repository, data["snapshot_id"], job)
         if proxmox:
@@ -220,6 +226,10 @@ class RestoreService:
         if proxmox:
             keys += ("vmid", "storage", "unique", "session_id", "volume")
         parameters = {key: data[key] for key in keys if key in data}
+        # Older agents must not receive new keywords, even when the options are disabled.
+        for key in ("ownership_by_name", "skip_xattrs"):
+            if data.get(key):
+                parameters[key] = True
 
         operation = start_agent_operation(
             agent=agent,

@@ -88,7 +88,8 @@ class RestoreService:
         return normalized
 
     @staticmethod
-    def _restore_files(agent, report, snapshot_id, restore_location, include_paths, overwrite_policy):
+    def _restore_files(agent, report, snapshot_id, restore_location, include_paths, overwrite_policy,
+                       ownership_by_name=False, skip_xattrs=False):
         RestoreService._reject_symlink_components(restore_location)
         os.makedirs(restore_location, mode=0o700, exist_ok=True)
         RestoreService._reject_symlink_components(restore_location)
@@ -101,6 +102,7 @@ class RestoreService:
         status = agent.resticapi.restore(
             snapshot_id=snapshot_id, target=restore_location, include_paths=include_paths,
             overwrite_policy=overwrite_policy, callback=AgentReport.process_restore_status,
+            ownership_by_name=ownership_by_name, skip_xattrs=skip_xattrs,
             callback_args={"operation_uuid": report.uuid}, callback_pid=True, callback_throttle=500,
         )
         AgentReport.process_restore_status(status, operation_uuid=report.uuid)
@@ -124,6 +126,8 @@ class RestoreService:
         unique=True,
         session_id=None,
         volume=None,
+        ownership_by_name=False,
+        skip_xattrs=False,
     ):
         report = AgentReport.restore_report(
             report_uuid=operation_uuid,
@@ -136,6 +140,8 @@ class RestoreService:
                 "restore_location": restore_location,
                 "include_paths": include_paths,
                 "overwrite_policy": overwrite_policy,
+                "ownership_by_name": ownership_by_name,
+                "skip_xattrs": skip_xattrs,
                 "target_vmid": vmid,
                 "target_storage": storage,
             },
@@ -145,6 +151,10 @@ class RestoreService:
         try:
             if mode not in ("plain_file", "proxmox_vm", "proxmox_prepare", "proxmox_files"):
                 raise ValueError("Unsupported restore mode")
+            if not isinstance(ownership_by_name, bool) or not isinstance(skip_xattrs, bool):
+                raise ValueError("Restore metadata options must be booleans")
+            if (ownership_by_name or skip_xattrs) and mode != "plain_file":
+                raise ValueError("Restore metadata options are only supported for plain file restores")
             if mode in ("plain_file", "proxmox_files"):
                 restore_location = RestoreService._normalize_restore_target(restore_location)
                 include_paths = RestoreService._normalize_include_paths(include_paths)
@@ -164,7 +174,8 @@ class RestoreService:
                     raise ValueError("Snapshot does not belong to this job")
                 if mode == "plain_file":
                     RestoreService._restore_files(agent, report, snapshot_id, restore_location,
-                                                  include_paths, overwrite_policy)
+                                                  include_paths, overwrite_policy,
+                                                  ownership_by_name=ownership_by_name, skip_xattrs=skip_xattrs)
                 else:
                     from drastic_agent.services.proxmox_restore import run_proxmox_restore
 

@@ -328,6 +328,13 @@ Restore operations run through the agent. The agent needs access to the selected
 
 The default `fail_if_exists` policy refuses to start when a selected destination already exists. `overwrite` must be requested explicitly, the web UI requires confirmation, and existing files may be replaced. Restore targets and include paths are normalized; the filesystem root, traversal segments, and symlink components in the target path are rejected.
 
+For **Plain file restore** (including Proxmox **Archive files**), **Target → Advanced** offers two independent Restic options. Both are off by default, can be combined, and require agent protocol 17 (update the backend before agents):
+
+- **Match ownership by user and group names** passes `--ownership-by-name`. Restic matches the user/group names saved in the backup to local accounts instead of restoring numeric IDs. This can help when the same user has different IDs on the source and destination. It does not select the destination folder's owner or change how file permissions and ACLs are restored.
+- **Skip restoring extended attributes** passes `--exclude-xattr '*'`. Restic omits all extended attributes, including ACLs stored as extended attributes and other extended metadata. Existing excluded attributes are left unchanged. This does not disable normal file permissions or guarantee that all platform-specific ACLs are ignored.
+
+Enabled options appear in the operation details. These options apply directly to `restic restore`; they do not add permission post-processing and are not offered for **Whole VM** or **Files from VM** exports. A successful restore does not guarantee access for a particular local user: matching accounts, normal permissions and any remaining ACLs still matter.
+
 If restic fails after writing has started, the operation remains `failed` and is marked with `partial_failure` and `destination_may_contain_restored_data`. dRastic does not roll back files already written. Inspect or clean the destination before retrying. Before restoring into production paths, prefer a temporary restore location and validate the restored data.
 
 ### Proxmox VM and Guest File Restore

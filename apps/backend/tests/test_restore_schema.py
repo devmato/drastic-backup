@@ -27,6 +27,18 @@ def test_restore_input_normalizes_paths_and_defaults_to_safe_overwrite_policy():
     assert data["restore_location"] == "/srv/restores"
     assert data["include_paths"] == ["/etc/hosts", "/var/log"]
     assert data["overwrite_policy"] == "fail_if_exists"
+    assert data["ownership_by_name"] is False
+    assert data["skip_xattrs"] is False
+
+
+@pytest.mark.parametrize("option", ["ownership_by_name", "skip_xattrs"])
+def test_restore_metadata_options_require_plain_file_mode_and_valid_booleans(option):
+    assert RestoreStartInputSchema().load(restore_payload(**{option: True}))[option] is True
+    for mode in ("proxmox_vm", "proxmox_prepare", "proxmox_files"):
+        with pytest.raises(ValidationError, match="only supported for plain file restores"):
+            RestoreStartInputSchema().load(restore_payload(mode=mode, **{option: True}))
+    with pytest.raises(ValidationError):
+        RestoreStartInputSchema().load(restore_payload(**{option: "invalid"}))
 
 
 @pytest.mark.parametrize("target", ["relative", "/", "//", "///", "/srv/../etc", "/srv/\x00bad"])

@@ -443,6 +443,12 @@ const metricCards = computed(() => {
     if (operationData.value.restore_location) {
       metrics.push({ label: 'Restore target', value: operationData.value.restore_location })
     }
+    if (operationData.value.ownership_by_name) {
+      metrics.push({ label: 'Ownership', value: 'Match by user and group names' })
+    }
+    if (operationData.value.skip_xattrs) {
+      metrics.push({ label: 'Extended attributes', value: 'Skip restoring' })
+    }
 
     if (Array.isArray(operationData.value.include_paths) && operationData.value.include_paths.length > 0) {
       metrics.push({

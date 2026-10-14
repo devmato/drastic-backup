@@ -74,6 +74,37 @@ def test_vm_restore_dispatch_and_protocol_gate(restore_api):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("options", [
+    {"ownership_by_name": True}, {"skip_xattrs": True}, {"ownership_by_name": True, "skip_xattrs": True},
+])
+def test_restore_metadata_options_gate_old_agents_and_record_options(restore_api, options):
+    client, source, agent, _, _, calls = restore_api
+    payload = {**source, "mode": "plain_file", "restore_location": "/restore", "include_paths": ["/etc"],
+               "ownership_by_name": False, "skip_xattrs": False}
+    agent.protocol_version = 16
+    db.session.commit()
+    response = client.post("/api/restores/", json=payload)
+    assert response.status_code == 202
+    assert "ownership_by_name" not in calls[-1]
+    assert "skip_xattrs" not in calls[-1]
+    calls.clear()
+    operations = AgentOperation.query.count()
+    payload.update(options)
+    response = client.post("/api/restores/", json=payload)
+    assert response.status_code == 400
+    assert "protocol 17" in response.json["message"]
+    assert not calls
+    assert AgentOperation.query.count() == operations
+    agent.protocol_version = 17
+    db.session.commit()
+    response = client.post("/api/restores/", json=payload)
+    assert response.status_code == 202
+    operation = db.session.get(AgentOperation, response.json["operation_id"])
+    for key in options:
+        assert calls[0][key] is True
+        assert operation.data[key] is True
+
+
 @pytest.mark.parametrize("mode", ["proxmox_vm", "proxmox_prepare", "proxmox_files"])
 def test_legacy_vma_is_hidden_and_rejected_but_plain_restore_remains_available(restore_api, monkeypatch, mode):
     client, source, _, _, job, calls = restore_api
