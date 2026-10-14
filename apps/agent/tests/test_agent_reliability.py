@@ -81,11 +81,6 @@ class _OfflineAgent:
     def execute_actions(report, actions):
         assert list(actions) == []
 
-    def cmd_get_repository_stats(self, repository_id):
-        assert repository_id == self.repository["id"]
-        self.resticapi.stats()
-        return type("StatsReport", (), {"state": AgentOperationState.success, "log_list": []})()
-
 
 def test_real_file_backup_finishes_in_durable_outbox(
     tmp_path, restic_binary, clean_agent_state
@@ -122,6 +117,9 @@ def test_real_file_backup_finishes_in_durable_outbox(
     queued = agent_operation_queue.find_one(uuid=report.uuid)
     assert queued["status"] == "finished"
     assert json.loads(queued["payload"])["final_state"] == "success"
+    assert len(list(agent_operation_queue.all())) == 1
+    assert report.data["stats"] == resticapi.stats()
+    assert report.data["config"] == resticapi.cat_config()
 
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -131,6 +129,7 @@ def test_real_file_backup_finishes_in_durable_outbox(
     assert restored.uuid == report.uuid
     assert restored.artifacts == report.artifacts
     assert restored.final_state == AgentOperationState.success
+    assert restored.data["stats"] == report.data["stats"]
 
 
 def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(tmp_path, restic_binary, clean_agent_state):

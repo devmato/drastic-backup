@@ -1,4 +1,4 @@
-"""Agent-local SQLite tables and additive schema migrations."""
+"""Agent-local SQLite tables and schema/data migrations."""
 
 import os
 
@@ -40,7 +40,7 @@ proxmox_native_runs = db["proxmox_native_runs"]
 
 
 def initialize_schema():
-    """Apply the small, additive agent-local schema migration set."""
+    """Apply local migrations before operation recovery and workers start."""
     version = agent_schema.find_one(name="agent")
     current = int(version["version"]) if version else 0
     if current < 1:
@@ -170,6 +170,25 @@ def initialize_schema():
             db[table].create_column("data", db.types.json)
             db[table].create_index(["key"], unique=True)
         agent_schema.upsert({"name": "agent", "version": 5}, ["name"])
+
+    if current < 6:
+        with db:
+            # Remove the retired type before history recovery resolves operation enums.
+            db.query("""
+                UPDATE agent_operations SET parent_operation_uuid = NULL
+                WHERE parent_operation_uuid IN (
+                    SELECT uuid FROM agent_operations WHERE type = 'repository_stats'
+                )
+            """)
+            for operation in list(agent_operations.find(type="repository_stats")):
+                agent_operation_queue.delete(uuid=operation["uuid"])
+                agent_operation_artifacts.delete(operation_id=operation["id"])
+            agent_operations.delete(type="repository_stats")
+            db.query("""
+                DELETE FROM agent_operation_queue
+                WHERE CASE WHEN json_valid(payload) THEN json_extract(payload, '$.type') END = 'repository_stats'
+            """)
+            agent_schema.upsert({"name": "agent", "version": 6}, ["name"])
 
 initialize_schema()
 

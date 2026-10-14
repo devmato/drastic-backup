@@ -7,7 +7,6 @@ class AgentOperationType(enum.Enum):
     retention = {"text": "Retention"}
     repository_check = {"text": "Repository check"}
     repository_unlock = {"text": "Repository unlock"}
-    repository_stats = {"text": "Repository stats"}
     sync = {"text": "Agent sync"}
     agent_update = {"text": "Agent update"}
     command = {"text": "Agent command"}

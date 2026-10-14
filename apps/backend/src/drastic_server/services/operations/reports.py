@@ -291,7 +291,7 @@ class AgentOperationService:
 
     @staticmethod
     def _update_repository_from_operation(operation):
-        if operation.type != AgentOperationType.repository_stats or not operation.repository_id:
+        if operation.type != AgentOperationType.backup or not operation.repository_id:
             return
 
         repository = Repository.query.filter(

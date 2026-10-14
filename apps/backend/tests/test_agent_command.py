@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+import pytest
 from flask import Flask
 
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION, AgentCommandName
@@ -87,17 +88,20 @@ def test_protocol_gate_blocks_new_and_incompatible_commands_before_dispatch(monk
     assert not calls
 
 
-def test_old_agents_can_update_but_cannot_dispatch_backup_restore_or_statistics(monkeypatch):
+@pytest.mark.parametrize("protocol", [14, 18])
+def test_old_agents_can_update_but_cannot_dispatch_incompatible_commands(monkeypatch, protocol):
     app = Flask(__name__)
     agent = _agent()
-    agent.protocol_version = 14
+    agent.protocol_version = protocol
     calls = []
     monkeypatch.setattr(agent_command, "call", lambda _event, payload, **_kwargs:
                         calls.append(payload["command"]) or {"type": "command", "state": "success", "logs": []})
     with app.app_context():
-        for command in (AgentCommandName.run_job, AgentCommandName.list_restore_snapshots,
-                        AgentCommandName.list_restore_entries, AgentCommandName.run_restore,
-                        AgentCommandName.proxmox_restore, AgentCommandName.get_repository_stats):
+        commands = [AgentCommandName.run_job]
+        if protocol < 15:
+            commands += [AgentCommandName.list_restore_snapshots, AgentCommandName.list_restore_entries,
+                         AgentCommandName.run_restore, AgentCommandName.proxmox_restore]
+        for command in commands:
             response = agent_command.AgentService.send_command(agent, command)
             assert response["state"] == AgentOperationState.failed
             assert "update the agent" in response["log"]

@@ -13,6 +13,7 @@ from drastic_server.models.agent import (
     AgentOperationType,
 )
 from drastic_server.models.notification import NotificationConfig, NotificationDelivery
+from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.services.agent import AgentRequestService
 from drastic_server.services.operations import reports as agent_operations
@@ -118,6 +119,8 @@ def test_repeated_operation_state_creates_only_one_delivery(monkeypatch):
             user = User(name="admin")
             user.set_initial_password("password")
             agent = Agent(user=user, secret="agent-secret")
+            repository = Repository(user=user, name="Repo", location="/backup")
+            agent.repositories.append(repository)
             config = NotificationConfig(
                 user=user,
                 operation_types=["backup"],
@@ -128,9 +131,14 @@ def test_repeated_operation_state_creates_only_one_delivery(monkeypatch):
             db.session.commit()
 
             report = _operation("operation-1")
+            report.update(repository_id=repository.id, data={
+                "stats": {"total_size": 123}, "config": {"id": "1234567890abcdef"},
+            })
             AgentRequestService(agent).operation(report)
             AgentRequestService(agent).operation(report)
 
+            assert repository.stats == {"total_size": 123}
+            assert repository.restic_id == "12345678"
             assert NotificationDelivery.query.count() == 1
             assert NotificationDelivery.query.one().attempts == 1
         finally:

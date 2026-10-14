@@ -15,6 +15,5 @@ class BackupContext:
     initialize_repository_with_recovery: Callable
     recover_repository_access_with_recovery: Callable
     cmd_run_retention: Callable
-    cmd_get_repository_stats: Callable
     get_proxmox_client: Callable
     get_truenas_client: Callable

@@ -138,7 +138,6 @@ const typeOptions = [
   { label: 'Retention', value: 'retention' },
   { label: 'Repository unlock', value: 'repository_unlock' },
   { label: 'Backup restore', value: 'restore' },
-  { label: 'Repository stats', value: 'repository_stats' },
   { label: 'Agent command', value: 'command' },
   { label: 'Agent update', value: 'agent_update' },
   { label: 'Agent sync', value: 'sync' },

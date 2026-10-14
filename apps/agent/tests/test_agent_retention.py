@@ -7,7 +7,6 @@ import pytest
 import drastic_agent.jobs.base as base_module
 import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
-from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services.retention import RetentionService
@@ -518,29 +517,6 @@ def test_retention_forgets_tagged_successful_artifact_from_partial_failed_backup
     assert artifact_table.rows[2]["forgotten_at"] is not None
     assert failed_operation["state"] == "failed"
     assert report.final_state == AgentReportState.success
-
-
-def test_cmd_get_repository_stats_returns_after_repository_error(monkeypatch):
-    agent = Agent.__new__(Agent)
-
-    class UnexpectedResticApi:
-        def stats(self):
-            raise AssertionError("stats should not be called")
-
-        def cat_config(self):
-            raise AssertionError("cat_config should not be called")
-
-    agent._Agent__resticapi = UnexpectedResticApi()
-
-    def raise_missing(repository_id):
-        raise AgentExeption(f"Repository with id {repository_id} not found")
-
-    agent._Agent__set_repository = raise_missing
-
-    report = Agent.cmd_get_repository_stats(agent, repository_id=99)
-
-    assert report.final_state == AgentReportState.failed
-    assert any("Repository with id 99 not found" in line for line in report.log_list)
 
 
 def test_operation_queue_is_persisted_in_database():

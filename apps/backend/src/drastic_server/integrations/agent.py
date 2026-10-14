@@ -113,12 +113,6 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.sync, await_response=await_response)
 
     @classmethod
-    def get_repository_stats(cls, agent, repository_id):
-        return cls.send_command(
-            agent, AgentCommandName.get_repository_stats, repository_id=repository_id
-        )
-
-    @classmethod
     def get_dirlist(cls, agent, base_directory="/"):
         return cls.send_command(agent, AgentCommandName.get_dirlist, base_directory=base_directory)
 

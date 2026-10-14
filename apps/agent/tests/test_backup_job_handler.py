@@ -81,46 +81,24 @@ class _ConfiguredRetentions:
         return {"id": kwargs["id"], "name": "Daily"}
 
 
-class _SuccessfulResticApi:
-    @staticmethod
-    def cat_config():
-        return {"id": "repo-id"}
-
-
-class _StatsFailedReport:
-    state = AgentReportState.failed
-    log_list = ["stats failed"]
-
-
-class _StatsFailingAgent:
-    resticapi = _SuccessfulResticApi()
-
-    @staticmethod
-    def set_repository(repository_id):
-        return {"id": repository_id, "location": "/repo"}
-
-    @staticmethod
-    def execute_actions(report, actions):
-        return None
-
-    @staticmethod
-    def cmd_get_repository_stats(repository_id):
-        return _StatsFailedReport()
-
-
 class _SuccessfulReport:
     state = AgentReportState.success
-    log_list = ["stats ok"]
+    log_list = ["retention ok"]
 
 
 class _CheckingResticApi:
     def __init__(self, check_error=None):
         self.check_error = check_error
         self.check_calls = []
+        self.stats_calls = 0
 
     @staticmethod
     def cat_config():
         return {"id": "repo-id"}
+
+    def stats(self):
+        self.stats_calls += 1
+        return {"total_size": 123, "mode": "raw-data"}
 
     def check(self, **kwargs):
         self.check_calls.append(kwargs)
@@ -140,10 +118,6 @@ class _CheckingAgent:
     @staticmethod
     def execute_actions(report, actions):
         return None
-
-    @staticmethod
-    def cmd_get_repository_stats(repository_id):
-        return _SuccessfulReport()
 
 
 class BackupJobHandlerTests(unittest.TestCase):
@@ -165,8 +139,14 @@ def test_repository_stats_failure_marks_completed_backup_warning(monkeypatch):
     AgentReport.finished_reports.clear()
     monkeypatch.setattr(base_module, "actions", _FakeActions())
     monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
+    resticapi = _CheckingResticApi()
+
+    def fail_stats():
+        raise ResticFailedError("stats failed: connection reset by peer")
+
+    monkeypatch.setattr(resticapi, "stats", fail_stats)
     handler = _Handler(
-        _StatsFailingAgent(),
+        _CheckingAgent(resticapi),
         {"id": 1, "uuid": "job-uuid-1"},
         repository_id=2,
         run_options={"schedule_id": 1, "retry": {"enabled": True}},
@@ -177,6 +157,9 @@ def test_repository_stats_failure_marks_completed_backup_warning(monkeypatch):
     assert report.final_state == AgentReportState.warning
     assert any("stats failed" in line for line in report.log_list)
     assert report.data["backup_data_complete"] is True
+    assert report.data["backup_retryable"] is False
+    assert "stats" not in report.data
+    assert list(AgentReport.finished_reports) == [report]
     assert "another attempt is eligible" not in report.log
 
 
@@ -245,17 +228,20 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
 
     def stats(**kwargs):
         record_phase("statistics")
-        return _SuccessfulReport()
+        return _CheckingResticApi.stats(resticapi)
 
     monkeypatch.setattr(resticapi, "check", check)
     monkeypatch.setattr(handler.agent, "cmd_run_retention", retention, raising=False)
-    monkeypatch.setattr(handler.agent, "cmd_get_repository_stats", stats)
+    monkeypatch.setattr(resticapi, "stats", stats)
     report = handler.run()
 
     assert phases == ["check", "retention", "statistics"]
     assert report.final_state == AgentReportState.success
     assert resticapi.check_calls == [{"read_data": False, "read_data_subset": "1/10"}]
     assert report.data["check"] == {"message_type": "summary", "errors": 0}
+    assert report.data["stats"] == {"total_size": 123, "mode": "raw-data"}
+    assert report.data["config"] == {"id": "repo-id"}
+    assert list(AgentReport.finished_reports) == [report]
 
 
 def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
@@ -270,7 +256,6 @@ def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
 
     class CheckFailingAgent(_CheckingAgent):
         retention_calls = 0
-        stats_calls = 0
 
         @classmethod
         def execute_actions(cls, report, actions):
@@ -279,11 +264,6 @@ def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
         @classmethod
         def cmd_run_retention(cls, **kwargs):
             cls.retention_calls += 1
-            return _SuccessfulReport()
-
-        @classmethod
-        def cmd_get_repository_stats(cls, repository_id):
-            cls.stats_calls += 1
             return _SuccessfulReport()
 
     monkeypatch.setattr(base_module, "actions", HookActions())
@@ -302,7 +282,7 @@ def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
 
     assert report.final_state == AgentReportState.warning
     assert CheckFailingAgent.retention_calls == 0
-    assert CheckFailingAgent.stats_calls == 1
+    assert resticapi.stats_calls == 1
     assert hook_calls == ["start", "success", "end"]
     assert any("Repository check failed after backup" in line for line in report.log_list)
 
@@ -497,7 +477,6 @@ def test_cancelled_backup_only_runs_end_hook(monkeypatch):
 
     class CancelledAgent(_CheckingAgent):
         retention_calls = 0
-        stats_calls = 0
 
         @classmethod
         def execute_actions(cls, report, actions):
@@ -506,11 +485,6 @@ def test_cancelled_backup_only_runs_end_hook(monkeypatch):
         @classmethod
         def cmd_run_retention(cls, **kwargs):
             cls.retention_calls += 1
-            return _SuccessfulReport()
-
-        @classmethod
-        def cmd_get_repository_stats(cls, repository_id):
-            cls.stats_calls += 1
             return _SuccessfulReport()
 
     monkeypatch.setattr(base_module, "actions", HookActions())
@@ -529,7 +503,7 @@ def test_cancelled_backup_only_runs_end_hook(monkeypatch):
     assert report.final_state == AgentReportState.cancelled
     assert resticapi.check_calls == []
     assert CancelledAgent.retention_calls == 0
-    assert CancelledAgent.stats_calls == 0
+    assert resticapi.stats_calls == 0
     assert hook_calls == ["start", "end"]
 
 

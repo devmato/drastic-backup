@@ -2,7 +2,7 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields, validate
 
-AGENT_PROTOCOL_VERSION = 18
+AGENT_PROTOCOL_VERSION = 19
 BACKUP_RETRY_PROTOCOL = 18
 RESTORE_METADATA_OPTIONS_PROTOCOL = 17
 PATH_INCLUDE_EXCEPTIONS_PROTOCOL = 16
@@ -17,7 +17,6 @@ class AgentCommandName(str, enum.Enum):
     proxmox_restore = "proxmox_restore"
     init_repository = "init_repository"
     sync = "sync"
-    get_repository_stats = "get_repository_stats"
     get_dirlist = "get_dirlist"
     get_proxmox_guests = "get_proxmox_guests"
     get_proxmox_settings = "get_proxmox_settings"
@@ -43,11 +42,10 @@ class AgentCommandName(str, enum.Enum):
 
 # Protocol 0 is the legacy command set, before web-based Proxmox settings.
 AGENT_COMMAND_MIN_PROTOCOL = {
-    AgentCommandName.run_job: 15,
+    AgentCommandName.run_job: 19,
     AgentCommandName.list_restore_snapshots: 15,
     AgentCommandName.list_restore_entries: 15,
     AgentCommandName.run_restore: 15,
-    AgentCommandName.get_repository_stats: 15,
     AgentCommandName.preview_schedule: 12,
     AgentCommandName.get_operation_status: 11,
     AgentCommandName.debug_state: 6,

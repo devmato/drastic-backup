@@ -59,7 +59,7 @@ class Repository(IdMixin, TimeMixin, db.Model):
     @property
     def stats(self):
         for operation in reversed(self.operations):
-            if operation.type == AgentOperationType.repository_stats and "stats" in operation.data:
+            if operation.type == AgentOperationType.backup and "stats" in operation.data:
                 return operation.data["stats"]
 
     @property

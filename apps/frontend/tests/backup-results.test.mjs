@@ -15,14 +15,14 @@ test('legacy agent report URLs preserve filters when redirecting to the shared o
 })
 
 test('report groups aggregate every type and link each status with the same period', () => {
-  const types = ['backup', 'restore', 'agent_update', 'retention', 'repository_check', 'repository_unlock', 'repository_stats', 'sync', 'command']
+  const types = ['backup', 'restore', 'agent_update', 'retention', 'repository_check', 'repository_unlock', 'sync', 'command']
   const counts = types.flatMap(type => operationStates.map((state, index) => ({ type, state: state.value, count: index + 1 })))
   const groups = summarizeOperationResults(counts)
   const period = lastSevenDays(new Date('2026-10-10T12:34:56.789Z'))
   assert.deepEqual(period, { since: '2026-10-03T12:34:56.789Z', until: '2026-10-10T12:34:56.789Z' })
   assert.equal(groups.reduce((sum, group) => sum + group.total, 0), counts.reduce((sum, row) => sum + row.count, 0))
   for (const group of groups) {
-    assert.equal(group.total, group.value === 'other' ? 90 : 15)
+    assert.equal(group.total, group.value === 'other' ? 75 : 15)
     assert.equal(group.segments.reduce((sum, segment) => sum + segment.count, 0), group.total)
     for (const segment of group.segments) {
       assert.equal(getBackupStateColor(segment.value), segment.color)

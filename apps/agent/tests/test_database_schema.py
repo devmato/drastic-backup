@@ -27,7 +27,7 @@ def local_db(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(database_module, "db", db)
     monkeypatch.setattr(database_module, "agent_schema", db["agent_schema"])
-    for module in (agent_module, operation_module, store_module, job_module):
+    for module in (database_module, agent_module, operation_module, store_module, job_module):
         if hasattr(module, "db"):
             monkeypatch.setattr(module, "db", db)
         for name, value in vars(module).copy().items():
@@ -66,7 +66,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         old_columns = list(db.query("PRAGMA table_info(retentions)"))
 
     database_module.initialize_schema()
-    assert db["agent_schema"].find_one(name="agent")["version"] == 5
+    assert db["agent_schema"].find_one(name="agent")["version"] == 6
     assert {"vmid", "snapshot_name", "owner", "host_id", "confirmed", "created_at"}.issubset(db["proxmox_snapshots"].columns)
     if existing:
         old_job = db["jobs"].find_one(id=7)
@@ -203,3 +203,35 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
     for name in tables:
         assert [row["id"] for row in db[name].all()] == [1]
     assert db["repository_secrets"].find_one(repository_id=1)["password"] == "legacy"
+
+
+def test_statistics_migration_preserves_backup_history_and_replay(local_db):
+    database_module.initialize_schema()
+    local_db["agent_schema"].update({"name": "agent", "version": 5}, ["name"])
+    operations = local_db["agent_operations"]
+    queue = local_db["agent_operation_queue"]
+    artifacts = local_db["agent_operation_artifacts"]
+    backup = AgentReport.job_report(job_id=1, repository_id=2, operation_uuid="keep-backup")
+    backup.log_message("keep log")
+    backup.finish()
+    queued_backup = queue.find_one(uuid=backup.uuid)
+    artifacts.insert({"operation_id": backup.history_operation["id"], "snapshot_id": "keep-snapshot"})
+    for state in ("running", "success"):
+        uuid = f"retired-{state}"
+        operation_id = operations.insert({"uuid": uuid, "type": "repository_stats", "state": state})
+        artifacts.insert({"operation_id": operation_id})
+        queue.insert({"uuid": uuid, "status": "finished", "payload": json.dumps({"type": "repository_stats"})})
+    queue.insert({"uuid": "orphan-stats", "status": "finished", "payload": json.dumps({"type": "repository_stats"})})
+    operations.update({"uuid": backup.uuid, "parent_operation_uuid": "retired-success"}, ["uuid"])
+
+    database_module.initialize_schema()
+    database_module.initialize_schema()
+
+    assert [row["uuid"] for row in operations.all()] == [backup.uuid]
+    assert operations.find_one(uuid=backup.uuid)["parent_operation_uuid"] is None
+    assert list(queue.all()) == [queued_backup]
+    assert [row["snapshot_id"] for row in artifacts.all()] == ["keep-snapshot"]
+    AgentReport.recover_interrupted()
+    restored = store_module.operation_store.load(AgentReport)
+    assert [report.uuid for report in restored] == [backup.uuid]
+    assert restored[0].log == "keep log"

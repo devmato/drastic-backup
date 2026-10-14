@@ -221,12 +221,9 @@ class BackupJobHandler:
 
         try:
             report.set_data("backup_phase", "statistics")
-            repository_report = self.agent.cmd_get_repository_stats(
-                repository_id=self.repository["id"]
-            )
-            report.append_logs(repository_report.log_list)
-            if repository_report.state != AgentOperationState.success:
-                report.final_state = AgentOperationState.warning
+            report.log_message("Obtaining repository statistics...")
+            report.set_data("stats", self.agent.resticapi.stats())
+            report.set_data("config", self.agent.resticapi.cat_config())
         except Exception as exc:
             report.log_message(
                 f"Repository statistics failed after backup: {exc}",

@@ -1107,29 +1107,6 @@ class Agent:
     def cmd_delete_connection(self, kind):
         return self.__connection_settings().delete(kind)
 
-    """ Get restic repository stats """
-
-    def cmd_get_repository_stats(self, repository_id):
-        report = AgentReport(type=AgentReportType.repository_stats, repository_id=repository_id)
-        report.log_message("Obtaining repository statistics...")
-
-        try:
-            self.__set_repository(repository_id)
-        except AgentExeption as e:
-            report.log_message(f"{e}", final_state=AgentReportState.failed)
-            return report.finish()
-
-        try:
-            report.data["stats"] = self.__resticapi.stats()
-            report.data["config"] = self.__resticapi.cat_config()
-        except ResticError as e:
-            report.log_message(
-                f"Error on obtaining repository statistics: {e}",
-                final_state=AgentReportState.failed,
-            )
-
-        return report.finish()
-
     def cmd_check_repository(self, repository_id, read_data_subset=None, operation_uuid=None):
         read_data = str(read_data_subset or "").strip() or None
         read_data_full = read_data == "100%"
@@ -1300,7 +1277,6 @@ class Agent:
                     initialize_repository_with_recovery=self.initialize_repository_with_recovery,
                     recover_repository_access_with_recovery=self.recover_repository_access_with_recovery,
                     cmd_run_retention=self.cmd_run_retention,
-                    cmd_get_repository_stats=self.cmd_get_repository_stats,
                     get_proxmox_client=self.get_proxmox_client,
                     get_truenas_client=self.get_truenas_client,
                 ),

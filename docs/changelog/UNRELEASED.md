@@ -1,5 +1,7 @@
 # Unreleased
 
+- Repository statistics are now part of the backup report; the separate report type and command have been removed. Database/agent migrations delete old statistics reports, dependent logs/deliveries and statistics notification subscriptions. Repository statistics become available again after the next completed statistics phase. Pause schedules during the rollout, update the backend/database first, then agents to protocol 19 before resuming backups. Older agents can still connect for updates, but the backend no longer dispatches backups to them or accepts standalone statistics reports.
+
 - Job schedules and backup chains offer opt-in retries for temporary backup transport failures: default 3 total attempts, 10 minutes apart, configurable up to 6 attempts and 1440 minutes. Scheduled retries run only while the agent process stays alive; chains retry their current step through the existing chain controller. Attempts use ordinary operation history and logs. Update the backend/database first, then agents to protocol 18.
 
 - Plain file restores offer **Target → Advanced → Match ownership by user and group names** and **Skip restoring extended attributes**, mapped directly to Restic's `--ownership-by-name` and `--exclude-xattr '*'`. Both are off by default and require agent protocol 17; update the backend before agents.
@@ -12,7 +14,7 @@
 
 - Backup cancellation now signals the worker immediately, including during parent lookup and between processes, and waits for worker cleanup before terminal reporting. Session keepalive now clears the session/socket and redirects protected views to login when `/auth/status` returns `authenticated: false`, including HTTP 200 responses.
 
-- **Agent protocol 15 required for backup, restore and repository statistics.** Update the backend/database first, then agents. Agents now receive a durable server-issued UUID and use `drastic-<full-UUID>` as their explicit Restic backup hostname. Removed implicit `RESTIC_HOST` filtering and hostname overrides; historical snapshots remain visible and reusable through job/artifact tags. File and TrueNAS backups explicitly select their own parent or force a fresh read, avoiding cross-job automatic parents. Recovery exports include agent UUIDs.
+- Agent protocol 15 introduced durable server-issued UUIDs and `drastic-<full-UUID>` as the explicit Restic backup hostname. Restore still requires protocol 15; backup now requires protocol 19 as described above. Removed implicit `RESTIC_HOST` filtering and hostname overrides; historical snapshots remain visible and reusable through job/artifact tags. File and TrueNAS backups explicitly select their own parent or force a fresh read, avoiding cross-job automatic parents. Recovery exports include agent UUIDs.
 
 - Backend, Docker agents and native agents now share one source version: `YYYY-MM-DD-<8-character SHA>` (UTC commit date), with `-dirty` for local changes. Agent properties show both agent and backend versions. New release/image tags use the same format; package-version bumps are no longer needed. Existing protocol compatibility checks still apply.
 
