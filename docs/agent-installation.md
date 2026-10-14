@@ -95,7 +95,7 @@ bash scripts/install-drastic-agent.sh --source "$PWD" \
   --server https://backup.example.net
 ```
 
-The checkout is copied into the managed installation, without local environment files or runtime directories. Future `update` commands resolve the backend commit; use `install --source PATH` again to deploy local changes.
+Only agent/common sources, their required build files and the lifecycle/dependency scripts are copied into the managed installation. Backend, frontend, documentation, tests, Git metadata and local environment/runtime files are excluded. Git installs and updates use the same selection and discard their temporary checkout after recording its version. Version and dirty status come from the original checkout, including changes outside the installed subset. Future `update` commands resolve the backend commit; use `install --source PATH` again to deploy local changes.
 
 ### macOS Permissions and First Backup
 
@@ -136,7 +136,7 @@ All managed files live under one root:
 ├── bin/drastic-agent
 ├── bin/installer.py        # release-independent lifecycle controller
 ├── tools/                 # private uv and Python
-├── releases/<id>/         # source checkout and virtual environment
+├── releases/<id>/         # selected sources and virtual environment
 ├── current -> releases/<id>
 ├── cache/                 # uv and Restic caches
 ├── data/                  # identity, keys, operation state and Restic binary
@@ -163,7 +163,7 @@ sudo tail -f /opt/drastic-agent/data/net.drastic.agent.update.log
 
 Updates follow the backend commit, ignoring any branch/tag previously saved in `install.json`. Dependencies are installed with `uv sync --frozen --no-dev --no-editable`. A new source/venv directory and its pinned restic binary are prepared and checked before stopping the running service. If the new service fails its startup checks, the old installation is restored. Agent data and additional environment settings (for example Proxmox credentials) are retained. This rollback covers program files, not changes made by the running agent to its data.
 
-The wrapper and Docker launcher use the independent `bin/installer.py` controller. Selecting an older agent with `--ref` keeps the backend-following controller instead of restoring that release's legacy ref-pinned updater. Compatible newer controllers update with their target release; startup rollback restores the previous controller and wrapper together.
+The wrapper and Docker launcher use the independent `bin/installer.py` controller. Selecting an older supported agent with `--ref` keeps the backend-following controller instead of restoring that release's legacy ref-pinned updater. Compatible newer controllers update with their target release; startup rollback restores the previous controller and wrapper together. Existing managed installations can adopt the compact-source controller through their normal update, retaining identity and settings. That first update may still copy the full source tree using the previous controller; subsequent updates use the reduced selection without a separate migration.
 
 **Agent Properties > Actions > Update** starts the same command for managed native Linux/macOS agents using protocol 1 or later. Running/queued operations and duplicate updates are rejected; new executions and schedules wait until the independent updater finishes, including its startup checks. Linux uses `systemd-run`; macOS uses a separate one-shot launchd job, `net.drastic.agent.update`, so stopping the agent cannot terminate its updater. The UI acknowledges the start and refreshes the version after reconnect. Check completion under Reports, with `journalctl -u drastic-agent-update.service` on Linux, or in the macOS updater log above.
 
@@ -179,7 +179,7 @@ Older installed lifecycle managers still follow their saved branch/tag. Update t
 
 ### restic Version
 
-restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and changes together with the selected Drastic build. Native and managed Docker updates use the target's checksum-verified downloader before activation; pre-refactor Linux targets use their standalone CI download script without loading the old agent runtime or database. The agent checks the binary version again on startup. Different versions use separate paths under `data/bin` (`tools/restic` on managed macOS), so a failed download does not replace the previous release's executable. No independent `restic self-update` is needed.
+restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and changes together with the selected Drastic build. Native and managed Docker updates use the target's checksum-verified Python downloader before activation. Historical targets without `drastic_agent/integrations/restic_binary.py` are rejected before stopping the running agent; there is no fallback to the CI shell downloader. This does not prevent updating an existing older installation to a supported target or rolling back to the already installed release after startup failure. The agent checks the binary version again on startup. Different versions use separate paths under `data/bin` (`tools/restic` on managed macOS), so a failed download does not replace the previous release's executable. No independent `restic self-update` is needed.
 
 ### Protocol Compatibility
 
@@ -197,7 +197,7 @@ Uninstall the native agent with:
 sudo drastic-agent uninstall
 ```
 
-This stops and disables the service, removes the external service and command, and deletes program files, Python, dependencies and caches. `data/`, `drastic-agent.env`, installation metadata and the ownership marker remain for reinstalling with the same identity and settings.
+This stops and disables the service, removes the external service and command, and deletes program files, the private Python runtime, its dependencies and caches. `data/`, `drastic-agent.env`, installation metadata and the ownership marker remain for reinstalling with the same identity and settings.
 
 Remove local agent state as well:
 
@@ -206,6 +206,8 @@ sudo drastic-agent uninstall --purge
 ```
 
 `--purge` removes the entire managed root. Unattended uninstall requires `--yes`. Backup sources and remote repositories are never removed, and the server-side agent entry is not deleted automatically. Foreign service files, replaced command links and unsafe managed paths are rejected. If the service cannot be stopped, files are retained.
+
+System packages installed for Proxmox remain installed even with `--purge`: other software may use them, and the installer cannot reliably determine their ownership. On hosts where `pveversion` is available, installation and updates still attempt to install missing optional Proxmox dependencies; other native hosts do not run this package installation.
 
 After a non-purge uninstall the command itself is gone. Reinstall with the pipe installer to reuse the saved identity, or run the lifecycle script from a checkout with a system Python (`sudo python3 scripts/drastic-agent-installer.py uninstall --purge`) to remove the retained state.
 

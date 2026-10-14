@@ -31,7 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          # Agent compatibility tests install real pre-refactor commits.
+          # Agent compatibility tests exercise upgrades from a previous controller.
           fetch-depth: ${{ matrix.component == 'agent' && '0' || '1' }}
       - uses: actions/setup-python@v5
         with:

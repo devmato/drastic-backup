@@ -373,41 +373,17 @@ def fetch_source(repository, revision, source):
     run('git', '-C', source, 'checkout', '--detach', revision)
 
 
-def prepare_restic(source, python, environment):
-    """Verify the target's restic without importing an older agent runtime or its database."""
+def prepare_restic(python, environment):
+    """Verify the target's restic without initializing the agent runtime or its database."""
     folder = ROOT / 'tools/restic' if MACOS else data_directory() / 'bin'
-    if (source / 'apps/agent/src/drastic_agent/integrations/restic_binary.py').is_file():
-        run(python, '-c',
-            'import platform, sys; from drastic_agent.integrations.restic_binary import ensure_binary; '
-            'machine = platform.machine().lower(); '
-            'arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine); '
-            'ensure_binary(sys.argv[1], sys.argv[2], arch)',
-            folder, 'darwin' if MACOS else 'linux', env=environment)
-        if MACOS:
-            macos_program_permissions(*folder.glob('restic_*_darwin_*'))
-        return
-    # Pre-refactor releases already ship a standalone, checksum-verifying CI downloader.
-    version = run(sys.executable, '-c',
-                  'import runpy, sys; print(runpy.run_path(sys.argv[1])["RESTIC_VERSION"])',
-                  source / 'libs/python/common/src/drastic_common/restic/constants.py',
-                  capture_output=True, text=True).stdout.strip()
-    machine = platform.machine().lower()
-    arch = {'x86_64': 'amd64', 'aarch64': 'arm64'}.get(machine, machine)
-    binary = folder / f'restic_{version}_linux_{arch}'
-    if binary.is_file() and os.access(binary, os.X_OK):
-        try:
-            result = run(binary, 'version', capture_output=True, text=True, timeout=5, check=False)
-            if result.returncode == 0 and re.search(rf'\brestic\s+{re.escape(version)}(?:\s|$)', result.stdout):
-                return
-        except (OSError, subprocess.SubprocessError):
-            pass
-    folder.mkdir(parents=True, exist_ok=True)
-    # Stage on the binary's filesystem: Docker data can be on a different mount.
-    with tempfile.TemporaryDirectory(dir=folder, prefix='.restic-') as temporary:
-        candidate = Path(temporary) / 'restic'
-        run('bash', source / 'scripts/ci/install-restic.sh',
-            env={**environment, 'PYTHON_BINARY': str(sys.executable), 'RESTIC_INSTALL_PATH': str(candidate)})
-        os.replace(candidate, binary)
+    run(python, '-c',
+        'import platform, sys; from drastic_agent.integrations.restic_binary import ensure_binary; '
+        'machine = platform.machine().lower(); '
+        'arch = {"x86_64": "amd64", "aarch64": "arm64"}.get(machine, machine); '
+        'ensure_binary(sys.argv[1], sys.argv[2], arch)',
+        folder, 'darwin' if MACOS else 'linux', env=environment)
+    if MACOS:
+        macos_program_permissions(*folder.glob('restic_*_darwin_*'))
 
 
 def prepare_release(args, state, server):
@@ -416,6 +392,7 @@ def prepare_release(args, state, server):
     release = Path(tempfile.mkdtemp(dir=releases))
     try:
         source = release / 'source'
+        checkout = Path(args.source).resolve() if args.source else release / 'checkout'
         repository = args.repository or state.get('repository') or REPOSITORY
         # Legacy refs remain readable metadata, but never choose a default update target.
         revision = getattr(args, 'revision', None)
@@ -427,53 +404,57 @@ def prepare_release(args, state, server):
         if args.ref and (args.ref.startswith('-') or revision):
             fail('Invalid Git ref.')
         if args.source:
-            checkout = Path(args.source).resolve()
             if checkout == ROOT or checkout in ROOT.parents or not (checkout / 'apps/agent/pyproject.toml').is_file():
                 fail('The source must be a project checkout outside the installation root or one of its source snapshots.')
-            build_files = shutil.ignore_patterns('.git', '.venv', 'node_modules', '.quasar',
-                                                'dist', 'site', '__pycache__', '*.egg-info',
-                                                '.pytest_cache', '.ruff_cache', '.env*',
-                                                'build-version.txt', 'build-revision.txt')
-            runtime_directories = {
-                checkout: {'data', 'storage'},
-                checkout / 'apps/agent': {'data', 'data-dev-native'},
-                checkout / 'apps/backend': {'data', 'storage', 'import'},
-            }
-
-            def ignore_checkout_files(directory, names):
-                ignored = build_files(directory, names)
-                # Package names such as drastic_agent.storage are source, not host state.
-                ignored.update(set(names) & runtime_directories.get(Path(directory), set()))
-                return ignored
-
-            shutil.copytree(checkout, source, symlinks=True, ignore=ignore_checkout_files)
-            commit = run('git', '-c', f'safe.directory={Path(args.source).resolve()}',
-                         '-C', args.source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
+            commit = run('git', '-c', f'safe.directory={checkout}',
+                         '-C', checkout, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
         elif revision:
-            fetch_source(repository, revision, source)
+            fetch_source(repository, revision, checkout)
             commit = revision
         else:
-            run('git', 'clone', '--no-checkout', '--', repository, source)
+            run('git', 'clone', '--no-checkout', '--', repository, checkout)
             remote_ref = f'refs/remotes/origin/{ref}'
-            branch = run('git', '-C', source, 'show-ref', '--verify', '--quiet', remote_ref, check=False).returncode == 0
-            run('git', '-C', source, 'checkout', '--detach', remote_ref if branch else ref)
-            commit = run('git', '-C', source, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
+            branch = run('git', '-C', checkout, 'show-ref', '--verify', '--quiet', remote_ref, check=False).returncode == 0
+            run('git', '-C', checkout, 'checkout', '--detach', remote_ref if branch else ref)
+            commit = run('git', '-C', checkout, 'rev-parse', 'HEAD', capture_output=True, text=True).stdout.strip()
         if revision and commit != revision:
             fail('The source does not match the backend commit.')
-        if not (source / 'scripts/drastic-agent-installer.py').is_file():
+        if not (checkout / 'scripts/drastic-agent-installer.py').is_file():
             fail('This source does not contain the native lifecycle manager.')
-        if MACOS and '\nMACOS_LIFECYCLE = True\n' not in (source / 'scripts/drastic-agent-installer.py').read_text():
+        if MACOS and '\nMACOS_LIFECYCLE = True\n' not in (checkout / 'scripts/drastic-agent-installer.py').read_text():
             fail('This release does not support macOS. Select a macOS-capable backend build or an explicit --ref.')
+        if not (checkout / 'apps/agent/src/drastic_agent/integrations/restic_binary.py').is_file():
+            fail('This release lacks the supported restic downloader. Select a newer agent release.')
+        included = {
+            '.': {'apps', 'libs', 'scripts'},
+            'apps': {'agent'},
+            'libs': {'python'},
+            'libs/python': {'common'},
+            'apps/agent': {'src', 'pyproject.toml', 'uv.lock', 'README.md'},
+            'libs/python/common': {'src', 'pyproject.toml', 'setup.py'},
+            'scripts': {'drastic-agent-installer.py', 'install-agent-dependencies.sh'},
+        }
+        generated = shutil.ignore_patterns('__pycache__', '*.pyc', '*.egg-info', '.env*',
+                                           'build-version.txt', 'build-revision.txt')
+
+        def ignore_checkout_files(directory, names):
+            allowed = included.get(Path(directory).relative_to(checkout).as_posix())
+            return set(names) - allowed if allowed is not None else generated(directory, names)
+
+        shutil.copytree(checkout, source, symlinks=True, ignore=ignore_checkout_files)
         version_script = source / 'libs/python/common/src/drastic_common/version.py'
         version = 'unknown'
         if version_script.is_file():
-            run(sys.executable, version_script, '--source', args.source or source,
+            # Read the untouched checkout so excluded files do not make a clean build dirty.
+            run(sys.executable, version_script, '--source', checkout,
                 '--output', version_script.with_name('build-version.txt'))
             # Older target releases understand --output but not --revision-output.
             write(version_script.with_name('build-revision.txt'), commit + '\n', 0o644)
             version = version_script.with_name('build-version.txt').read_text().strip()
         if revision and not re.fullmatch(rf'[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}-{revision[:8]}', version):
             fail('The source is not a clean version of the backend commit.')
+        if not args.source:
+            shutil.rmtree(checkout)
         environment = {**os.environ, 'UV_CACHE_DIR': str(ROOT / 'cache/uv'),
                        'UV_PYTHON_INSTALL_DIR': str(ROOT / 'tools/python'),
                        'UV_PROJECT_ENVIRONMENT': str(release / 'venv')}
@@ -497,7 +478,7 @@ def prepare_release(args, state, server):
                 print(f'Optional dependencies were not installed: {exc}. Continuing agent installation.', file=sys.stderr)
         # Versioned paths keep the running release's restic intact on download failure.
         # Do this before stop(): --help alone never installs or validates restic.
-        prepare_restic(source, release / 'venv/bin/python', environment)
+        prepare_restic(release / 'venv/bin/python', environment)
         new_state = {'repository': repository, 'ref': ref or commit, 'commit': commit, 'version': version}
         if CONTAINER:
             new_state['deployment'] = 'docker'
