@@ -12,6 +12,7 @@ from drastic_common.agent.enums import (
     AgentOperationType,
     AgentRepositoryKind,
 )
+from drastic_common.backup_retry import BackupRetrySchema
 
 _JOB_TYPE_NAMES = tuple(AgentJobType.__members__)
 _ACTION_MODULE_NAMES = tuple(AgentJobActionModule.__members__)
@@ -104,6 +105,7 @@ class AgentScheduleConfigSchema(Schema):
         unknown = EXCLUDE
 
     repository_check = fields.Nested(AgentRepositoryCheckConfigSchema, load_default=dict)
+    retry = fields.Nested(BackupRetrySchema, load_default=lambda: BackupRetrySchema().load({}))
 
 
 class AgentOperationLogSchema(Schema):

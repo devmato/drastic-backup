@@ -89,6 +89,7 @@ def cleanup_snapshots(api, agent_id, report=None):
             except Exception as exc:
                 message = f"TrueNAS cleanup pending for {row['snapshot_id']}: {exc}"
                 if report:
+                    report.set_data("backup_cleanup_pending", True)
                     report.log_message(message, final_state=AgentOperationState.warning)
                 else:
                     logging.warning(message)
@@ -190,11 +191,13 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                     self._check_cancelled(report)
                     if isinstance(exc, ResticCancelledError):
                         raise
+                    self.record_backup_failure(exc)
                     failed.append(dataset["id"])
                     report.log_message(f"Dataset {dataset['id']} failed: {exc}", final_state=AgentOperationState.failed)
             if failed:
                 report.set_data("partial_failure", len(failed) < len(paths))
-                raise TrueNASError(f"Backup failed for dataset(s): {', '.join(failed)}")
+                self._backup_failure_summary = TrueNASError(f"Backup failed for dataset(s): {', '.join(failed)}")
+                raise self._backup_failure_summary
         finally:
             try:
                 if api:
@@ -202,6 +205,7 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                     try:
                         cleanup_snapshots(api, self.agent.identifier, report)
                     except Exception as exc:
+                        report.set_data("backup_cleanup_pending", True)
                         report.log_message(f"TrueNAS cleanup pending: {exc}", final_state=AgentOperationState.warning)
             finally:
                 TRUENAS_LOCK.release()

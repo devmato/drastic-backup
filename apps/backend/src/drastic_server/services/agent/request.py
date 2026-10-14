@@ -1,6 +1,6 @@
 """Build agent synchronization payloads and adapt incoming reports."""
 
-from drastic_common.agent.commands import PATH_INCLUDE_EXCEPTIONS_PROTOCOL
+from drastic_common.agent.commands import BACKUP_RETRY_PROTOCOL, PATH_INCLUDE_EXCEPTIONS_PROTOCOL
 from drastic_common.backup_selection import requires_include_exceptions
 from drastic_server.models.agent import Agent, AgentSession
 from drastic_server.schemas.repository import RepositorySchema
@@ -80,6 +80,9 @@ class AgentRequestService:
                 requires_include_exceptions(job.type.name, job.config) for job in agent_jobs):
             raise AgentException(f"Update the agent before syncing include exceptions (protocol {PATH_INCLUDE_EXCEPTIONS_PROTOCOL})")
         agent_schedules = JobSchedule.query.join(Job).filter(Job.agent_id == self.agent.id, JobSchedule.enabled).all()
+        if (self.agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL and any(
+                (schedule.config.get("retry") or {}).get("enabled") for schedule in agent_schedules):
+            raise AgentException(f"Update the agent before syncing backup retries (protocol {BACKUP_RETRY_PROTOCOL})")
         if (self.agent.protocol_version or 0) < 12 and any(schedule.config.get("timing") for schedule in agent_schedules):
             raise AgentException("Update the agent before syncing schedule types (protocol 12)")
 

@@ -1,10 +1,14 @@
 import configparser
 from concurrent.futures import Future
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 import dataset
+import pytest
 
 import drastic_agent.runtime.agent as agent_module
+from drastic_agent.agent.enums import AgentReportState
+from drastic_agent.runtime import scheduler
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services import secrets as repository_secrets_service
 
@@ -198,8 +202,9 @@ class Schedules:
 class ImmediateExecution:
     def submit(self, target, *args, **kwargs):
         kwargs.pop("resources")
-        target(*args, **kwargs)
-        return object()
+        future = Future()
+        future.set_result(target(*args, **kwargs))
+        return future
 
 
 def test_scheduler_restart_deduplicates_persisted_utc_slot(monkeypatch, tmp_path):
@@ -228,7 +233,7 @@ def test_scheduler_restart_deduplicates_persisted_utc_slot(monkeypatch, tmp_path
     assert len(started) == 1
     assert len(rows) == 1
     assert rows[0]["planned_slot"] == "2026-07-23T12:05:00+00:00"
-    assert rows[0]["status"] == "started"
+    assert rows[0]["status"] == "finished"
 
 
 def test_once_schedule_is_not_replayed_after_restart_or_history_cleanup(monkeypatch, tmp_path):
@@ -426,3 +431,90 @@ def test_schedule_run_pruning_removes_only_terminal_rows_older_than_90_days(
     remaining_ids = {row["id"] for row in schedule_runs.all()}
     assert remaining_ids == retained_ids
     assert remaining_ids.isdisjoint(old_terminal_ids)
+
+
+RETRY_NOW = datetime(2026, 10, 14, 2, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def retry_setup(tmp_path):
+    db = connect_database(tmp_path)
+    runs = create_schedule_runs_table(db)
+    schedules = db["schedules"]
+    schedules.insert({"id": 1, "job_id": 1, "repository_id": 2, "enabled": True,
+                      "cron_string": "0 2 * * *", "config": {
+                          "retry": {"enabled": True, "max_attempts": 3, "delay_minutes": 10}}})
+    submitted = []
+    pending = {}
+
+    def submit(function, *args, **kwargs):
+        future = Future()
+        submitted.append((kwargs["run_options"], future))
+        return future
+
+    def tick(now=RETRY_NOW, submitter=submit):
+        scheduler.run_due(now, jobs=[{"id": 1}], schedules=schedules, runs=runs, slots={}, pending=pending,
+                          submit=submitter, run_job=lambda *args, **kwargs: kwargs)
+
+    yield runs, schedules, submitted, tick, pending
+    db.close()
+
+
+def finish_attempt(submitted, index, at, state=AgentReportState.failed, retryable=True):
+    submitted[index][1].set_result(SimpleNamespace(state=state, ended=at, data={"backup_retryable": retryable}))
+
+
+@pytest.mark.parametrize("result", [AgentReportState.success, AgentReportState.failed])
+def test_retry_spacing_busy_executor_budget_and_stop(retry_setup, result):
+    runs, schedules, submitted, tick, pending = retry_setup
+    tick()
+    finish_attempt(submitted, 0, RETRY_NOW)
+    schedules.update({"id": 1, "config": {"retry": {"enabled": True, "max_attempts": 6, "delay_minutes": 1}}}, ["id"])
+    tick(RETRY_NOW + timedelta(minutes=9))
+    assert len(submitted) == 1
+    tick(RETRY_NOW + timedelta(minutes=10), submitter=lambda *args, **kwargs: None)
+    assert len(submitted) == 1
+    tick(RETRY_NOW + timedelta(minutes=11))
+    assert submitted[1][0]["attempt"] == 2 and submitted[1][0]["retry"]["max_attempts"] == 3
+    finish_attempt(submitted, 1, RETRY_NOW + timedelta(minutes=12), result)
+    tick(RETRY_NOW + timedelta(minutes=21))
+    assert len(submitted) == 2
+    if result == AgentReportState.failed:
+        tick(RETRY_NOW + timedelta(minutes=22))
+        assert submitted[2][0]["attempt"] == 3
+        finish_attempt(submitted, 2, RETRY_NOW + timedelta(minutes=22))
+    tick(RETRY_NOW + timedelta(minutes=40))
+    assert not pending
+    assert len(submitted) == (2 if result == AgentReportState.success else 3)
+
+
+def test_retry_skips_overlapping_slot_but_is_not_restored_after_restart(retry_setup):
+    runs, schedules, submitted, tick, pending = retry_setup
+    schedules.update({"id": 1, "config": {"retry": {"enabled": True, "delay_minutes": 1440}}}, ["id"])
+    tick()
+    finish_attempt(submitted, 0, RETRY_NOW + timedelta(hours=1))
+    tick(RETRY_NOW + timedelta(hours=1))
+    tick(RETRY_NOW + timedelta(days=1))
+    assert runs.find_one(id=2)["status"] == "skipped"
+    pending.clear()  # A new agent process has no pending retries, but keeps its durable slot claims.
+    scheduler.recover_runs(runs)
+    tick(RETRY_NOW + timedelta(days=1, hours=1))
+    assert len(submitted) == 1
+    tick(RETRY_NOW + timedelta(days=2))
+    assert len(submitted) == 2 and submitted[1][0]["attempt"] == 1
+
+
+@pytest.mark.parametrize("stop", ["disabled", "retargeted", "cancelled", "permanent"])
+def test_retry_stops_on_schedule_changes_cancellation_and_permanent_errors(retry_setup, stop):
+    _, schedules, submitted, tick, pending = retry_setup
+    tick()
+    finish_attempt(submitted, 0, RETRY_NOW,
+                   AgentReportState.cancelled if stop == "cancelled" else AgentReportState.failed,
+                   retryable=stop != "permanent")
+    tick(RETRY_NOW + timedelta(minutes=1))
+    if stop == "disabled":
+        schedules.update({"id": 1, "enabled": False}, ["id"])
+    elif stop == "retargeted":
+        schedules.update({"id": 1, "repository_id": 3}, ["id"])
+    tick(RETRY_NOW + timedelta(minutes=10))
+    assert len(submitted) == 1 and not pending

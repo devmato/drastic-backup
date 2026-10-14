@@ -1,6 +1,7 @@
 import csv
 import json
 import os
+import signal
 import subprocess
 import threading
 from contextlib import contextmanager
@@ -11,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from drastic_common.backup_retry import is_transient_backup_error
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.exceptions import (
     ResticCancelledError,
@@ -306,15 +308,22 @@ def test_repository_bytes_include_throttled_completed_items_and_keep_final_summa
     assert result == summary  # Includes the final root metadata, not just completed-file counters.
 
 
-def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
+@pytest.mark.parametrize("producer_code,producer_error,restic_code,retryable", [
+    (255, "cannot export a snapshot in PVE::Storage::LvmThinPlugin", 1, False),
+    (-signal.SIGPIPE, "", 1, True),
+    (1, "Traceback:\nBrokenPipeError: [Errno 32] Broken pipe\n", 1, True),
+    (1, "BrokenPipeError: [Errno 32] Broken pipe", 0, False),
+])
+def test_backup_stdin_preserves_cause_when_producer_also_exits(monkeypatch, producer_code, producer_error, restic_code, retryable):
     def fake_popen(cmd, stdin=None, stdout=None, stderr=None, encoding=None, env=None):
         if cmd[0] == "vzdump":
             return _FakeProducerProcess(
                 cmd,
-                return_code=255,
-                stderr_chunks=[b"cannot export a snapshot in PVE::Storage::LvmThinPlugin\n"],
+                return_code=producer_code,
+                stderr_chunks=[producer_error.encode()],
             )
-        return _FakeResticProcess(cmd, stdin=stdin, return_code=1, stderr_text="Fatal: unable to save")
+        return _FakeResticProcess(cmd, stdin=stdin, return_code=restic_code,
+                                  stderr_text="subprocess ssh: Connection reset by peer" if restic_code else "")
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
 
@@ -324,8 +333,10 @@ def test_backup_stdin_from_command_surfaces_producer_stderr(monkeypatch):
             stdin_filename="archive.vma",
         )
 
-    assert "Backup source command failed with exit code 255" in str(exc_info.value)
-    assert "cannot export a snapshot in PVE::Storage::LvmThinPlugin" in str(exc_info.value)
+    assert is_transient_backup_error(exc_info.value) is retryable
+    if not retryable:
+        assert f"Backup source command failed with exit code {producer_code}" in str(exc_info.value)
+        assert producer_error.strip() in str(exc_info.value)
 
 
 def test_backup_stdin_from_command_attaches_snapshot_id_to_producer_failure(monkeypatch):

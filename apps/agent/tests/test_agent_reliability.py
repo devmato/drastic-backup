@@ -257,8 +257,9 @@ class _SynchronousExecution:
         return future
 
 
+@pytest.mark.parametrize("retry_enabled", [False, True])
 def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
-    tmp_path, restic_binary, clean_agent_state, monkeypatch
+    tmp_path, restic_binary, clean_agent_state, monkeypatch, retry_enabled
 ):
     source = tmp_path / "source"
     source.mkdir()
@@ -315,7 +316,7 @@ def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
                         "job_id": 82,
                         "repository_id": 72,
                         "cron_string": "* * * * *",
-                        "config": {},
+                        "config": {"retry": {"enabled": retry_enabled}},
                     }
                 ],
                 "actions": [],
@@ -338,6 +339,9 @@ def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
     assert report.ended is not None
     assert "Obtaining repository config failed" in report.log
     assert schedule_runs.find_one(schedule_id=92)["status"] == "failed"
+    assert bool(agent._Agent__schedule_attempts) is retry_enabled
+    if retry_enabled:
+        assert "Backup attempt 1 of 3" in report.log
     queued = agent_operation_queue.find_one(uuid=report.uuid)
     assert queued["status"] == "finished"
     assert json.loads(queued["payload"])["final_state"] == "failed"

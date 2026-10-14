@@ -1,3 +1,5 @@
+"""Shared backup lifecycle, post-backup work and retry eligibility."""
+
 from uuid import uuid4
 
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
@@ -10,6 +12,7 @@ from drastic_agent.storage.database import (
 from drastic_agent.storage.database import agent as agent_settings
 from drastic_common import diagnostics
 from drastic_common.agent.enums import AgentRepositoryKind
+from drastic_common.backup_retry import BackupRetrySchema, is_transient_backup_error, retry_allowed
 from drastic_common.restic.exceptions import ResticCancelledError, ResticError
 
 
@@ -29,9 +32,12 @@ class BackupJobHandler:
         self.retention_id = retention_id
         self.operation_uuid = operation_uuid
         self.run_options = run_options or {}
+        self.retry = BackupRetrySchema().load(self.run_options.get("retry") or {})
         self.repository = None
         self.operation = None
         self.report = None
+        self._backup_errors = []
+        self._backup_failure_summary = None
 
     def run(self):
         running_job = AgentReport.get_report(job_id=self.job["id"])
@@ -53,6 +59,8 @@ class BackupJobHandler:
         self.report = report
         if self.run_options.get("chain_run_id"):
             report.set_data("chain_run_id", self.run_options["chain_run_id"])
+        if self.retry["enabled"] and report.source != AgentOperationSource.manual:
+            report.log_message(f"Backup attempt {self.run_options.get('attempt', 1)} of {self.retry['max_attempts']}")
         report.set_data("backup_phase", "preparing")
         self._sync_operation(report)
 
@@ -64,6 +72,7 @@ class BackupJobHandler:
                 )
             except Exception as exc:
                 hook_actions[hook_name] = []
+                report.set_data("hook_failed", True)
                 report.log_message(
                     f"Could not load {hook_name} actions: {exc}",
                     final_state=AgentOperationState.failed,
@@ -86,6 +95,7 @@ class BackupJobHandler:
         try:
             self.repository = self.agent.set_repository(self.repository_id)
         except Exception as exc:
+            self.record_backup_failure(exc)
             report.log_message(
                 f"Could not prepare repository {self.repository_id}: {exc}",
                 final_state=AgentOperationState.failed,
@@ -136,11 +146,14 @@ class BackupJobHandler:
                 except ResticCancelledError as exc:
                     report.log_message(str(exc), final_state=AgentOperationState.cancelled)
                 except ResticError as exc:
+                    self.record_backup_failure(exc)
                     report.log_message(
                         f"Error during backup: {exc}",
                         final_state=AgentOperationState.failed,
                     )
                 except Exception as exc:
+                    if exc is not self._backup_failure_summary:
+                        self.record_backup_failure(exc)
                     report.log_message(
                         f"Unexpected error during backup: {exc}",
                         final_state=AgentOperationState.failed,
@@ -227,6 +240,7 @@ class BackupJobHandler:
             report.set_data("backup_phase", "hooks")
             self.agent.execute_actions(report=report, actions=hook_actions)
         except Exception as exc:
+            report.set_data("hook_failed", True)
             report.log_message(
                 f"Failed to execute {hook_name} actions: {exc}",
                 final_state=(
@@ -236,11 +250,21 @@ class BackupJobHandler:
                 ),
             )
 
+    def record_backup_failure(self, error):
+        self._backup_errors.append(is_transient_backup_error(error))
+
     def _finish_operation(self, state, report):
         if not self.operation:
             return
         report.final_state = state
         self._sync_operation(report)
+        report.set_data("backup_retryable", bool(self._backup_errors and all(self._backup_errors)
+                        and not report.data.get("hook_failed") and not report.cancel_event.is_set()
+                        and not report.data.get("backup_cleanup_pending")
+                        and not report.data.get("backup_data_complete")))
+        if report.source != AgentOperationSource.manual and retry_allowed(
+                self.retry, self.run_options.get("attempt", 1), state.name, report.data):
+            report.log_message(f"Temporary backup failure; another attempt is eligible after {self.retry['delay_minutes']} minutes")
 
     def _sync_operation(self, report):
         if not self.operation:
@@ -309,6 +333,11 @@ class BackupJobHandler:
         try:
             self.agent.resticapi.cat_config()
         except ResticError as exc:
+            if is_transient_backup_error(exc):
+                self.record_backup_failure(exc)
+                report.log_message(f"Obtaining repository config failed with message: {exc}",
+                                   final_state=AgentOperationState.failed)
+                return  # An unreachable repository must not be mistaken for an uninitialized one.
             message = str(exc).lower()
             if "unable to open config file" in message or "is there a repository at" in message:
                 if self.repository.get("kind") == AgentRepositoryKind.native.value:
@@ -345,6 +374,7 @@ class BackupJobHandler:
                         final_state=AgentOperationState.failed,
                     )
             else:
+                self.record_backup_failure(exc)
                 report.log_message(
                     f"Obtaining repository config failed with message: {exc}",
                     final_state=AgentOperationState.failed,

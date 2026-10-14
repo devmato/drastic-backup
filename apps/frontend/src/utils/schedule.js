@@ -24,6 +24,10 @@ export function describeTiming(timing) {
   }
 }
 
+export function retrySettings(retry = {}) {
+  return { enabled: Boolean(retry?.enabled), max_attempts: retry?.max_attempts ?? 3, delay_minutes: retry?.delay_minutes ?? 10 }
+}
+
 export function sameSchedule(left, right) {
   if (!left || !right) return false
   const settings = schedule => {
@@ -31,7 +35,8 @@ export function sameSchedule(left, right) {
       .map(([key, value]) => [key, Array.isArray(value) ? [...value].sort((a, b) => a - b) : value])
     const check = schedule.config?.repository_check
     return [timing, Boolean(schedule.enabled), schedule.repository_id, schedule.retention_id || null,
-      Boolean(check?.enabled), check?.enabled ? String(check.read_data || '').trim() || null : null]
+      Boolean(check?.enabled), check?.enabled ? String(check.read_data || '').trim() || null : null,
+      retrySettings(schedule.config?.retry)]
   }
   return JSON.stringify(settings(left)) === JSON.stringify(settings(right))
 }

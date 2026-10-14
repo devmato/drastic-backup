@@ -56,6 +56,8 @@
               <q-input v-model="form.name" outlined hide-bottom-space :dense="!$q.platform.has.touch" label="Chain Name" :rules="[value => !!value?.trim() || 'Required']" maxlength="255" />
               <q-input v-model.number="form.start_timeout_minutes" outlined :dense="!$q.platform.has.touch" type="number" label="Maximum wait for each job to start (minutes)" hint="Offline or busy jobs are skipped after this time. Running or unconfirmed jobs are never skipped just because connectivity is lost." :rules="[value => Number.isInteger(value) && value >= 1 && value <= 1440 || 'Use 1–1440 minutes']" />
               <div class="text-subtitle1 q-mt-md">Jobs in execution order</div>
+              <BackupRetryFields v-model="form.retry" />
+              <div v-if="form.retry.enabled" class="text-caption">The attempt limit applies to each step. The chain waits for its retries before continuing.</div>
               <q-card v-for="(step, index) in form.steps" :key="step.key" flat bordered>
                 <q-card-section>
                   <div class="row items-center q-mb-sm">
@@ -139,7 +141,8 @@ import { useChainStore } from 'stores/chain'
 import { useRetentionStore } from 'stores/retention'
 import { useUserStore } from 'stores/user'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
-import { scheduleTiming } from 'src/utils/schedule'
+import { scheduleTiming, retrySettings } from 'src/utils/schedule'
+import BackupRetryFields from 'components/BackupRetryFields.vue'
 
 const props = defineProps({
   agentJobs: { type: Array, default: () => [] },
@@ -162,7 +165,7 @@ const busyId = ref(null)
 const editing = ref(false)
 const editingId = ref(null)
 const saving = ref(false)
-const form = reactive({ name: '', start_timeout_minutes: 60, steps: [], schedules: [] })
+const form = reactive({ name: '', start_timeout_minutes: 60, retry: retrySettings(), steps: [], schedules: [] })
 const historyVisible = ref(false)
 const historyChain = ref(null)
 const history = ref([])
@@ -192,6 +195,7 @@ function moveStep(index, offset) {
 function editChain(chain = null) {
   editingId.value = chain?.id || null
   Object.assign(form, { name: chain?.name || '', start_timeout_minutes: chain?.start_timeout_minutes || 60,
+    retry: retrySettings(chain?.retry),
     schedules: (chain?.schedules || []).map((schedule, index) => ({ ...schedule, id: index + 1, timing: scheduleTiming(schedule) })),
     steps: chain ? chain.steps.map(newStep) : [newStep()] })
   editing.value = true
@@ -199,6 +203,9 @@ function editChain(chain = null) {
 async function save() {
   saving.value = true
   try {
+    if (form.retry.enabled && form.steps.some(step => (props.agents.find(agent => agent.id === selectedJob(step)?.agent_id)?.protocol_version || 0) < 18)) {
+      throw new Error('Update all chain agents to use backup retries (protocol 18 required)')
+    }
     await userStore.withRecoveryKey(recoveryKey => store.saveChain(editingId.value, {
       ...form, recovery_key: recoveryKey,
       schedules: form.schedules.map(({ timing, enabled }) => ({ timing, enabled })),
@@ -227,7 +234,7 @@ function confirmCancel(chain) {
 }
 function formatDate(value) { return value ? new Date(value).toLocaleString() : '—' }
 function stateLabel(state) {
-  return ({ pending: 'Pending', waiting: 'Waiting', dispatching: 'Start unconfirmed', running: 'Running', success: 'Success', warning: 'Warning', failed: 'Failed', cancelled: 'Cancelled', skipped: 'Skipped' })[state] || state
+  return ({ pending: 'Pending', waiting: 'Waiting', retry_wait: 'Waiting for retry', dispatching: 'Start unconfirmed', running: 'Running', success: 'Success', warning: 'Warning', failed: 'Failed', cancelled: 'Cancelled', skipped: 'Skipped' })[state] || state
 }
 function stateColor(state) {
   return ({ success: 'positive', warning: 'warning', failed: 'negative', running: 'primary', dispatching: 'warning' })[state] || 'grey-7'
@@ -235,7 +242,7 @@ function stateColor(state) {
 function activeStepLabel(chain) {
   if (chain.last_run?.id !== chain.active_run_id) return 'An earlier chain run is still active'
   if (chain.last_run.cancel_requested) return 'Cancellation requested; waiting for the active job to finish'
-  const index = chain.last_run.steps.findIndex(step => ['waiting', 'dispatching', 'running'].includes(step.state))
+  const index = chain.last_run.steps.findIndex(step => ['waiting', 'retry_wait', 'dispatching', 'running'].includes(step.state))
   if (index < 0) return 'Preparing next step'
   const step = chain.last_run.steps[index]
   return `Step ${index + 1}/${chain.steps.length}: ${step.job_name} · ${stateLabel(step.state)}${step.reason ? ` · ${step.reason}` : ''}`

@@ -135,7 +135,8 @@ def test_schedule_config_accepts_repository_check_read_data():
     )
 
     assert normalize_schedule_config(data["config"]) == {
-        "repository_check": {"enabled": True, "read_data": "100%"}
+        "repository_check": {"enabled": True, "read_data": "100%"},
+        "retry": {"enabled": False, "max_attempts": 3, "delay_minutes": 10},
     }
 
 
@@ -151,3 +152,15 @@ def test_repository_check_input_accepts_optional_read_data_subset():
     data = CheckInputSchema().load({"agent_id": 3, "read_data_subset": "5%"})
 
     assert data == {"agent_id": 3, "read_data_subset": "5%"}
+
+
+def test_schedule_retry_roundtrip_bounds_and_protocol_gate():
+    from drastic_server.services.jobs.configuration import job_schedule_config
+
+    retry = {"enabled": True, "max_attempts": 6, "delay_minutes": 1440}
+    data = {"config": {"retry": retry, "repository_check": {"enabled": True, "read_data": "5%"}}}
+    with pytest.raises(ValueError, match="protocol 18"):
+        job_schedule_config(SimpleNamespace(protocol_version=17), data)
+    normalized = job_schedule_config(SimpleNamespace(protocol_version=18), data)
+    assert normalized["retry"] == retry
+    assert normalized["repository_check"]["read_data"] == "5%"

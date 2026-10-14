@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import shutil
+import signal
 import subprocess
 import tempfile
 import threading
@@ -585,7 +586,11 @@ class ResticApi:
                     "Backup source command did not terminate", snapshot_id=snapshot_id
                 )
 
-            if producer_return_code != 0 and not producer_was_terminated:
+            # A failed Restic upload closes stdin; the producer's broken pipe is then a consequence.
+            producer_pipe_closed = (producer_return_code == -signal.SIGPIPE or
+                                    producer_stderr_output.rstrip().endswith("BrokenPipeError: [Errno 32] Broken pipe"))
+            if (producer_return_code != 0 and not producer_was_terminated
+                    and not (return_code != 0 and producer_pipe_closed)):
                 error_parts = [f"Backup source command failed with exit code {producer_return_code}"]
                 if producer_stderr_output.strip():
                     error_parts.append(producer_stderr_output.strip())

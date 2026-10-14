@@ -10,7 +10,12 @@ from flask import current_app
 from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
 
-from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION, AgentCommandName
+from drastic_common.agent.commands import (
+    AGENT_PROTOCOL_VERSION,
+    BACKUP_RETRY_PROTOCOL,
+    AgentCommandName,
+)
+from drastic_common.backup_retry import BackupRetrySchema, retry_allowed
 from drastic_common.scheduling import describe, matches, timing_from_cron
 from drastic_server.extensions import db, socketio
 from drastic_server.models.agent import (
@@ -96,17 +101,23 @@ def utcnow():
 
 def save_chain(chain, user_id, data):
     steps = []
+    retry = BackupRetrySchema().load(data.get("retry", chain.retry) or {})
     for step in data["steps"]:
         job = require_result(Job.query.join(Agent).filter(Job.id == step["job_id"], Agent.user_id == user_id))
         if not CHAIN_PROTOCOL <= (job.agent.protocol_version or 0) <= AGENT_PROTOCOL_VERSION:
             raise ValueError(f"Update agent {job.agent.display_name} for backup chains (protocol {CHAIN_PROTOCOL})")
+        if retry["enabled"] and (job.agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL:
+            raise ValueError(f"Update agent {job.agent.display_name} for backup retries (protocol {BACKUP_RETRY_PROTOCOL})")
         assign_agent_repository(user_id, job.agent, step["repository_id"], data.get("recovery_key"))
         validate_retention(user_id, step["retention_id"])
-        steps.append({**step, "config": normalize_schedule_config(step.get("config"))})
+        config = normalize_schedule_config(step.get("config"))
+        config.pop("retry", None)  # Chain policy is the only retry policy for its steps.
+        steps.append({**step, "config": config})
     chain.user_id = user_id
     chain.name = data["name"].strip()
     chain.schedules = [schedule_trigger(schedule) for schedule in data["schedules"]]
     chain.start_timeout_minutes = data["start_timeout_minutes"]
+    chain.retry = retry
     chain.steps = steps
     db.session.add(chain)
     db.session.commit()
@@ -149,6 +160,7 @@ def chain_payload(chain):
     latest = BackupChainRun.query.filter_by(chain_id=chain.id).order_by(BackupChainRun.id.desc()).first()
     active = BackupChainRun.query.filter_by(active_chain_id=chain.id).first()
     return {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
+            "retry": BackupRetrySchema().load(chain.retry or {}),
             "schedules": describe_schedules(chain.schedules),
             "start_timeout_minutes": chain.start_timeout_minutes,
             "steps": describe_steps(chain.steps), "last_run": run_payload(latest) if latest else None,
@@ -157,7 +169,9 @@ def chain_payload(chain):
 
 def start_chain(chain, *, now=None, planned_slot=None):
     now = now or utcnow()
-    steps = [{**step, "state": "pending", "operation_uuid": str(uuid4())}
+    retry = BackupRetrySchema().load(chain.retry or {})
+    steps = [{**step, "state": "pending", "operation_uuid": str(uuid4()),
+              "retry": retry, "attempt": 1}
              for step in describe_steps(chain.steps)]
     run = BackupChainRun(chain=chain, active_chain_id=chain.id, planned_slot=planned_slot,
                          steps=steps, start_timeout_minutes=chain.start_timeout_minutes,
@@ -219,16 +233,30 @@ def advance_run(run_id, *, now=None):
         run = db.session.get(BackupChainRun, run_id)
         steps = deepcopy(run.steps)
         step = next((item for item in steps if item["state"] not in TERMINAL_STEPS), None)
-        if step:
+        if step and step["state"] != "retry_wait":
             operation = AgentOperation.query.filter_by(uuid=step["operation_uuid"]).first()
             if operation and operation.ended and operation.state != AgentOperationState.running:
+                data = operation.data or {}
+                policy = step.get("retry") or {}
+                attempt = step.get("attempt", 1)
+                if not run.cancel_requested and retry_allowed(policy, attempt, operation.state.name, data):
+                    next_at = operation.ended + timedelta(minutes=policy["delay_minutes"])
+                    step.update(state="retry_wait", attempt=attempt + 1,
+                                operation_uuid=str(uuid4()),
+                                operation_id=None, next_retry_at=next_at.isoformat() + "Z",
+                                reason=f"Waiting for attempt {attempt + 1}/{policy['max_attempts']} at {next_at.isoformat()}Z")
+                    _save_progress(run_id, token, steps)
+                    return
                 step.update(state="skipped" if (operation.data or {}).get("start_skipped") else operation.state.name, operation_id=operation.id,
                             cleanup_pending=bool((operation.data or {}).get("cleanup_pending")))
+                if (policy.get("enabled") and operation.state in {AgentOperationState.failed, AgentOperationState.warning}
+                        and data.get("backup_retryable") and not data.get("backup_data_complete")):
+                    step["state"] = "failed"
                 if (operation.data or {}).get("start_skipped"):
                     step["reason"] = operation.data.get("start_skip_reason")
                 _save_progress(run_id, token, steps)
                 return
-        if not step or (run.cancel_requested and step["state"] in {"pending", "waiting"}):
+        if not step or (run.cancel_requested and step["state"] in {"pending", "waiting", "retry_wait"}):
             if run.cancel_requested:
                 for item in steps:
                     if item["state"] not in TERMINAL_STEPS:
@@ -251,6 +279,13 @@ def advance_run(run_id, *, now=None):
             _save_progress(run_id, token, steps)
             return
         agent = job.agent
+        if step["state"] == "retry_wait":
+            due = datetime.fromisoformat(step["next_retry_at"]).replace(tzinfo=None)
+            if now < due:
+                return
+            step.update(state="waiting", reason=None,
+                        start_deadline=(due + timedelta(minutes=run.start_timeout_minutes)).isoformat() + "Z")
+            _save_progress(run_id, token, steps)
         if step["state"] == "pending":
             step.update(state="waiting", start_deadline=(now + timedelta(minutes=run.start_timeout_minutes)).isoformat() + "Z")
             _save_progress(run_id, token, steps)
@@ -292,6 +327,8 @@ def advance_run(run_id, *, now=None):
         try:
             if not CHAIN_PROTOCOL <= (agent.protocol_version or 0) <= AGENT_PROTOCOL_VERSION:
                 raise ValueError(f"Update agent for backup chains (protocol {CHAIN_PROTOCOL})")
+            if (step.get("retry") or {}).get("enabled") and (agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL:
+                raise ValueError(f"Update agent for backup retries (protocol {BACKUP_RETRY_PROTOCOL})")
             ensure_job_connection(agent, job.type.name, job.config)
             if not any(item.id == repository.id for item in agent.repositories):
                 raise ValueError("Repository is no longer assigned to agent")
@@ -328,7 +365,8 @@ def advance_run(run_id, *, now=None):
         _save_progress(run_id, token, steps)  # Commit intent before sending, including the UUID.
         response = AgentService.run_job(agent, job.id, repository.id, retention_id=step.get("retention_id"),
                                         operation_uuid=step["operation_uuid"],
-                                        run_options={**step["config"], "chain_run_id": run.id, "start_deadline": step["start_deadline"]})
+                                        run_options={**step["config"], "chain_run_id": run.id, "start_deadline": step["start_deadline"],
+                                                     "retry": step.get("retry") or {}, "attempt": step.get("attempt", 1)})
         if response.get("state") == AgentOperationState.success:
             step.update(state="running", reason=None)
         elif not is_agent_timeout_response(response):

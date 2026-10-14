@@ -278,6 +278,16 @@ Agents execute schedules from their last successful synchronization. The agent p
 
 Scheduling has no catch-up behavior: if the agent was stopped or otherwise missed a cron minute, that occurrence is not run later. Server-side schedule changes take effect only after the next successful synchronization. Offline execution also has the repository limitations described under [Assign a Repository](#assign-a-repository).
 
+### Automatic Backup Retries
+
+Job schedules and backup chains can enable **Retry temporary backup failures** (agent protocol **18**). It is off by default. Configure **1–6 attempts in total** (default **3**, including the first run) and **1–1440 minutes** between attempts (default **10**). The fixed delay begins after a failed attempt, not at its start. Direct manual job starts do not retry; manually started chains use the chain policy.
+
+Only explicitly recognized temporary Restic transport failures are retried. Cancelled jobs, permanent or unknown failures, pending snapshot cleanup, and warnings after a complete backup are not retried. Retries start the entire job again, including its configured commands; they do not resume a VM stream at its previous byte offset. Already stored blocks may be reused by Restic deduplication.
+
+The agent keeps pending retries only in memory, without occupying a worker during the wait. An agent restart discards them; the next regular schedule runs normally. Removing or disabling the job schedule, or changing its repository or retention target, discards waiting retries after synchronization. Busy executors postpone a retry without consuming an attempt. A new occurrence of the same schedule is skipped while its previous run is still active or waiting to retry.
+
+Attempts appear as ordinary operations, with the attempt number in their logs. Chain policy applies **per step**: the chain waits for that step's attempts before advancing, and never repeats already completed steps. Chains keep their existing persisted execution state; **Cancel Chain** also stops waiting retries. Each retry gets a new start deadline measured from its due time. A chain remains active during waits, so another scheduled occurrence may be skipped. Final step failures still allow subsequent steps to run.
+
 ### Backup Chains
 
 Use **Jobs > Backup Chains > Add Backup Chain** to execute existing backup jobs in a fixed order, on one or multiple agents. Set a name and the maximum wait for each step to start. Add jobs and move them up or down to set the order. Each step has its own repository, retention policy, and optional repository check. Agents require **protocol 11 or newer**; update the backend first, then the participating agents.

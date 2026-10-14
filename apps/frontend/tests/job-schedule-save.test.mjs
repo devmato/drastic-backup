@@ -123,3 +123,19 @@ test('job editing preserves drafts and refreshes once after success or a partial
   assert.deepEqual(loads, { jobs: 2, agents: 2 })
   assert.equal(draft.schedules[0].timing.hour, 5)
 })
+
+test('retry-only edits are saved and old agents are rejected before the first write', async () => {
+  for (const protocol of [17, 18]) {
+    const { page, payload, writes, notices } = setup(protocol)
+    const draft = payload()
+    draft.schedules[0].config.retry = { enabled: true, max_attempts: 3, delay_minutes: 10 }
+    await page.onJobSubmit(draft)
+    if (protocol === 17) {
+      assert.equal(writes.length, 0)
+      assert.match(notices.at(-1).message, /protocol 18/)
+    } else {
+      assert.deepEqual(writes.map(item => item[0]), ['job', 'schedule'])
+      assert.equal(writes[1][2].config.retry.max_attempts, 3)
+    }
+  }
+})

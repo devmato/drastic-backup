@@ -40,6 +40,7 @@ def cleanup_snapshots(report=None):
         except Exception as exc:
             message = f"Proxmox cleanup pending for VM {row['vmid']}: {exc}"
             if report:
+                report.set_data("backup_cleanup_pending", True)
                 report.log_message(message, final_state=AgentOperationState.warning)
             else:
                 logging.warning(message)
@@ -111,6 +112,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 except ResticCancelledError:
                     raise
                 except Exception as exc:
+                    self.record_backup_failure(exc)
                     failed.append({"vmid": guest["vmid"], "error": str(exc)})
                     report.log_message(f"VM {guest['vmid']} backup failed: {exc}", final_state=AgentOperationState.failed)
                 if proxmox_snapshots.count() or proxmox_native_runs.count():
@@ -121,7 +123,8 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
             report.set_data("failed_guests", failed)
             if failed:
                 report.set_data("partial_failure", bool(completed))
-                raise ProxmoxError("Backup failed for Proxmox guest(s): " + ", ".join(str(item["vmid"]) for item in failed))
+                self._backup_failure_summary = ProxmoxError("Backup failed for Proxmox guest(s): " + ", ".join(str(item["vmid"]) for item in failed))
+                raise self._backup_failure_summary
         finally:
             PROXMOX_LOCK.release()
 

@@ -132,6 +132,7 @@ class Agent:
         self.__register_retry_interval = timedelta(seconds=15)
         self.__reconnect_retry_interval = timedelta(seconds=15)
         self.__schedule_run_slots = {}
+        self.__schedule_attempts = {}
         self.__repository_passwords = {}
         self.__secret_values = {}
         self.__shutdown_event = Event()
@@ -304,10 +305,11 @@ class Agent:
 
     def __run_due_schedules(self, now):
         self.__schedule_run_slots = getattr(self, "_Agent__schedule_run_slots", {})
+        self.__schedule_attempts = getattr(self, "_Agent__schedule_attempts", {})
         scheduler.run_due(
             now, jobs=jobs, schedules=schedules, runs=schedule_runs,
             slots=self.__schedule_run_slots, submit=self.__execution_manager().submit,
-            run_job=self.cmd_run_job,
+            run_job=self.cmd_run_job, pending=self.__schedule_attempts,
         )
 
     def __recover_schedule_runs(self):
@@ -599,6 +601,7 @@ class Agent:
         return self.__set_repository(repository_id)
 
     def execute_actions(self, actions, report):
+        """Run all actions; individual failures set report.data['hook_failed'] instead of escaping."""
         return self.__execute_actions(actions=actions, report=report)
 
     def __create_client(self):
@@ -724,6 +727,7 @@ class Agent:
             try:
                 module = AgentJobActionModule[module_name].name
             except (KeyError, TypeError):
+                report.set_data("hook_failed", True)
                 report.log_message(
                     f"Action module {module_name} not supported",
                     final_state=AgentReportState.warning,
@@ -738,6 +742,7 @@ class Agent:
                         report=report, docker_client=self.__docker_client, **action["data"]
                     )
                 except Exception as e:
+                    report.set_data("hook_failed", True)
                     # Set warning state and log message on error
                     report.log_message(
                         f"Failed to execute {module} action: {e}",
@@ -1370,10 +1375,13 @@ class Agent:
         )
 
         if job_report:
-            job_report.log_message(f"Canceling job {job_id} by user request")
-            # Parent searches and preparation may have no reported PID. The worker
-            # observes this fence, terminates its processes and reports after cleanup.
-            job_report.cancel_event.set()
+            with job_report._lock:
+                if job_report.ended:
+                    report.log_message("Backup already finished", final_state=AgentReportState.failed)
+                    return report.finish()
+                job_report.log_message(f"Canceling job {job_id} by user request")
+                # Serialize with final reporting so an acknowledged cancellation cannot become a retry.
+                job_report.cancel_event.set()
             report.log_message(f"Cancellation requested for job {job_id}")
         else:
             report.log_message(

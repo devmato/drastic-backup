@@ -1,11 +1,15 @@
 import unittest
 
+import pytest
+
 import drastic_agent.jobs.base as base_module
+from drastic_agent.agent.action import AgentAction
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.jobs.registry import get_job_handler
-from drastic_common.restic.exceptions import ResticError
+from drastic_agent.runtime.agent import Agent
+from drastic_common.restic.exceptions import ResticError, ResticFailedError
 
 
 class _FakeReport:
@@ -43,8 +47,13 @@ class _Handler(BackupJobHandler):
 
 
 class _FailingBackupHandler(BackupJobHandler):
+    error = ResticError("backup failed")
+    cancel = False
+
     def run_backup(self, report):
-        raise ResticError("backup failed")
+        if self.cancel:
+            report.cancel_event.set()
+        raise self.error
 
 
 class _TrackingBackupHandler(BackupJobHandler):
@@ -160,6 +169,7 @@ def test_repository_stats_failure_marks_completed_backup_warning(monkeypatch):
         _StatsFailingAgent(),
         {"id": 1, "uuid": "job-uuid-1"},
         repository_id=2,
+        run_options={"schedule_id": 1, "retry": {"enabled": True}},
     )
 
     report = handler.run()
@@ -167,6 +177,7 @@ def test_repository_stats_failure_marks_completed_backup_warning(monkeypatch):
     assert report.final_state == AgentReportState.warning
     assert any("stats failed" in line for line in report.log_list)
     assert report.data["backup_data_complete"] is True
+    assert "another attempt is eligible" not in report.log
 
 
 def test_backup_job_uses_server_operation_uuid(monkeypatch):
@@ -296,7 +307,8 @@ def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
     assert any("Repository check failed after backup" in line for line in report.log_list)
 
 
-def test_backup_failure_skips_retention(monkeypatch):
+@pytest.mark.parametrize("source", ["manual", "schedule", "chain", "cancel"])
+def test_backup_failure_skips_retention(monkeypatch, source):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     monkeypatch.setattr(base_module, "actions", _FakeActions())
@@ -307,18 +319,26 @@ def test_backup_failure_skips_retention(monkeypatch):
         def cmd_run_retention(**kwargs):
             raise AssertionError("retention should not run after failed backup")
 
+    options = {"retry": {"enabled": True}}
+    if source != "manual":
+        options["chain_run_id" if source == "chain" else "schedule_id"] = 1
     handler = _FailingBackupHandler(
         RetentionShouldNotRunAgent(_CheckingResticApi()),
         {"id": 1, "uuid": "job-uuid-1"},
         repository_id=2,
         retention_id=3,
+        run_options=options,
     )
+    handler.error = ResticFailedError("connection reset by peer")
+    handler.cancel = source == "cancel"
 
     report = handler.run()
 
     assert report.final_state == AgentReportState.failed
     assert any("Error during backup" in line for line in report.log_list)
     assert report.data["backup_data_complete"] is False
+    assert report.data["backup_retryable"] is (source != "cancel")
+    assert ("another attempt is eligible" in report.log) is (source in {"schedule", "chain"})
 
 
 def test_start_hook_failure_prevents_backup_and_runs_error_and_end(monkeypatch):
@@ -388,7 +408,8 @@ def test_success_hook_failure_is_warning_and_end_hook_still_runs(monkeypatch):
     assert report.final_state == AgentReportState.warning
 
 
-def test_error_hook_exception_does_not_prevent_end_hook(monkeypatch):
+@pytest.mark.parametrize("failed_hook", ["error", "end"])
+def test_real_hook_failure_blocks_retry_and_runs_remaining_hooks(monkeypatch, failed_hook):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     hook_calls = []
@@ -396,28 +417,34 @@ def test_error_hook_exception_does_not_prevent_end_hook(monkeypatch):
     class HookActions:
         @staticmethod
         def find(job_id, hook):
-            return [{"hook": hook}]
+            return [{"hook": hook, "module": "command", "data": {"command": hook}}]
 
-    class HookAgent(_CheckingAgent):
-        @staticmethod
-        def execute_actions(report, actions):
-            hook = actions[0]["hook"]
-            hook_calls.append(hook)
-            if hook == "error":
-                raise RuntimeError("error hook failed")
+    def command(report, command, **kwargs):
+        hook_calls.append(command)
+        if command == failed_hook:
+            raise RuntimeError("hook failed")
 
+    runtime = Agent.__new__(Agent)
+    runtime._Agent__docker_client = None
+    agent = _CheckingAgent(_CheckingResticApi())
+    agent.execute_actions = runtime.execute_actions
+    monkeypatch.setattr(AgentAction, "command", command)
     monkeypatch.setattr(base_module, "actions", HookActions())
     monkeypatch.setattr(base_module, "retentions", _FakeRetentions())
     handler = _FailingBackupHandler(
-        HookAgent(_CheckingResticApi()),
+        agent,
         {"id": 1, "uuid": "job-uuid-1"},
         repository_id=2,
+        run_options={"schedule_id": 1, "retry": {"enabled": True}},
     )
+    handler.error = ResticFailedError("connection reset by peer")
 
     report = handler.run()
 
     assert hook_calls == ["start", "error", "end"]
     assert report.final_state == AgentReportState.failed
+    assert not report.data["backup_retryable"]
+    assert "another attempt is eligible" not in report.log
 
 
 def test_repository_preparation_failure_runs_error_and_end_but_not_start(monkeypatch):

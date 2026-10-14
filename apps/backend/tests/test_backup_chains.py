@@ -28,6 +28,24 @@ from drastic_server.services.operations.reports import AgentOperationService
 NOW = datetime(2026, 10, 7, 2, 0)
 
 
+def test_chain_cancellation_during_retry_wait_does_not_dispatch(setup):
+    _, chain, jobs, calls = setup
+    for job in jobs:
+        job.agent.protocol_version = 18
+    chain.retry = {"enabled": True, "max_attempts": 3, "delay_minutes": 1}
+    db.session.commit()
+    run = start_chain(chain, now=NOW)
+    advance_run(run.id, now=NOW)
+    finish_step(run, jobs, 0, "failed", {"backup_retryable": True})
+    advance_run(run.id, now=NOW + timedelta(seconds=10))
+    run.cancel_requested = True
+    db.session.commit()
+    advance_run(run.id, now=NOW + timedelta(minutes=2))
+    db.session.refresh(run)
+    assert run.state == "cancelled"
+    assert len(calls) == 1
+
+
 @pytest.fixture
 def setup(monkeypatch, tmp_path):
     monkeypatch.setenv("DRASTIC_ENV", "test")
@@ -78,8 +96,9 @@ def finish_step(run, jobs, index, state="success", data=None):
     })
 
 
-@pytest.mark.parametrize("same_job", [False, True])
-def test_serial_order_retention_and_failure_continuation_survive_sessions(setup, same_job):
+@pytest.mark.parametrize("same_job,retry_result", [(False, None), (True, None), (False, "success"),
+                                                  (False, "failed"), (False, "permanent")])
+def test_serial_order_retention_and_failure_continuation_survive_sessions(setup, same_job, retry_result):
     _, chain, jobs, calls = setup
     if same_job:
         jobs = [jobs[0], jobs[0]]
@@ -89,6 +108,12 @@ def test_serial_order_retention_and_failure_continuation_survive_sessions(setup,
         db.session.flush()
         chain.steps = [chain.steps[0], {**chain.steps[0], "repository_id": repository.id, "retention_id": None}]
         db.session.commit()
+    if retry_result:
+        for job in jobs:
+            job.agent.protocol_version = 18
+        chain.retry = {"enabled": True, "max_attempts": 2, "delay_minutes": 1}
+        db.session.commit()
+    retries = retry_result in {"success", "failed"}
     expected_targets = [(step["repository_id"], step["retention_id"]) for step in chain.steps]
     run = start_chain(chain, now=NOW)
     run_id = run.id
@@ -97,18 +122,32 @@ def test_serial_order_retention_and_failure_continuation_survive_sessions(setup,
     assert calls[0][3]["retention_id"] == chain.steps[0]["retention_id"]
     advance_run(run_id, now=NOW)
     assert len(calls) == 1
-    finish_step(db.session.get(BackupChainRun, run_id), jobs, 0, "failed")
+    first_uuid = calls[0][3]["operation_uuid"]
+    finish_step(db.session.get(BackupChainRun, run_id), jobs, 0, "failed", {"backup_retryable": retries})
+    advance_run(run_id, now=NOW + timedelta(seconds=10))
+    chain.retry = {"enabled": True, "max_attempts": 6, "delay_minutes": 1440}
+    db.session.commit()  # Edits must not change the active run's saved policy.
     job_ids = [job.id for job in jobs]
     db.session.remove()  # Dispatcher state must not depend on an in-memory session.
     jobs = [db.session.get(Job, job_id) for job_id in job_ids]
-    advance_run(run_id, now=NOW)
-    advance_run(run_id, now=NOW)
-    assert [call[1] for call in calls] == [job.id for job in jobs]
-    assert [(call[2], call[3]["retention_id"]) for call in calls] == expected_targets
+    if retries:
+        advance_run(run_id, now=NOW + timedelta(minutes=1))
+        assert len(calls) == 1
+        advance_run(run_id, now=NOW + timedelta(seconds=70))
+        options = calls[1][3]["run_options"]
+        assert options["attempt"] == 2 and options["retry"]["max_attempts"] == 2
+        assert options["start_deadline"] == (NOW + timedelta(seconds=130)).isoformat() + "Z"
+        second = AgentOperation.query.filter_by(uuid=calls[1][3]["operation_uuid"]).one()
+        assert second.uuid != first_uuid
+        finish_step(db.session.get(BackupChainRun, run_id), jobs, 0, retry_result, {"backup_retryable": retry_result == "failed"})
+        advance_run(run_id, now=NOW + timedelta(seconds=80))
+    advance_run(run_id, now=NOW + timedelta(seconds=80))
+    assert [call[1] for call in calls] == ([jobs[0].id] if retries else []) + [job.id for job in jobs]
+    assert [(call[2], call[3]["retention_id"]) for call in calls] == (expected_targets[:1] if retries else []) + expected_targets
     finish_step(db.session.get(BackupChainRun, run_id), jobs, 1)
     advance_run(run_id, now=NOW)
     advance_run(run_id, now=NOW)
-    assert db.session.get(BackupChainRun, run_id).state == "failed"
+    assert db.session.get(BackupChainRun, run_id).state == ("success" if retry_result == "success" else "failed")
     assert db.session.get(BackupChainRun, run_id).active_chain_id is None
 
 
@@ -394,12 +433,13 @@ def test_typed_chain_schedule_and_preview_use_same_rules(setup, monkeypatch):
     assert BackupChainRun.query.count() == 2
 
 
-def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup):
+@pytest.mark.parametrize("retry_enabled", [False, True])
+def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup, retry_enabled):
     from drastic_server.models.job import JobSchedule
-    from drastic_server.services.agent.request import AgentRequestService
+    from drastic_server.services.agent.request import AgentException, AgentRequestService
 
     app, chain, jobs, _ = setup
-    jobs[0].agent.protocol_version = 12
+    jobs[0].agent.protocol_version = 18 if retry_enabled else 12
     db.session.commit()
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
@@ -407,6 +447,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup)
     result = client.post(f'/api/jobs/{jobs[0].id}/schedules', json={
         "enabled": True, "timing": timing, "repository_id": chain.steps[0]['repository_id'],
         "retention_id": chain.steps[0]['retention_id'],
+        "config": {"retry": {"enabled": retry_enabled}},
     })
     assert result.status_code == 201, result.json
     schedule = db.session.get(JobSchedule, result.json['id'])
@@ -415,11 +456,24 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup)
     synced = AgentRequestService(jobs[0].agent).sync()['schedules'][0]
     assert synced['config']['timing'] == timing
     assert synced['cron_string'] == ''
+    assert synced['config']['retry']['enabled'] is retry_enabled
     detail = client.get(f'/api/jobs/{jobs[0].id}').json['schedules'][0]
     assert detail['timing'] == timing
     assert '2027-02-01' in detail['cron_description']
     invalid = client.post('/api/jobs/schedules/preview', json={'timing': {'type': 'periodic', 'interval': 0, 'offset': 0}})
     assert invalid.status_code == 422
+    if retry_enabled:
+        jobs[0].agent.protocol_version = 17
+        db.session.commit()
+        with pytest.raises(AgentException, match="protocol 18"):
+            AgentRequestService(jobs[0].agent).sync()
+        schedule.enabled = False
+        db.session.commit()
+        assert AgentRequestService(jobs[0].agent).sync()["schedules"] == []
+        schedule.enabled = True
+        schedule.config = {**schedule.config, "retry": {"enabled": False}}
+        db.session.commit()
+        assert not AgentRequestService(jobs[0].agent).sync()["schedules"][0]["config"]["retry"]["enabled"]
 
 
 def test_dispatcher_can_start_without_http_visit_and_only_starts_once(setup, monkeypatch):

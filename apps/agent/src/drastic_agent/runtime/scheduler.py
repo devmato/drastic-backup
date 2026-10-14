@@ -1,4 +1,4 @@
-"""Durable schedule claims; all entry points share the runtime's executor."""
+"""Durable schedule claims; pending retries exist only for this agent process."""
 
 import logging
 from concurrent.futures import CancelledError
@@ -7,6 +7,7 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy.exc import IntegrityError
 
 from drastic_agent.agent.enums import AgentReportState
+from drastic_common.backup_retry import BackupRetrySchema, retry_allowed
 from drastic_common.scheduling import matches, slot_key, timing_from_cron
 
 
@@ -29,60 +30,83 @@ def finish_run(runs, run_id, future):
         update_run(runs, run_id, "failed", getattr(report, "log", None) or "operation reported failure")
     else:
         update_run(runs, run_id, "finished")
+    return report
 
 
-def run_due(now, *, jobs, schedules, runs, slots, submit, run_job):
+def advance_run(task, now, runs, schedules, submit, run_job):
+    """Poll futures on the scheduler thread; waiting never occupies an executor worker."""
+    options = task["options"]
+    if task["future"] is None:
+        if task["next_at"] is not None:
+            schedule = schedules.find_one(id=options["schedule_id"])
+            if (not schedule or schedule.get("enabled") is False
+                    or schedule["repository_id"] != task["repository_id"]
+                    or schedule.get("retention_id") != task["retention_id"]):
+                return False
+            if now < task["next_at"]:
+                return True
+        try:
+            task["future"] = submit(run_job, task["job_id"], task["repository_id"], task["retention_id"],
+                                    run_options=dict(options), resources={
+                                        ("job", task["job_id"]), ("repository", task["repository_id"])})
+        except Exception as exc:
+            logging.exception("Could not submit scheduled job %s", task["job_id"])
+            update_run(runs, task["run_id"], "failed", str(exc))
+            return False
+        if task["future"] is None:
+            if task["next_at"] is not None:
+                return True  # Busy resources do not consume another attempt.
+            update_run(runs, task["run_id"], "skipped", "execution capacity or requested resource is busy")
+            return False
+        update_run(runs, task["run_id"], "started")
+    if not task["future"].done():
+        return True
+    report = finish_run(runs, task["run_id"], task["future"])
+    if report and retry_allowed(options["retry"], options["attempt"], report.state.name, report.data):
+        task.update(future=None, next_at=report.ended + timedelta(minutes=options["retry"]["delay_minutes"]))
+        options["attempt"] += 1
+        return True
+    return False
+
+
+def run_due(now, *, jobs, schedules, runs, slots, pending, submit, run_job):
     """Claim each slot before submission, including when the server is offline."""
-    utc_slot = now.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()
+    utc_now = now.astimezone(timezone.utc)
+    for schedule_id, task in list(pending.items()):
+        if not advance_run(task, utc_now, runs, schedules, submit, run_job):
+            del pending[schedule_id]
+    utc_slot = utc_now.replace(second=0, microsecond=0).isoformat()
     once_slot = "once:" + now.replace(second=0, microsecond=0, tzinfo=None).isoformat()
-    expired = [key for key, value in slots.items() if value not in {utc_slot, once_slot}]
-    for key in expired:
+    for key in [key for key, value in slots.items() if value not in {utc_slot, once_slot}]:
         del slots[key]
-
     for job in jobs:
         for schedule in schedules.find(job_id=job["id"]):
-            cron = schedule.get("cron_string")
-            timing = (schedule.get("config") or {}).get("timing")
-            if not timing and not cron:
+            config = schedule.get("config") or {}
+            if not config.get("timing") and not schedule.get("cron_string"):
                 continue
-            timing = timing or timing_from_cron(cron)
-            if not matches(timing, now):
+            timing = config.get("timing") or timing_from_cron(schedule["cron_string"])
+            if schedule.get("enabled") is False or not matches(timing, now):
                 continue
-            planned_slot = slot_key(timing, now)
-            schedule_id = schedule.get("id")
-            if schedule_id is None:
-                logging.warning("Ignoring schedule without id for job %s", job["id"])
+            schedule_id, planned_slot = schedule.get("id"), slot_key(timing, now)
+            if schedule_id is None or slots.get(schedule_id) == planned_slot:
                 continue
-            if slots.get(schedule_id) == planned_slot:
-                continue
-            created_at = datetime.now(timezone.utc).isoformat()
+            created = datetime.now(timezone.utc).isoformat()
             try:
-                run_id = runs.insert({
-                    "schedule_id": schedule_id, "planned_slot": planned_slot,
-                    "status": "claimed", "reason": None,
-                    "created_at": created_at, "updated_at": created_at,
-                }, ensure=False)
+                run_id = runs.insert({"schedule_id": schedule_id, "planned_slot": planned_slot, "status": "claimed",
+                                      "reason": None, "created_at": created, "updated_at": created}, ensure=False)
             except IntegrityError:
                 slots[schedule_id] = planned_slot
                 continue
             slots[schedule_id] = planned_slot
-            logging.info("Starting job %s by schedule %s", job["id"], cron)
-            try:
-                future = submit(
-                    run_job, job["id"], schedule["repository_id"], schedule.get("retention_id"),
-                    run_options={**(schedule.get("config") or {}), "schedule_id": schedule_id},
-                    resources={("job", job["id"]), ("repository", schedule["repository_id"])},
-                )
-            except Exception as exc:
-                logging.exception("Could not submit scheduled job %s", job["id"])
-                update_run(runs, run_id, "skipped", str(exc))
+            if schedule_id in pending:
+                update_run(runs, run_id, "skipped", "Previous scheduled run still active")
                 continue
-            if future is None:
-                update_run(runs, run_id, "skipped", "execution capacity or requested resource is busy")
-            else:
-                update_run(runs, run_id, "started")
-                if hasattr(future, "add_done_callback"):
-                    future.add_done_callback(lambda completed, run_id=run_id: finish_run(runs, run_id, completed))
+            task = {"run_id": run_id, "job_id": job["id"], "repository_id": schedule["repository_id"],
+                    "retention_id": schedule.get("retention_id"), "future": None, "next_at": None,
+                    "options": {**config, "schedule_id": schedule_id, "attempt": 1,
+                                "retry": BackupRetrySchema().load(config.get("retry") or {})}}
+            if advance_run(task, utc_now, runs, schedules, submit, run_job):
+                pending[schedule_id] = task
 
 
 def recover_runs(runs):

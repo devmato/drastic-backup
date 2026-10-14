@@ -1,5 +1,7 @@
 # Unreleased
 
+- Job schedules and backup chains offer opt-in retries for temporary backup transport failures: default 3 total attempts, 10 minutes apart, configurable up to 6 attempts and 1440 minutes. Scheduled retries run only while the agent process stays alive; chains retry their current step through the existing chain controller. Attempts use ordinary operation history and logs. Update the backend/database first, then agents to protocol 18.
+
 - Plain file restores offer **Target → Advanced → Match ownership by user and group names** and **Skip restoring extended attributes**, mapped directly to Restic's `--ownership-by-name` and `--exclude-xattr '*'`. Both are off by default and require agent protocol 17; update the backend before agents.
 
 - **Changed exclusion precedence with restic 0.19.1:** File and TrueNAS backups now keep explicitly selected files and folders even when an exclude pattern matches them. Directory contents remain filtered by free-form patterns. Browser path rules use the most specific include/exclude: explicit children can reopen excluded parents without including their siblings, including across TrueNAS datasets. These exceptions require agent protocol 16 and also apply to existing rules. Proxmox keeps explicit VM selections visible alongside a host selection and retains them when the host is removed.

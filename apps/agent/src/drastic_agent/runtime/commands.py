@@ -3,10 +3,13 @@
 import logging
 from datetime import datetime, timezone
 
+from marshmallow import ValidationError
+
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.report import AgentReport
 from drastic_common import diagnostics
 from drastic_common.agent.commands import ASYNC_AGENT_COMMANDS, AgentCommandName
+from drastic_common.backup_retry import BackupRetrySchema
 
 
 def operation_type(command):
@@ -82,6 +85,13 @@ def submit(command, args, *, execute, manager, operations):
 
 def validate_job(args, *, jobs, repositories, retentions):
     options = args.get("run_options") or {}
+    try:
+        BackupRetrySchema().load(options.get("retry") or {})
+        attempt = options.get("attempt", 1)
+        if type(attempt) is not int or not 1 <= attempt <= 6:
+            return "Invalid backup attempt number"
+    except ValidationError:
+        return "Invalid backup retry settings"
     if options.get("chain_run_id"):
         try:
             deadline = datetime.fromisoformat(options["start_deadline"])

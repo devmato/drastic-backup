@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
-import { describeTiming, scheduleTiming } from '../src/utils/schedule.js'
+import { describeTiming, scheduleTiming, retrySettings } from '../src/utils/schedule.js'
 import { hasTrueNASSelection, browserKey, browserPath, browserSelection, selectionConfig, isPathWithin } from '../src/utils/truenas-selection.js'
 import { pathSelectionOptions } from '../src/utils/path-selection.js'
 
@@ -21,7 +21,7 @@ for (const [kind, item, changes] of [
     const source = readFileSync(new URL(panelPath, import.meta.url), 'utf8')
       .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
     const panel = runInNewContext(`${source}\n;({ show: show${kind}Dialog, submit: on${kind}Submit, remove: confirmDelete${kind} })`, {
-      computed, ref, scheduleTiming, describeTiming,
+      computed, ref, scheduleTiming, describeTiming, retrySettings,
       defineProps: () => props,
       defineEmits: () => (event, value) => {
         assert.equal(event, 'update:modelValue')
@@ -64,7 +64,7 @@ test('TrueNAS job drafts preserve path rules and patterns on save', () => {
   const props = { editingJob: null }
   let saved
   const dialog = runInNewContext(`${source}\n;({ cloneConfig, resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
+    computed, reactive, ref, scheduleTiming, retrySettings, hasTrueNASSelection,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),
@@ -93,7 +93,7 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
   const props = { editingJob: { name: 'VMs', type: 'proxmox', config, actions: [], schedules: [] } }
   let saved
   const dialog = runInNewContext(`${source}\n;({ resetForm, submitForm, jobForm })`, {
-    computed, reactive, ref, scheduleTiming, hasTrueNASSelection,
+    computed, reactive, ref, scheduleTiming, retrySettings, hasTrueNASSelection,
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'save'); saved = value },
     defineModel: () => ref(true),

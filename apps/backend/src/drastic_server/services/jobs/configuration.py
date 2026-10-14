@@ -3,11 +3,12 @@
 from croniter import croniter
 from marshmallow import ValidationError
 
-from drastic_common.agent.commands import PATH_INCLUDE_EXCEPTIONS_PROTOCOL
+from drastic_common.agent.commands import BACKUP_RETRY_PROTOCOL, PATH_INCLUDE_EXCEPTIONS_PROTOCOL
 from drastic_common.agent.schemas import (
     AgentFileBackupJobConfigSchema,
     AgentProxmoxBackupJobConfigSchema,
 )
+from drastic_common.backup_retry import BackupRetrySchema
 from drastic_common.backup_selection import requires_include_exceptions
 from drastic_common.scheduling import as_cron
 from drastic_common.truenas import TrueNASBackupConfigSchema
@@ -56,7 +57,7 @@ def _normalize_proxmox_backup_config(config):
 
 
 def normalize_schedule_config(config):
-    return _normalize_check_config(config)
+    return {**_normalize_check_config(config), "retry": BackupRetrySchema().load((config or {}).get("retry") or {})}
 
 
 def assign_agent_repository(user_id, agent, repository_id, user_recovery_key=None):
@@ -104,6 +105,8 @@ def schedule_trigger(data):
 
 def job_schedule_config(agent, data):
     config = normalize_schedule_config(data.get("config") or {})
+    if config["retry"]["enabled"] and (agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL:
+        raise ValueError(f"Update the agent to use backup retries (protocol {BACKUP_RETRY_PROTOCOL} required)")
     if "timing" in data:
         if (agent.protocol_version or 0) < 12:
             raise ValueError("Update the agent to use schedule types (protocol 12 required)")

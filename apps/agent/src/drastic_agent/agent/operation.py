@@ -443,6 +443,8 @@ class AgentOperation:
         with self._lock:
             if self.ended:
                 return self
+            if self.type == AgentOperationType.backup and self.cancel_event.is_set():
+                self.data["backup_retryable"] = False
             self._full_log = True
             self.ended = ended or datetime.now(timezone.utc)
             try:

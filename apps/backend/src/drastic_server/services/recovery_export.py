@@ -124,7 +124,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
             "backup_chains": [
                 {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
                   "schedules": chain.schedules, "timezone": "UTC",
-                 "start_timeout_minutes": chain.start_timeout_minutes, "steps": chain.steps}
+                 "start_timeout_minutes": chain.start_timeout_minutes, "steps": chain.steps, "retry": chain.retry or {}}
                 for chain in BackupChain.query.filter_by(user_id=user.id).order_by(BackupChain.id)
             ],
         }

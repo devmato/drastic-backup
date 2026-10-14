@@ -2,6 +2,7 @@
 
 from marshmallow import EXCLUDE, Schema, ValidationError, fields, validate, validates_schema
 
+from drastic_common.backup_retry import BackupRetrySchema
 from drastic_server.schemas.job import ScheduleConfigSchema
 from drastic_server.schemas.scheduling import ScheduleTriggerSchema
 
@@ -24,6 +25,7 @@ class ChainInputSchema(Schema):
     schedules = fields.List(fields.Nested(ScheduleTriggerSchema), required=True, validate=validate.Length(max=100))
     recovery_key = fields.String(load_default=None, allow_none=True)
     start_timeout_minutes = fields.Integer(load_default=60, strict=True, validate=validate.Range(min=1, max=1440))
+    retry = fields.Nested(BackupRetrySchema)
     steps = fields.List(fields.Nested(ChainStepInputSchema), required=True, validate=validate.Length(min=1, max=100))
 
     @validates_schema

@@ -6,6 +6,7 @@ import json
 import os
 import stat
 import subprocess
+from concurrent.futures import Future
 from datetime import datetime, timedelta
 from threading import Event
 from types import SimpleNamespace
@@ -755,8 +756,9 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
     class ImmediateExecution:
         def submit(self, target, *args, **kwargs):
             kwargs.pop("resources", None)
-            target(*args, **kwargs)
-            return object()
+            future = Future()
+            future.set_result(target(*args, **kwargs))
+            return future
 
     monkeypatch.setattr(agent_module, "jobs", [{"id": 1}, {"id": 2}])
     monkeypatch.setattr(
@@ -1137,8 +1139,8 @@ def test_cancel_restore_can_be_requested_between_processes():
     assert restore_report.state.name == "running"
 
 
-@pytest.mark.parametrize("pid", [None, 731])
-def test_cancel_job_acknowledges_request_and_leaves_terminal_reporting_to_worker(pid):
+@pytest.mark.parametrize("pid,finished", [(None, False), (731, False), (None, True)])
+def test_cancel_job_acknowledges_request_and_leaves_terminal_reporting_to_worker(pid, finished, monkeypatch):
     agent = build_agent(identifier="agent-17", secret="secret-17")
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
@@ -1150,15 +1152,23 @@ def test_cancel_job_acknowledges_request_and_leaves_terminal_reporting_to_worker
     )
     if pid is not None:
         job_report.data["pid"] = pid
+    job_report.set_data("backup_retryable", True)
+    if finished:
+        job_report.finish()
+        monkeypatch.setattr(AgentReport, "get_report", lambda **kwargs: job_report)
 
     report = Agent.cmd_cancel_job(agent, job_id=31, operation_uuid="cancel-job-31")
 
+    if finished:
+        assert report.final_state.name == "failed" and not job_report.cancel_event.is_set()
+        return
     assert report.final_state.name == "success"
     assert job_report.cancel_event.is_set()
     assert job_report.state.name == "running"
     assert job_report.ended is None
     assert job_report.final_state.name == "success"
     assert "Cancellation requested" in report.log
+    assert job_report.finish().data["backup_retryable"] is False
 
 
 def test_cancel_restore_leaves_terminal_reporting_to_the_worker():

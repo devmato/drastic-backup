@@ -43,6 +43,7 @@ def start_backup(user_id, job_id, data):
         require_success(AgentService.sync(job.agent, await_response=True))
 
     options = normalize_schedule_config(data.get("options") or {})
+    options.pop("retry", None)  # Direct manual starts do not inherit a schedule's retry policy.
     operation = start_agent_operation(
         agent=job.agent, job=job, repository=repository,
         operation_type=AgentOperationType.backup,

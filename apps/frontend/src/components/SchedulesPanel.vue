@@ -64,7 +64,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import { useRetentionStore } from 'stores/retention'
 import ScheduleManageDialog from 'components/ScheduleManageDialog.vue'
-import { describeTiming, scheduleTiming } from 'src/utils/schedule'
+import { describeTiming, scheduleTiming, retrySettings } from 'src/utils/schedule'
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -130,6 +130,7 @@ function cloneSchedule(schedule) {
 
 function cloneScheduleConfig(config = {}) {
   return {
+    retry: retrySettings(config.retry),
     repository_check: {
       enabled: Boolean(config.repository_check?.enabled),
       read_data: config.repository_check?.read_data || null,

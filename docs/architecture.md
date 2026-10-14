@@ -78,7 +78,7 @@ All paths below are relative to `apps/agent/src/drastic_agent/`.
 | `runtime/connection.py` | Socket callbacks and bounded request transport |
 | `runtime/commands.py` | Command admission, UUID deduplication, dispatch and unexpected worker failures |
 | `runtime/execution.py` | Bounded executor, atomic resource admission and maintenance exclusion |
-| `runtime/scheduler.py` | Durable schedule claims, completion, interrupted-run recovery and pruning |
+| `runtime/scheduler.py` | Durable schedule claims, bounded retries, cancellation, interrupted-run recovery and pruning |
 | `runtime/reporting.py` | Acknowledgement-aware report delivery and replay ordering |
 | `runtime/updates.py` | Independent installer lifecycle, execution pause and update reports |
 | `storage/database.py` | Local database tables and additive migrations |
@@ -106,6 +106,7 @@ Runtime helpers receive focused dependencies: the scheduler gets tables and the 
 - Manual commands and schedules share the bounded executor and job/repository resource admission.
 - Asynchronous commands reserve operation history before submission and deduplicate repeated UUIDs. Cancellation and admission retain their shared fence.
 - Schedule slots are claimed persistently before execution. One-shot claims survive history cleanup, restarts and clock changes.
+- Opt-in backup retries belong to job schedules or chains. The agent scheduler polls futures and keeps waiting attempts only in memory, releasing executor resources between attempts; a restart discards them. Durable schedule-slot claims still prevent duplicate starts. Chains use their existing persisted step state and dispatch fences.
 - Configuration sync replaces its tables in one local transaction, so an offline agent retains the last complete configuration on failure.
 - Reports are snapshotted while locked, then sent without holding the lock during network I/O. Only the acknowledged log sequence advances; concurrent updates stay dirty.
 - Child reports do not overtake their outstanding parents. Failed sends rotate so unrelated reports can progress.

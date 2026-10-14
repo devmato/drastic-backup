@@ -45,6 +45,7 @@
               <div class="col-12"><q-select outlined dense v-model="form.retention_id" :options="retentionOptions" label="Retention Policy" emit-value map-options /></div>
               <div class="col-12"><q-toggle v-model="form.repository_check.enabled" label="Run repository check after successful backup" /></div>
               <div v-if="form.repository_check.enabled" class="col-12"><q-input outlined dense v-model="form.repository_check.read_data" label="Read data" hint="Optional: 1/10, 5% or 100%. Leave empty for a basic check." /></div>
+              <div class="col-12"><BackupRetryFields v-model="form.retry" /></div>
             </template>
             <div class="col-12"><q-toggle v-model="form.enabled" label="Enabled" /></div>
           </div>
@@ -63,7 +64,8 @@
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useQuasar } from 'quasar'
 import { getApiErrorMessage } from 'src/utils/api-error'
-import { describeTiming, scheduleTiming } from 'src/utils/schedule'
+import { describeTiming, scheduleTiming, retrySettings } from 'src/utils/schedule'
+import BackupRetryFields from 'components/BackupRetryFields.vue'
 import { previewSchedule } from 'src/api/jobs'
 
 const props = defineProps({
@@ -88,6 +90,7 @@ const form = reactive({
   retention_id: null,
   enabled: true,
   repository_check: { enabled: false, read_data: null },
+  retry: retrySettings(),
 })
 
 const dayOptions = [
@@ -149,6 +152,7 @@ function getRepositoryLabel(repository) {
 
 function resetForm() {
   const schedule = props.schedule
+  form.retry = retrySettings(schedule?.config?.retry)
   const savedTiming = scheduleTiming(schedule || {})
   Object.assign(form, { type: 'daily', hour: 0, minute: 0, weekdays: [0, 1, 2, 3, 4, 5, 6], day: 1, months: [1],
     date: '', interval: 60, offset: 0, from_hour: 0, to_hour: 23, expression: '', ...savedTiming,
@@ -191,7 +195,7 @@ function submitForm() {
       ...(!props.timeOnly ? {
         repository_id: form.repository_id,
         retention_id: form.retention_id,
-        config: { repository_check: cloneRepositoryCheck(form.repository_check) },
+        config: { repository_check: cloneRepositoryCheck(form.repository_check), retry: retrySettings(form.retry) },
       } : {}),
     })
   } catch (e) {

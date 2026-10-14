@@ -32,6 +32,9 @@ export function useJobEditor(jobStore, agentStore, userStore) {
       const originals = new Map((editingJob?.schedules || []).map(schedule => [schedule.id, schedule]))
       const changedTypedSchedule = schedules.some(schedule => schedule.timing && !sameSchedule(schedule, originals.get(schedule.id)))
       const agent = agentStore.agents.find(item => String(item.id) === String(agentId))
+      if (schedules.some(schedule => schedule.config?.retry?.enabled) && (agent?.protocol_version || 0) < 18) {
+        throw new Error('Update the agent to use backup retries (protocol 18 required)')
+      }
       // Check before the first write, so an old agent can still accept a name-only edit.
       if (changedTypedSchedule && (agent?.protocol_version || 0) < 12) {
         throw new Error('Update the agent to change schedule types (protocol 12 required)')

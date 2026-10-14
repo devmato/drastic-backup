@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
 import { computed, reactive, ref } from 'vue'
-import { describeTiming, scheduleTiming } from '../src/utils/schedule.js'
+import { describeTiming, scheduleTiming, retrySettings } from '../src/utils/schedule.js'
 
 function script(component) {
   return readFileSync(new URL(`../src/components/${component}.vue`, import.meta.url), 'utf8')
@@ -13,12 +13,12 @@ function script(component) {
 for (const timeOnly of [false, true]) {
   test(`shared schedule dialog preserves drafts and emits ${timeOnly ? 'chain times' : 'job backup settings'}`, () => {
     const original = { hour: '2', minute: '30', day_of_week: [1, 3], enabled: false,
-      repository_id: 2, retention_id: 7, config: { repository_check: { enabled: true, read_data: '100%' } } }
+      repository_id: 2, retention_id: 7, config: { repository_check: { enabled: true, read_data: '100%' }, retry: { enabled: true, max_attempts: 4, delay_minutes: 20 } } }
     const before = JSON.stringify(original)
     let saved
     const dialog = runInNewContext(`${script('ScheduleManageDialog')}
       ;({ resetForm, submitForm, form })`, {
-      computed, reactive, ref, scheduleTiming, describeTiming, watch: () => {}, onBeforeUnmount: () => {}, defineOptions: () => {},
+      computed, reactive, ref, scheduleTiming, describeTiming, retrySettings, watch: () => {}, onBeforeUnmount: () => {}, defineOptions: () => {},
       defineProps: () => ({ schedule: original, timeOnly, timezone: timeOnly ? 'UTC' : '',
         repositories: [{ id: 2, name: 'NAS' }], allRepositories: [], retentions: [] }),
       defineModel: () => ref(true),
@@ -40,6 +40,8 @@ for (const timeOnly of [false, true]) {
       assert.equal(saved.repository_id, 2)
       assert.equal(saved.retention_id, 7)
       assert.equal(saved.config.repository_check.read_data, '100%')
+      assert.equal(saved.config.retry.max_attempts, 4)
+      assert.equal(saved.config.retry.delay_minutes, 20)
     }
     assert.equal(JSON.stringify(original), before)
   })
@@ -51,7 +53,7 @@ test('shared schedule list updates its preview immediately and omits job columns
   const props = { modelValue: [original], timeOnly: true, timezone: 'UTC' }
   const panel = runInNewContext(`${script('SchedulesPanel')}
     ;({ showScheduleDialog, onScheduleSubmit, scheduleColumns, getCronDescription })`, {
-    computed, ref, scheduleTiming, describeTiming, onMounted: () => {}, defineOptions: () => {},
+    computed, ref, scheduleTiming, describeTiming, retrySettings, onMounted: () => {}, defineOptions: () => {},
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
     useRetentionStore: () => ({ retentions: [] }), useQuasar: () => ({}),
@@ -66,7 +68,7 @@ test('shared schedule list updates its preview immediately and omits job columns
 })
 
 test('chain edits preserve schedules and allow the same job on another repository', async () => {
-  const original = { id: 3, name: 'Nightly', start_timeout_minutes: 60,
+  const original = { id: 3, name: 'Nightly', start_timeout_minutes: 60, retry: { enabled: true, max_attempts: 3, delay_minutes: 15 },
     schedules: [{ enabled: true, cron_string: '0 2 * * 1,2,3,4,5' },
       { enabled: false, cron_string: '0 4 * * 0,6' }],
     steps: [{ job_id: 1, repository_id: 2, retention_id: 7, config: {} }] }
@@ -74,9 +76,9 @@ test('chain edits preserve schedules and allow the same job on another repositor
   let saved
   const panel = runInNewContext(`${script('jobs/BackupChainsPanel')}
     ;({ editChain, save, form, newStep, jobOptions })`, {
-    computed, reactive, ref, scheduleTiming, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
+    computed, reactive, ref, scheduleTiming, retrySettings, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
     defineProps: () => ({ agentJobs: [{ display_name: 'Agent', jobs: [{ id: 1, name: 'Files', agent_id: 1 }] }],
-      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 11 }] }),
+      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 18 }] }),
     defineEmits: () => () => {},
     useRoute: () => ({ query: {} }), useRouter: () => ({}), useQuasar: () => ({ notify: () => {} }),
     useChainStore: () => ({ saveChain: async (id, payload) => { assert.equal(id, 3); saved = payload } }),
@@ -93,6 +95,7 @@ test('chain edits preserve schedules and allow the same job on another repositor
   assert.equal(JSON.stringify(original), before)
   await panel.save()
   assert.equal(saved.schedules.length, 2)
+  assert.deepEqual(JSON.parse(JSON.stringify(saved.retry)), original.retry)
   assert.equal(saved.schedules[0].timing.hour, 6)
   assert.equal(saved.schedules[1].enabled, false)
   assert.deepEqual(Object.keys(saved.schedules[0]).sort(), ['enabled', 'timing'])

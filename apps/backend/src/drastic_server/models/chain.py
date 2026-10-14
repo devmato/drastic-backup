@@ -8,6 +8,7 @@ class BackupChain(IdMixin, TimeMixin, db.Model):
     name = db.Column(db.String(255), nullable=False)
     schedules = db.Column(db.JSON, nullable=False, default=list)
     start_timeout_minutes = db.Column(db.Integer, nullable=False, default=60)
+    retry = db.Column(db.JSON, nullable=True)
     steps = db.Column(db.JSON, nullable=False, default=list)
 
     @property

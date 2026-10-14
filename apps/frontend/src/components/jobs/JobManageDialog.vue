@@ -90,7 +90,7 @@ import { supportsJob } from 'src/utils/agent-connections'
 import { hasTrueNASSelection } from 'src/utils/truenas-selection'
 import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
 import SchedulesPanel from 'components/SchedulesPanel.vue'
-import { scheduleTiming } from 'src/utils/schedule'
+import { scheduleTiming, retrySettings } from 'src/utils/schedule'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
@@ -253,6 +253,7 @@ function cloneSchedule(schedule) {
 
 function cloneScheduleConfig(config = {}) {
   return {
+    retry: retrySettings(config.retry),
     repository_check: {
       enabled: Boolean(config.repository_check?.enabled),
       read_data: config.repository_check?.read_data || null,

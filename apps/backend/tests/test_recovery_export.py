@@ -144,7 +144,8 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
             {"job_id": job.id, "repository_id": repository.id, "retention_id": None, "config": {}},
         ]
         db.session.add(BackupChain(user_id=user.id, name="Chain <script>alert(2)</script>",
-                                   schedules=chain_schedules, steps=chain_steps, start_timeout_minutes=47))
+                                   schedules=chain_schedules, steps=chain_steps, start_timeout_minutes=47,
+                                   retry={"enabled": True, "max_attempts": 3, "delay_minutes": 10}))
 
         other_user = User(name="other-user", email="other-user-DO-NOT-EXPORT@example.test")
         other_user.set_initial_password("other-password", recovery_key="other-recovery-key")
@@ -183,6 +184,7 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         chains_html = html.split("<h2>Backup chains</h2>", 1)[1]
         assert "Chain &lt;script&gt;alert(2)&lt;/script&gt;" in chains_html
         assert "47 minutes" in chains_html and "UTC" in chains_html
+        assert "3 total attempts, 10 minutes apart" in chains_html
         schedules_json, steps_json = re.findall(r"<pre>(.*?)</pre>", chains_html, re.DOTALL)
         assert json.loads(schedules_json) == chain_schedules
         assert json.loads(steps_json) == chain_steps

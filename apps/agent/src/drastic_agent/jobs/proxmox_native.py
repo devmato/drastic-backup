@@ -114,6 +114,7 @@ def recover_runs(report=None):
         except Exception as exc:
             message = f"Native backup cleanup pending for VM {data['vmid']}: {exc}"
             if report:
+                report.set_data("backup_cleanup_pending", True)
                 report.log_message(message, final_state=AgentOperationState.warning)
             else:
                 import logging

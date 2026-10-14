@@ -34,6 +34,12 @@ def test_existing_chain_schedule_activation_and_configuration_survive_migration(
         context = MigrationContext.configure(connection)
         with Operations.context(context):
             migration.upgrade()
+            retry_spec = spec_from_file_location("backup_retry_migration", path.with_name("backup_retries.py"))
+            retry_migration = module_from_spec(retry_spec)
+            retry_spec.loader.exec_module(retry_migration)
+            retry_migration.upgrade()
+            assert connection.execute(sa.text("SELECT retry FROM backup_chains")).scalars().all() == [None, None]
+            retry_migration.downgrade()
         current = sa.Table("backup_chains", sa.MetaData(), autoload_with=connection)
         rows = connection.execute(sa.select(current).order_by(current.c.id)).mappings().all()
         assert rows[0]["schedules"] == [{"enabled": True, "cron_string": "0 2 * * 1,5"}]

@@ -165,6 +165,7 @@
         <table>
           <tr><th>Scheduled / timezone</th><td>{{ chain.enabled }} / {{ chain.timezone }}</td></tr>
           <tr><th>Maximum start wait per step</th><td>{{ chain.start_timeout_minutes }} minutes</td></tr>
+          <tr><th>Backup retries per step</th><td>{% if chain.retry.enabled %}{{ chain.retry.max_attempts }} total attempts, {{ chain.retry.delay_minutes }} minutes apart{% else %}Disabled{% endif %}</td></tr>
           <tr><th>Schedules</th><td><pre>{{ chain.schedules | tojson(indent=2) }}</pre></td></tr>
           <tr><th>Steps in execution order</th><td><pre>{{ chain.steps | tojson(indent=2) }}</pre></td></tr>
         </table>
