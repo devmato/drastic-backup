@@ -1,6 +1,6 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader title="Dashboard" description="Your backup workspace, at a glance.">
+    <PageHeader title="Dashboard">
       <template #actions>
         <q-btn flat round color="primary" icon="refresh" aria-label="Refresh dashboard" :loading="loading" @click="loadDashboard">
           <q-tooltip>Refresh dashboard</q-tooltip>

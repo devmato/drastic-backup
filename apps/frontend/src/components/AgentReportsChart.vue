@@ -26,7 +26,7 @@
     <div class="q-pa-sm q-mt-auto rounded-borders" :class="$q.dark.isActive ? 'bg-grey-10' : 'bg-grey-1'">
       <div class="row justify-center q-gutter-xs">
         <q-btn v-for="segment in chartSegments" :key="segment.value" flat dense no-caps no-wrap :to="segment.to" :aria-label="`${segment.label}: ${segment.count} reports. View matching reports.`" class="col-auto">
-          <q-icon name="circle" :color="segment.count ? segment.color : 'grey-5'" size="xs" class="q-mr-xs" />
+          <q-icon name="circle" :color="segment.color" size="xs" class="q-mr-xs" />
           {{ segment.label }}
           <q-tooltip>{{ segment.count }} reports · {{ percentage(segment) }}</q-tooltip>
         </q-btn>
