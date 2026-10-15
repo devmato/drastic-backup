@@ -1,4 +1,14 @@
-# Unreleased
+# Initial Release Notes
+
+These archived development notes seed the first GitHub release draft. Future release notes are generated and edited on GitHub; this is not an ongoing changelog.
+
+### First Public Release
+
+dRastic provides a self-hosted web UI for restic backups with managed or custom repositories, agents, schedules and backup chains, retention, restore workflows, notifications and recovery exports. Start with the [Deployment guide](https://github.com/devmato/drastic-backup/blob/main/docs/deployment.md) and verify a backup/restore round-trip before relying on a new installation.
+
+Release preparation is started manually through GitHub Actions on a fixed, existing source commit. After tests and both images succeed, edit the GitHub release draft and publish it to advance `main` and `latest`. Product versions remain date/SHA identifiers.
+
+### Changes and Development Upgrade Notes
 
 - Repository statistics are now part of the backup report; the separate report type and command have been removed. Database/agent migrations delete old statistics reports, dependent logs/deliveries and statistics notification subscriptions. Repository statistics become available again after the next completed statistics phase. Pause schedules during the rollout, update the backend/database first, then agents to protocol 19 before resuming backups. Older agents can still connect for updates, but the backend no longer dispatches backups to them or accepts standalone statistics reports.
 

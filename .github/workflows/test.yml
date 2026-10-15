@@ -7,6 +7,10 @@ on:
       - main
   pull_request:
   workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
 
 jobs:
   python:
@@ -33,6 +37,7 @@ jobs:
         with:
           # Agent compatibility tests exercise upgrades from a previous controller.
           fetch-depth: ${{ matrix.component == 'agent' && '0' || '1' }}
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python-version }}
@@ -55,6 +60,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
@@ -71,6 +78,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-node@v6
         with:
           node-version: "22"
@@ -89,6 +98,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
       - uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -103,6 +114,8 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
       - name: Check scripts
         run: |
           bash -n scripts/release.sh
@@ -110,5 +123,6 @@ jobs:
           python -m py_compile scripts/drastic-agent-installer.py
           bash -n scripts/generate-env.sh
           bash -n scripts/ci/publish-docker-image.sh
+          bash -n scripts/ci/promote-release-images.sh
           bash -n scripts/ci/install-restic.sh
           bash -n apps/backend/scripts/test-migrations.sh

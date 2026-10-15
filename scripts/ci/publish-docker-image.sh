@@ -30,21 +30,41 @@ VERSION=$(python3 "$CONTEXT/libs/python/common/src/drastic_common/version.py" --
 
 TAGS=("$IMAGE:$VERSION")
 
-case "${GITHUB_REF_TYPE:-}" in
+# Reusable workflows retain the caller's develop ref, not the checked-out release tag.
+REF_TYPE=${GITHUB_REF_TYPE:-}
+REF_NAME=${RELEASE_TAG:-${GITHUB_REF_NAME:-}}
+if [[ -n "${RELEASE_TAG:-}" ]]; then
+    REF_TYPE=tag
+fi
+
+case "$REF_TYPE" in
     branch)
-        SAFE_BRANCH=$(printf '%s' "${GITHUB_REF_NAME:?GITHUB_REF_NAME is required.}" | tr '/[:upper:]' '-[:lower:]')
-        TAGS+=("$IMAGE:$SAFE_BRANCH")
+        if [[ "$REF_NAME" == develop ]]; then
+            TAGS+=("$IMAGE:develop")
+        fi
         ;;
     tag)
-        if [[ "$GITHUB_REF_NAME" != "$VERSION" ]]; then
-            echo "Release tag $GITHUB_REF_NAME does not match source version $VERSION." >&2
+        if [[ "$REF_NAME" != "$VERSION" ]]; then
+            echo "Release tag $REF_NAME does not match source version $VERSION." >&2
             exit 1
         fi
-        TAGS+=("$IMAGE:latest")
+        # Release aliases are promoted only after both images have been published.
         ;;
 esac
 
 docker login "$REGISTRY" --username "$USERNAME" --password-stdin <<<"$PASSWORD"
+
+# Keep a tested candidate's binaries unchanged on retries and later develop builds.
+if manifest=$(docker buildx imagetools inspect "$IMAGE:$VERSION" 2>&1); then
+    if [[ "$REF_TYPE" == branch && "$REF_NAME" == develop ]]; then
+        docker buildx imagetools create --tag "$IMAGE:develop" "$IMAGE:$VERSION"
+    fi
+    echo "Reusing $IMAGE:$VERSION"
+    exit 0
+elif [[ "$manifest" != *"not found"* && "$manifest" != *"manifest unknown"* ]]; then
+    echo "$manifest" >&2
+    exit 1
+fi
 
 BUILD_TAGS=()
 for tag in "${TAGS[@]}"; do

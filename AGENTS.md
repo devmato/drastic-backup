@@ -3,16 +3,17 @@
 ## Git And Releases
 
 - Use Conventional Commit messages because release notes are derived from commit messages.
-- Use `feat:` for release-relevant new functionality.
-- Use `fix:`, `perf:`, `security:`, or `deps:` for release-relevant fixes and maintenance.
-- Use `docs:`, `chore:`, `test:`, `refactor:`, `style:`, `build:`, or `ci:` for changes that should not trigger a release by themselves.
+- Use `feat:` for new functionality.
+- Use `fix:`, `perf:`, `security:`, or `deps:` for fixes and maintenance.
+- Use `docs:`, `chore:`, `test:`, `refactor:`, `style:`, `build:`, or `ci:` for their respective changes. Releases are started manually, independently of commit types.
 - Mark intentional breaking changes with `!` in the commit header or a `BREAKING CHANGE:` footer.
 - The only product version is `YYYY-MM-DD-<8-character SHA>` from the commit date in UTC and commit hash. Local changes append `-dirty`.
 - Use `drastic_common/version.py` for version generation. Package metadata versions are fixed packaging placeholders, not product versions; do not bump them.
-- Use `./scripts/release.sh` to tag the final `main` commit; never commit its generated version into that commit.
-- Use `chore(release): ...` for release preparation commits.
-- `develop` is the integration branch. `main` contains released versions only.
-- `docs/changelog/UNRELEASED.md` is kept on `develop` for optional user-facing release notes and is removed from `main` by the release script.
+- A release approves an existing commit: never generate release, version-bump or changelog commits. `scripts/release.sh [previous-published-tag]` validates the clean checkout, prints Conventional Commit notes and creates only its local source-version tag.
+- Start **Prepare Release** on `develop` to test the selected commit, build or reuse both versioned images and create a GitHub draft. Publishing that draft triggers **Publish Release**, which fast-forwards `main` and promotes the existing images to `latest`.
+- Keep published tags and versioned images immutable. Retries preserve manual draft/release edits and must not move `main` or `latest` backwards.
+- `develop` is the default integration branch and normal PR target. `main` is advanced only by release approval, without merge commits or changes to `develop`.
+- GitHub Releases are the changelog. Edit manual notes in the draft; do not introduce parallel changelog/unreleased files. `docs/initial-release-notes.md` is a one-time archive for the first draft.
 
 ## Architecture
 

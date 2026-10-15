@@ -36,23 +36,21 @@ Always test backups and restores carefully before relying on this software for i
 
 ## Quick Start
 
-Start the development stack:
+Check out a [published release](https://github.com/devmato/drastic-backup/releases) and generate the production configuration:
 
 ```bash
-./scripts/dev.sh up
-```
-
-Create local environment files when needed:
-
-```bash
-./scripts/generate-env.sh dev
-./scripts/generate-env.sh test
 ./scripts/generate-env.sh prod
 ```
 
-Open the frontend at `http://127.0.0.1:9050` and sign in with the development bootstrap account from `.env.dev`.
+Review the generated `.env` and configure HTTPS using the [Deployment guide](docs/deployment.md). Then start the server:
 
-For the full local workflow, see [Development Setup](docs/development.md).
+```bash
+docker compose -f docker-compose.yaml up -d
+```
+
+Open your configured HTTPS address, sign in with the bootstrap account from `.env`, and register an agent using the web UI. Create a small backup and verify that you can restore its contents.
+
+For local development with `./scripts/dev.sh up`, see [Development Setup](docs/development.md).
 
 ## Documentation
 
@@ -76,6 +74,8 @@ mkdocs serve
 ```
 
 ## Distribution
+
+The [GitHub Releases](https://github.com/devmato/drastic-backup/releases) contain the changelog, update instructions and published versions. Releases keep the existing UTC commit-date/SHA version used by both the backend and agents; no separate version number is assigned.
 
 The public upstream repository is expected at `https://github.com/devmato/drastic-backup`.
 

@@ -26,6 +26,7 @@ drastic_common = ["build-version.txt", "build-revision.txt"]
 [dependency-groups]
 dev = [
     "pytest>=8.4.2",
+    "pyyaml>=6.0.3",
     "ruff>=0.14.9",
 ]
 

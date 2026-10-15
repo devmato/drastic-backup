@@ -348,6 +348,7 @@ requires-dist = [
 [package.metadata.requires-dev]
 dev = [
     { name = "pytest", specifier = ">=8.4.2" },
+    { name = "pyyaml", specifier = ">=6.0.3" },
     { name = "ruff", specifier = ">=0.14.9" },
 ]
 

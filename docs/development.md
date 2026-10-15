@@ -165,7 +165,7 @@ uv run pytest
 
 ## Common Library Checks
 
-Run common library tests:
+Run common library tests. Release workflow regression tests also require Bash, Git and `jq` (available on the GitHub Ubuntu runners); GitHub and Docker calls are simulated:
 
 ```bash
 cd libs/python/common

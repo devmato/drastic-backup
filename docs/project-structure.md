@@ -81,6 +81,15 @@ Important paths:
 
 `drastic_common/version.py` generates product versions and full source revisions. Packages and Docker builds preserve them in generated `build-version.txt` and `build-revision.txt` files, including when Git is unavailable at runtime.
 
+## Release Tooling
+
+- `scripts/release.sh` -- Validate the existing commit, print Conventional Commit notes and create its local source tag; no commits or pushes.
+- `.github/workflows/release.yml` -- Manual candidate preparation, reusing tests/images before creating a GitHub release draft.
+- `.github/workflows/publish-release.yml` -- Human publication of a draft triggers fast-forwarding `main` and promoting existing images.
+- `scripts/ci/publish-docker-image.sh` -- Shared GitHub/Forgejo image builder for version tags and development aliases.
+- `scripts/ci/promote-release-images.sh` -- Shared GitHub/Forgejo image promotion, with optional fast-forward of `main` for GitHub approval.
+- `docs/initial-release-notes.md` -- Archived development notes used once to seed the first release draft.
+
 ## Compose Files
 
 - `docker-compose.dev.yaml` -- Main development stack.

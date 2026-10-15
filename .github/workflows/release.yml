@@ -1,18 +1,87 @@
-name: Release
+name: Prepare Release
 
 on:
-  push:
-    tags:
-      - "[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*"
+  workflow_dispatch:
+
+concurrency:
+  group: release
+  queue: max
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  publish:
-    name: Publish Release Notes
+  test:
+    if: github.ref == 'refs/heads/develop'
+    uses: ./.github/workflows/test.yml
+
+  tag:
+    name: Tag Tested Commit
+    needs: test
     runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.prepare.outputs.tag }}
+      base: ${{ steps.prepare.outputs.base }}
     steps:
-      - uses: softprops/action-gh-release@v3
+      - uses: actions/checkout@v6
         with:
-          generate_release_notes: true
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+      - name: Validate notes and push immutable tag
+        id: prepare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git merge-base --is-ancestor HEAD origin/develop
+          if git show-ref --verify --quiet refs/remotes/origin/main; then
+            git merge-base --is-ancestor origin/main HEAD
+          fi
+          tag=$(python3 libs/python/common/src/drastic_common/version.py)
+          base=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -r --arg tag "$tag" '[.[][] | select(.draft == false and .prerelease == false and .tag_name != $tag)] | max_by(.published_at).tag_name // empty')
+          bash scripts/release.sh "$base" > /dev/null
+          git push origin "refs/tags/$tag"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "base=$base" >> "$GITHUB_OUTPUT"
+
+  images:
+    needs: tag
+    permissions:
+      contents: read
+      packages: write
+    uses: ./.github/workflows/images.yml
+    with:
+      release-tag: ${{ needs.tag.outputs.tag }}
+
+  draft:
+    name: Create Release Draft
+    needs: [tag, images]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+      - name: Preserve existing notes or create draft
+        env:
+          TAG: ${{ needs.tag.outputs.tag }}
+          BASE_TAG: ${{ needs.tag.outputs.base }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100" |
+            jq -r --arg tag "$TAG" '.[][] | select(.tag_name == $tag) | .id')
+          if [[ -n "$existing" ]]; then
+            echo "Release $TAG already exists; preserving its text and publication state."
+          else
+            bash scripts/release.sh "$BASE_TAG" > "$RUNNER_TEMP/release-notes.md"
+            gh release create "$TAG" --verify-tag --draft --title "$TAG" --notes-file "$RUNNER_TEMP/release-notes.md"
+          fi

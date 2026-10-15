@@ -1,6 +1,6 @@
 # Release Checklist
 
-Run this checklist before tagging a Homelab release.
+Start **Actions → Prepare Release → Run workflow** on `develop`, then run this checklist using the resulting candidate's exact versioned images before clicking **Publish release** on its draft. Automated tests do not replace the real backup and restore checks below. `main` and `latest` stay on the previous release during candidate testing.
 
 1. Generate a fresh production environment file with `./scripts/generate-env.sh prod`.
 2. Start the server stack with the generated environment file.

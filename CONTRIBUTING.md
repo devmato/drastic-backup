@@ -12,14 +12,16 @@ Read [Architecture](docs/architecture.md) for module responsibilities, dependenc
 
 ## Branches
 
-- `develop` is the integration branch for ongoing development.
-- `main` contains released versions only.
-- Releases are created from `develop` with `./scripts/release.sh`, which merges `develop` into `main`, tags its final commit as `YYYY-MM-DD-<8-character SHA>`, pushes `develop`, `main`, and the tag, then returns to `develop`.
+- `develop` is the default branch for ongoing development and the normal pull request target.
+- `main` points to the last approved release commit. Feature PRs target `develop`, not `main`.
+- Start GitHub Actions **Prepare Release → Run workflow** on `develop`. After tests and images succeed, edit the generated GitHub draft and click **Publish release**. The automatic **Publish Release** workflow advances `main` and `latest` to that exact commit without additional commits.
 - GitHub is the primary public upstream at `github.com/devmato/drastic-backup`; Forgejo copies should be pull mirrors when used.
 
 ## Commit Messages
 
-Use Conventional Commit messages because release eligibility and changelog entries are derived from the commit history. Versions identify source commits, not semantic version increments.
+Use Conventional Commit messages to derive changelog entries from the commit history. Versions identify source commits, not semantic version increments. Releases are a manual decision, independent of commit types.
+
+For squash merges, use a Conventional Commit PR title as the resulting commit message. For other merge methods, keep the individual commits conventional. Merge commits are excluded from generated release notes.
 
 Format:
 
@@ -37,11 +39,11 @@ docs: update production setup
 chore: update dependencies
 ```
 
-Release impact:
+Changelog groups:
 
-- `feat:`, `fix:`, `perf:`, `security:`, and `deps:` qualify for a release.
-- A `!` after the type or scope, or a `BREAKING CHANGE:` footer, qualifies for a release and highlights the incompatibility in its notes.
-- `docs:`, `chore:`, `test:`, `refactor:`, `style:`, `build:`, and `ci:` do not create a release by themselves.
+- `feat:`, `fix:`, `perf:`, `security:`, and `deps:` have dedicated changelog sections.
+- A `!` after the type or scope, or a `BREAKING CHANGE:` footer, highlights an incompatibility. Explain who is affected and what they need to do.
+- `docs:`, `chore:`, `test:`, `refactor:`, `style:`, `build:`, `ci:`, and `revert:` appear under Other Changes and can also be released.
 
 Breaking change examples:
 
@@ -55,29 +57,13 @@ feat(agent): change registration protocol
 BREAKING CHANGE: Existing agents must re-register after upgrading.
 ```
 
-## Changelog Notes
-
-`CHANGELOG.md` is generated during releases from Conventional Commit messages. Optional user-facing notes can be added to `docs/changelog/UNRELEASED.md` before running the release.
-
-`docs/changelog/UNRELEASED.md` is kept on `develop` and removed from `main` by the release script.
-
-After tagging `main`, the release script fast-forwards `develop` to the tagged release state and reopens `docs/changelog/UNRELEASED.md` there for the next development cycle.
-
 ## Releases
 
-Run releases from a clean `develop` branch:
+Prepare a candidate, complete the [release checklist](docs/release-checklist.md) using its exact versioned images, then publish the draft. There are no version or prerelease inputs. `main` and `latest` stay on the previous release until approval. New work on `develop` does not change a draft; code fixes need a new candidate.
 
-```bash
-./scripts/release.sh
-```
+[GitHub Releases](https://github.com/devmato/drastic-backup/releases) are the changelog. Generated notes cover Conventional Commits since the last published release, not an abandoned candidate tag. Edit update instructions and other manual notes directly in the draft. Retries never replace an existing release description. The original development notes are preserved in `docs/initial-release-notes.md` and seed only the first draft.
 
-The script aborts when it finds non-conventional commit messages since the last release tag. If a release must proceed anyway, use `-f` deliberately:
-
-```bash
-./scripts/release.sh -f
-```
-
-With `-f`, non-conventional commits are ignored for changelog generation. At least one release-relevant Conventional Commit is still required.
+For local note generation and tagging, use `./scripts/release.sh [previous-published-tag]` from a clean checkout. It prints Markdown and creates a local tag without committing, switching branches or pushing. Do not redirect its output to an untracked file inside the checkout. For the complete workflow and retries, see [CI and Releases](docs/ci-and-releases.md#release-process).
 
 Backend and agent versions use the commit date in UTC and the first eight SHA characters, for example `2026-10-08-a1b2c3d4`. Docker builds and native installations stamp this value into the shared Python package; development checkouts read it from Git. Local modifications append `-dirty`. Missing metadata reports `unknown` rather than a package version. Protocol numbers still control agent compatibility.
 
@@ -102,7 +88,7 @@ GitHub Actions is the primary CI/release provider. GitHub publishes default cont
 - `ghcr.io/devmato/drastic-backup-server`
 - `ghcr.io/devmato/drastic-backup-agent`
 
-GitHub release tags trigger server and agent image publishing and GitHub release notes. Native agents install directly from Git.
+GitHub's preparation workflow explicitly calls tests and image builds; tag pushes do not start duplicate builds. Native agents install directly from Git.
 
 ## Forgejo Actions
 
@@ -114,6 +100,6 @@ Container image publishing uses these Forgejo variables and secrets:
 - `CONTAINER_IMAGE_NAMESPACE`: optional image namespace, defaults to `owner/repository`.
 - `CONTAINER_USERNAME`: optional secret for the registry username, defaults to the Actions actor.
 - `CONTAINER_PASSWORD`: optional secret for the registry password.
-- `FORGEJO_TOKEN`: secret used as fallback registry password and for release asset uploads.
+- `FORGEJO_TOKEN`: secret used as fallback registry password.
 
-Forgejo release tags trigger server and agent image publishing once Forgejo variables, secrets, and runner access are configured.
+Forgejo candidate tags build versioned images. Mirroring the approved `main` triggers both image jobs and, after they succeed, promotion to `latest` in the configured registry. Existing versioned images are reused. Configure variables, secrets, Docker/Buildx access and a pull mirror that triggers actions on ref updates.

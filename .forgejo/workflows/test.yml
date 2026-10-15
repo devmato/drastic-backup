@@ -109,5 +109,6 @@ jobs:
           bash -n scripts/install-drastic-agent.sh
           python -m py_compile scripts/drastic-agent-installer.py
           bash -n scripts/generate-env.sh
+          bash -n scripts/ci/promote-release-images.sh
           bash -n scripts/ci/install-restic.sh
           bash -n apps/backend/scripts/test-migrations.sh

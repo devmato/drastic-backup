@@ -51,7 +51,7 @@ It defines:
 - Navigation order.
 - Material theme settings.
 - Markdown extensions.
-- Excluded internal files such as `docs/changelog/UNRELEASED.md`.
+- GitHub Release descriptions, which are edited and published directly on GitHub.
 
 ## Adding a Page
 

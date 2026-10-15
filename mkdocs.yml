@@ -46,9 +46,6 @@ nav:
     - Release Checklist: release-checklist.md
     - Building the Docs: docs-site.md
 
-exclude_docs: |
-  changelog/UNRELEASED.md
-
 markdown_extensions:
   - tables
   - fenced_code
