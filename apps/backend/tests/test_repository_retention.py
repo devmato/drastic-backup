@@ -1,4 +1,4 @@
-"""Retained reports are the single authority for run membership and cleanup recovery."""
+"""Current retention context is account-scoped and independent of backup history."""
 
 import pytest
 import test_proxmox_restore_api
@@ -13,7 +13,6 @@ from drastic_server.models.agent import (
     AgentOperationType,
 )
 from drastic_server.models.job import Job, JobType
-from drastic_server.models.repository import Repository
 from drastic_server.services.agent import AgentService
 from drastic_server.services.agent.management import delete_agent
 from drastic_server.services.agent.request import AgentException, AgentRequestService
@@ -66,43 +65,30 @@ def test_agent_deletion_waits_for_running_operations(restore_api, kind):
     assert operation.agent_id is None and operation.user_id == agent.user_id
 
 
-@pytest.mark.parametrize("order", ["before_backup", "after_backup", "other_repository", "other_owner"])
-def test_manual_deletion_receipt_reconciles_late_backup_artifacts_only_in_its_scope(restore_api, order):
-    _, _, agent, foreign, job, _ = restore_api
+def test_running_report_cannot_be_deleted_after_its_job_is_deleted(restore_api, monkeypatch):
+    client, _, agent, _, job, _ = restore_api
+    monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
     repository = agent.repositories[0]
-    observer = Agent(user=agent.user, secret="observer")
-    observer.repositories.append(repository)
-    db.session.add(observer)
+    operation = AgentOperation(agent=agent, job=job, repository=repository,
+        type=AgentOperationType.backup, state=AgentOperationState.running, data={"job_uuid": job.uuid})
+    db.session.add(operation)
     db.session.commit()
-    backup = {"uuid": "backup", "type": "backup", "state": "success", "job_id": job.id, "repository_id": repository.id,
-        "data": {"job_uuid": job.uuid}, "artifacts": [
-            {"uuid": "artifact", "artifact_key": "default", "snapshot_id": "snapshot", "state": "success"}]}
-    request = AgentRequestService(agent)
-    if order == "after_backup":
-        request.operation(backup)
-    executor = foreign if order == "other_owner" else observer
-    target = repository
-    if order in {"other_repository", "other_owner"}:
-        target = Repository(user=executor.user, name="Other repository", kind="custom", location="/other")
-        db.session.add(target)
-        executor.repositories.append(target)
-        db.session.commit()
-    deletion = {"uuid": "deletion", "type": "retention", "state": "failed", "repository_id": target.id,
-        "data": {"scope": "repository", "manual_delete": True, "deleted_snapshot_ids": ["snapshot"]}}
-    service = AgentOperationService(executor)
-    service.ingest(deletion)
-    service.ingest({**deletion, "state": "running", "data": {}})  # Delayed progress cannot erase the receipt.
-    for _ in range(2):
-        request.operation(backup)
-    artifact = AgentOperationArtifact.query.filter_by(uuid="artifact").one()
-    assert bool(artifact.forgotten_at) is (order in {"before_backup", "after_backup"})
-    assert bool(request.retention_context(repository.id, job_uuid=job.uuid)["runs"]) is (artifact.forgotten_at is None)
+    delete_job(agent.user_id, job.id)
+    url = f"/api/agents/operations/{operation.id}"
+    assert client.delete(url).status_code == 409
+    assert AgentRequestService(agent).retention_context(repository.id)["running_operation_uuids"] == [operation.uuid]
+    assert client.delete(f"/api/agents/{agent.id}").status_code == 409
+    operation.state = AgentOperationState.success
+    db.session.commit()
+    assert client.delete(url).status_code == 200
+    assert AgentRequestService(agent).retention_context(repository.id)["running_operation_uuids"] == []
 
 
 def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_api, monkeypatch):
     client, _, agent, foreign, job, _ = restore_api
     monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
     user = agent.user
+    owner = user.backup_owner_uuid
     repository = agent.repositories[0]
     observer = Agent(user=user, secret="observer")
     observer.repositories.append(repository)
@@ -138,33 +124,41 @@ def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_ap
     with pytest.raises(ResourceNotFound):
         get_operation(foreign.user_id, source.id)
     context = request.retention_context(repository.id)
-    assert context["runs"][0]["job_uuid"] == job_uuid
-    assert context["runs"][0]["artifacts"][0]["snapshot_id"] == artifact.snapshot_id
+    assert context["owner_uuid"] == owner
     update_retention(user.id, policy.id, {"keep_last": 3})
     assert request.retention_context(repository.id)["default"]["keep_last"] == 3
+    context = request.retention_context(repository.id)
     delete_operation(user.id, source.id)
-    assert request.retention_context(repository.id)["runs"] == []
+    assert request.retention_context(repository.id) == context
 
 
 def test_live_context_includes_all_owned_jobs_only(restore_api):
     _, _, agent, foreign, job, _ = restore_api
-    agent.protocol_version = 21
+    agent.protocol_version = 23
     offline = Agent(user=agent.user, secret="offline")
     disabled = Job(agent=offline, name="Disabled", type=JobType.file, retention_mode="disabled")
     foreign_job = Job(agent=foreign, name="Foreign", type=JobType.file)
     db.session.add_all([offline, disabled, foreign_job])
+    running = AgentOperation(agent=offline, repository=agent.repositories[0], type=AgentOperationType.backup,
+                             state=AgentOperationState.running)
+    db.session.add(running)
+    foreign_running = AgentOperation(agent=foreign, repository=agent.repositories[0], type=AgentOperationType.backup,
+                                     state=AgentOperationState.running)
+    db.session.add(foreign_running)
     db.session.commit()
     request = AgentRequestService(agent)
     context = request.retention_context(agent.repositories[0].id)
     assert set(context.pop("job_uuids")) == {job.uuid, disabled.uuid}
-    assert context == {"default": None, "runs": [], "check_token": agent.repositories[0].retention_check_token}
+    assert context == {"owner_uuid": agent.user.backup_owner_uuid, "default": None,
+                       "running_operation_uuids": [running.uuid], "check_token": agent.repositories[0].retention_check_token}
+    assert request.sync()["backup_owner_uuid"] == context["owner_uuid"] != foreign.user.backup_owner_uuid
     with pytest.raises(AgentException, match="not assigned"):
         AgentRequestService(foreign).retention_context(agent.repositories[0].id)
     with pytest.raises(AgentException, match="not assigned"):
         AgentRequestService(offline).retention_context(agent.repositories[0].id)
 
 
-@pytest.mark.parametrize("wrong", [None, "owner", "snapshot", "operation", "repository"])
+@pytest.mark.parametrize("wrong", [None, "owner", "snapshot", "repository", "other_agent"])
 def test_repository_results_update_only_matching_owned_artifacts(restore_api, wrong):
     _, _, agent, foreign, job, _ = restore_api
     repository = agent.repositories[0]
@@ -174,29 +168,23 @@ def test_repository_results_update_only_matching_owned_artifacts(restore_api, wr
     db.session.add(artifact)
     db.session.commit()
     payload = {"uuid": "cleanup", "type": "retention", "state": "success", "repository_id": repository.id,
-        "data": {"scope": "repository", "forgotten_artifacts": [{
-            "uuid": artifact.uuid, "operation_uuid": source.uuid, "snapshot_id": artifact.snapshot_id,
-            "forgotten_at": "2026-01-01T00:00:00Z"}]}}
+        "data": {"scope": "repository", "deleted_snapshot_ids": [artifact.snapshot_id]}}
     if wrong == "owner":
         source.agent = foreign
     elif wrong == "repository":
         source.repository = None
-    elif wrong:
-        payload["data"]["forgotten_artifacts"][0][wrong + "_id" if wrong == "snapshot" else "operation_uuid"] = "wrong"
+    elif wrong == "snapshot":
+        payload["data"]["deleted_snapshot_ids"] = ["wrong"]
+    elif wrong == "other_agent":
+        source.agent = Agent(user=agent.user, secret="other-agent")
     db.session.commit()
     service = AgentOperationService(agent)
-    if wrong:
-        with pytest.raises(PermissionError):
-            service.ingest(payload)
-        db.session.rollback()
-        assert artifact.forgotten_at is None
-    else:
-        service.ingest(payload)
-        service.ingest(payload)
-        assert artifact.forgotten_at is not None
+    service.ingest(payload)
+    service.ingest(payload)
+    assert bool(artifact.forgotten_at) is (wrong in {None, "other_agent"})
 
 
-def test_context_keeps_snapshot_ids_until_cleanup_is_reported_and_replay_cannot_undo_it(restore_api):
+def test_cleanup_results_do_not_change_retention_context_and_replay_cannot_undo_them(restore_api):
     _, _, agent, _, job, _ = restore_api
     repository = agent.repositories[0]
     source = AgentOperation(agent=agent, job=job, repository=repository, type=AgentOperationType.backup,
@@ -204,16 +192,15 @@ def test_context_keeps_snapshot_ids_until_cleanup_is_reported_and_replay_cannot_
     artifact = AgentOperationArtifact(operation=source, artifact_key="default", snapshot_id="snapshot", state="success")
     db.session.add(artifact)
     db.session.commit()
-    item = {"uuid": artifact.uuid, "operation_uuid": source.uuid, "snapshot_id": artifact.snapshot_id}
     report = {"uuid": "cleanup", "type": "retention", "state": "running", "repository_id": repository.id,
                "data": {"scope": "repository"}}
     request = AgentRequestService(agent)
-    assert request.retention_context(repository.id, job_uuid=job.uuid)["runs"][0]["artifacts"][0]["snapshot_id"] == "snapshot"
+    context = request.retention_context(repository.id)
     assert artifact.forgotten_at is None
-    finished = {**report, "state": "success", "data": {**report["data"], "forgotten_artifacts": [
-        {**item, "forgotten_at": "2026-01-01T00:00:00Z"}]}}
-    assert request.retention_context(repository.id, finished)["runs"] == []
-    request.retention_context(repository.id, report)
+    finished = {**report, "state": "success", "data": {**report["data"], "deleted_snapshot_ids": [artifact.snapshot_id]}}
+    request.operation(finished)
+    request.operation(report)
+    assert request.retention_context(repository.id) == context
     assert artifact.forgotten_at
     delete_operation(agent.user_id, source.id)
 
@@ -248,11 +235,11 @@ def test_late_progress_cannot_retract_an_acknowledged_complete_run(restore_api):
                "data": {"job_uuid": job.uuid, "backup_data_complete": True, "backup_items_total": 1},
                "artifacts": [{"uuid": "artifact", "artifact_key": "default", "snapshot_id": "snapshot", "state": "success"}]}
     request = AgentRequestService(agent)
-    assert request.retention_context(repository.id, payload, job.uuid)["runs"][0]["artifacts"][0]["snapshot_id"] == "snapshot"
+    request.operation(payload)
     stale = {**payload, "data": {"job_uuid": job.uuid, "backup_data_complete": False}, "artifacts": [
         {**payload["artifacts"][0], "snapshot_id": None, "state": "running"}]}
-    result = request.retention_context(repository.id, stale, job.uuid)["runs"][0]
-    assert result["artifacts"][0]["snapshot_id"] == "snapshot"
+    request.operation(stale)
+    assert AgentOperationArtifact.query.filter_by(uuid="artifact").one().snapshot_id == "snapshot"
 
 
 def test_manual_check_requires_full_data_to_clear_its_captured_token(restore_api):

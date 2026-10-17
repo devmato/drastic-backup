@@ -384,7 +384,7 @@ def test_sync_persists_uuid_once_and_rejects_missing_invalid_or_unwritable_ident
     agent = build_agent(identifier="agent-17", secret="secret-17")
     agent._Agent__config.remove_option("AGENT", "uuid")
     agent.save_config()
-    payload = {"agent_uuid": AGENT_UUID, "repositories": [], "retentions": [], "jobs": [], "schedules": [], "actions": []}
+    payload = {"agent_uuid": AGENT_UUID, "backup_owner_uuid": AGENT_UUID, "repositories": [], "retentions": [], "jobs": [], "schedules": [], "actions": []}
     monkeypatch.setattr(agent, "_Agent__send_request", lambda _: {"success": True, "result": payload})
     monkeypatch.setattr(agent_module, "replace_configuration", lambda *args, **kwargs: None)
     save = Mock(wraps=agent.save_config)
@@ -396,12 +396,14 @@ def test_sync_persists_uuid_once_and_rejects_missing_invalid_or_unwritable_ident
     assert agent.cmd_sync().state == AgentReportState.success
     assert save.call_count == 1
     original = (tmp_path / "config.ini").read_bytes()
-    for invalid in (None, "invalid"):
-        payload["agent_uuid"] = invalid
+    for field in ("agent_uuid", "backup_owner_uuid"):
+        for invalid in (None, "invalid"):
+            payload[field] = invalid
+            assert agent.cmd_sync().state == AgentReportState.failed
+            assert agent.uuid == AGENT_UUID
+        payload.pop(field)
         assert agent.cmd_sync().state == AgentReportState.failed
-        assert agent.uuid == AGENT_UUID
-    payload.pop("agent_uuid")
-    assert agent.cmd_sync().state == AgentReportState.failed
+        payload[field] = AGENT_UUID
     payload["agent_uuid"] = "b2ba8106-82ae-4ecb-93cc-b8339f5ddc1e"
     monkeypatch.setattr(agent_module.os, "replace", Mock(side_effect=OSError("write failed")))
     assert agent.cmd_sync().state == AgentReportState.failed
@@ -917,6 +919,7 @@ def test_sync_hydrates_and_persists_only_agent_key_envelopes(monkeypatch):
             "success": True,
             "result": {
                 "agent_uuid": AGENT_UUID,
+                "backup_owner_uuid": AGENT_UUID,
                 "repositories": [
                     {
                         "id": 1,

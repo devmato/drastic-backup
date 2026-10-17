@@ -1,4 +1,7 @@
+import os
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from threading import Event
 
 import pytest
 from flask import Flask
@@ -25,17 +28,85 @@ from drastic_server.schemas.job import JobLastOperationSchema, JobStatusResponse
 from drastic_server.services.agent import AgentRequestService
 from drastic_server.services.operations import lifecycle as operation_start
 from drastic_server.services.operations import reports as agent_operations
+from drastic_server.services.operations.history import delete_operation
 
 
-def _build_app():
+def _build_app(database_uri="sqlite:///:memory:"):
     app = Flask(__name__)
     app.config.update(
-        SQLALCHEMY_DATABASE_URI="sqlite:///:memory:",
+        SQLALCHEMY_DATABASE_URI=database_uri,
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
         ENCRYPTION_KEY="test-key",
     )
     db.init_app(app)
     return app
+
+
+@pytest.mark.skipif(not os.environ.get("DRASTIC_TEST_DATABASE_URI"), reason="Requires the disposable MariaDB migration-test database")
+def test_finished_report_deletion_does_not_deadlock_with_child_delivery(monkeypatch):
+    """Use the disposable database from test-migrations.sh; both requests must commit."""
+    app = _build_app(os.environ["DRASTIC_TEST_DATABASE_URI"])
+    monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
+    child_locked, parent_read = Event(), Event()
+    link_children = agent_operations.AgentOperationService._link_waiting_children
+    refresh = db.session.refresh
+
+    def deliver_child(service, operation):
+        child_locked.set()  # Ingestion has already locked and updated the child row.
+        assert parent_read.wait(10), "Deletion did not reach its state check"
+        link_children(service, operation)
+
+    def read_parent(operation, *args, **kwargs):
+        result = refresh(operation, *args, **kwargs)
+        parent_read.set()
+        return result
+
+    monkeypatch.setattr(agent_operations.AgentOperationService, "_link_waiting_children", deliver_child)
+    monkeypatch.setattr(db.session, "refresh", read_parent)
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="concurrency-test")
+            user.set_initial_password("password")
+            agent = Agent(user=user, secret="agent-secret")
+            repository = Repository(user=user, name="Repo", kind=Repository.KIND_CUSTOM, location="/unused")
+            agent.repositories.append(repository)
+            parent = AgentOperation(agent=agent, repository=repository, type=AgentOperationType.backup,
+                                    state=AgentOperationState.success)
+            child = AgentOperation(agent=agent, repository=repository, parent_operation=parent,
+                                   type=AgentOperationType.retention, state=AgentOperationState.running,
+                                   data={"scope": "repository"})
+            db.session.add(child)
+            db.session.commit()
+            user_id, agent_id, repository_id = user.id, agent.id, repository.id
+            parent_id, child_id, child_uuid = parent.id, child.id, child.uuid
+            db.session.remove()
+
+            def deliver():
+                with app.app_context():
+                    AgentRequestService(db.session.get(Agent, agent_id)).operation({
+                        "uuid": child_uuid, "type": "retention", "state": "success", "repository_id": repository_id,
+                        "data": {"scope": "repository", "cleanup_pending": False},
+                    })
+
+            def delete():
+                with app.app_context():
+                    delete_operation(user_id, parent_id)
+
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                delivery = executor.submit(deliver)
+                assert child_locked.wait(10), "Delivery did not reach its child-row lock"
+                deletion = executor.submit(delete)
+                delivery.result(timeout=20)
+                deletion.result(timeout=20)
+
+            assert db.session.get(AgentOperation, parent_id) is None
+            retained = db.session.get(AgentOperation, child_id)
+            assert retained.state == AgentOperationState.success and retained.parent_operation_id is None
+            assert retained.data["cleanup_pending"] is False
+        finally:
+            db.session.remove()
+            db.drop_all()
 
 
 @pytest.mark.parametrize("timestamp, utc_hour", [
@@ -329,12 +400,7 @@ def test_agent_cannot_modify_another_agents_existing_operation(monkeypatch):
                         "repository_id": other_repository.id,
                         "data": {
                             "owner": "attacker",
-                            "forgotten_artifacts": [
-                                {
-                                    "uuid": artifact.uuid,
-                                    "forgotten_at": "2026-05-10T11:00:30",
-                                }
-                            ],
+                            "deleted_snapshot_ids": [artifact.snapshot_id],
                         },
                         "logs": [{"sequence": 1, "level": "error", "message": "attacker log"}],
                         "artifacts": [
@@ -440,7 +506,7 @@ def test_agent_repository_payload_uses_agent_key_and_recovery_on_demand():
             db.drop_all()
 
 
-def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
+def test_retention_operation_marks_removed_snapshots_forgotten(monkeypatch):
     app = _build_app()
     monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
     monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
@@ -483,6 +549,7 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
             db.session.add_all([user, agent, repository, job, operation, artifact])
             db.session.commit()
 
+            before = datetime.now(timezone.utc).replace(tzinfo=None)
             AgentRequestService(agent).operation(
                 {
                     "uuid": "retention-operation-1",
@@ -493,13 +560,8 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
                     "started": "2026-05-10T11:00:00",
                     "ended": "2026-05-10T11:01:00",
                     "data": {
-                        "forgotten_artifacts": [
-                            {
-                                "uuid": "artifact-1",
-                                "forgotten_at": "2026-05-10T11:00:30",
-                                "snapshot_id": "snapshot-1",
-                            }
-                        ]
+                        "scope": "repository",
+                        "deleted_snapshot_ids": ["snapshot-1"],
                     },
                     "logs": [{"sequence": 1, "level": "info", "message": "retention finished"}],
                 }
@@ -507,7 +569,7 @@ def test_retention_operation_marks_forgotten_artifacts(monkeypatch):
 
             db.session.refresh(artifact)
 
-            assert artifact.forgotten_at.isoformat() == "2026-05-10T11:00:30"
+            assert before <= artifact.forgotten_at <= datetime.now(timezone.utc).replace(tzinfo=None)
         finally:
             db.session.remove()
             db.drop_all()
@@ -650,7 +712,8 @@ def test_new_operation_accepts_deleted_references_and_links_late_parent(monkeypa
             db.drop_all()
 
 
-def test_agent_cannot_mark_another_agents_artifact_forgotten(monkeypatch):
+@pytest.mark.parametrize("invalid", ["type", "scope", "assignment"])
+def test_cleanup_result_requires_repository_scope_and_assignment(monkeypatch, invalid):
     app = _build_app()
     monkeypatch.setattr(agent_operations, "emit_job_state", lambda job: None)
     monkeypatch.setattr(agent_operations, "emit_operation_update", lambda operation: None)
@@ -662,9 +725,15 @@ def test_agent_cannot_mark_another_agents_artifact_forgotten(monkeypatch):
             user.set_initial_password("password")
             owner = Agent(user=user, secret="owner-secret")
             reporter = Agent(user=user, secret="reporter-secret")
+            repository = Repository(user=user, name="Repo", kind=Repository.KIND_CUSTOM,
+                                    location="rest:http://repo.test/repo")
+            owner.repositories.append(repository)
+            if invalid != "assignment":
+                reporter.repositories.append(repository)
             operation = AgentOperation(
                 uuid="owner-operation",
                 agent=owner,
+                repository=repository,
                 type=AgentOperationType.backup,
                 state=AgentOperationState.success,
                 source=AgentOperationSource.manual,
@@ -673,25 +742,23 @@ def test_agent_cannot_mark_another_agents_artifact_forgotten(monkeypatch):
                 uuid="owner-artifact",
                 operation=operation,
                 artifact_key="default",
+                snapshot_id="snapshot-1",
                 state="success",
             )
             db.session.add_all([user, owner, reporter, operation, artifact])
             db.session.commit()
 
-            with pytest.raises(PermissionError, match="Artifact"):
+            with pytest.raises(PermissionError):
                 AgentRequestService(reporter).operation(
                     {
                         "uuid": "reporter-retention",
-                        "type": "retention",
+                        "type": "backup" if invalid == "type" else "retention",
                         "state": "success",
                         "source": "manual",
+                        "repository_id": repository.id,
                         "data": {
-                            "forgotten_artifacts": [
-                                {
-                                    "uuid": artifact.uuid,
-                                    "forgotten_at": "2026-05-10T11:00:30",
-                                }
-                            ]
+                            "scope": "job" if invalid == "scope" else "repository",
+                            "deleted_snapshot_ids": [artifact.snapshot_id],
                         },
                         "logs": [],
                     }

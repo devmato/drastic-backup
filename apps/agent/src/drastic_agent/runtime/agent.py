@@ -6,7 +6,6 @@ import os
 import platform
 import re
 import secrets
-from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -24,7 +23,6 @@ from drastic_agent.agent.action import AgentAction
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
-from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
 from drastic_agent.integrations.restic_binary import ensure_binary
 from drastic_agent.jobs.context import BackupContext
@@ -1156,6 +1154,7 @@ class Agent:
 
         try:
             server_data = request["result"]
+            backup_owner_uuid = str(UUID(server_data["backup_owner_uuid"]))
             agent_uuid = str(UUID(server_data["agent_uuid"]))
             previous_uuid = self.__config.get("AGENT", "uuid", fallback=None)
             if previous_uuid != agent_uuid:
@@ -1183,7 +1182,7 @@ class Agent:
                     (jobs, server_data["jobs"]),
                     (schedules, server_data["schedules"]),
                     (actions, server_data["actions"]),
-                ), legacy_secrets=repository_secrets)
+                ), legacy_secrets=repository_secrets, backup_owner_uuid=backup_owner_uuid)
         except Exception as exc:
             logging.exception("Agent sync transaction failed")
             report.log_message(f"Agent sync failed: {exc}", final_state=AgentReportState.failed)
@@ -1275,9 +1274,13 @@ class Agent:
             return report.finish()
 
         try:
+            owner = agent_settings.find_one(name="backup_owner_uuid")
+            if not owner:
+                raise ValueError("Synchronize the backup owner identity before running backups (protocol 23)")
             handler = get_job_handler(
                 agent=BackupContext(
                     identifier=self.identifier,
+                    owner_uuid=str(UUID(owner["settings"])),
                     resticapi=self.resticapi,
                     set_repository=self.set_repository,
                     execute_actions=self.execute_actions,
@@ -1318,7 +1321,7 @@ class Agent:
         try:
             for task in RetentionService.pending_tasks(agent_settings):
                 self.__execution_manager().submit(
-                    self.cmd_run_retention, **task, retry=True,
+                    self.cmd_run_retention, **task,
                     resources={("repository", task["repository_id"])} | ({("job", task["job_id"])} if task["job_id"] is not None else set()),
                 )
         except Exception:
@@ -1375,13 +1378,10 @@ class Agent:
 
     """ Run restore point retention """
 
-    def cmd_run_retention(self, repository_id, job_id, current_operation_uuid=None, retry=False, job_uuid=None):
-        old_key = f"retention_task:{repository_id}:{job_uuid or job_id}"
+    def cmd_run_retention(self, repository_id, job_id, job_uuid, current_operation_uuid=None):
         job = jobs.find_one(id=job_id)
-        if job and job_uuid and job.get("uuid") != job_uuid:
+        if job and job.get("uuid") != job_uuid:
             job = None
-        job_uuid = job_uuid or (job.get("uuid") if job else None)
-        source = AgentReport.get_report(uuid=current_operation_uuid) if current_operation_uuid and not retry else None
         # Sync already resolves the executing job's default/custom selection to its effective policy ID.
         policy = None
         if job and job.get("retention_id"):
@@ -1389,25 +1389,17 @@ class Agent:
             if selected:
                 policy = {key: selected.get(key) for key in ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
 
-        def request_context(operation=None):
-            payload = None
-            if operation is not None:
-                with operation._lock:
-                    payload = deepcopy(AgentReportSchema().dump(operation))
-            # Normal outbox delivery can replay this same report; do not advance its acknowledgment here.
-            response = self.__send_request("retention_context", repository_id=repository_id, operation_json=payload, job_uuid=job_uuid)
+        def request_context():
+            response = self.__send_request("retention_context", repository_id=repository_id)
             if not response.get("success"):
                 raise AgentExeption("Backend retention context unavailable; cleanup deferred")
             return response["result"]
 
-        report = RetentionService.run(
+        return RetentionService.run(
             repository_id=repository_id, job_id=job_id if job else None, job_uuid=job_uuid, current_operation_uuid=current_operation_uuid,
             current_policy=policy, request_context=request_context, set_repository=self.__set_repository,
-            resticapi=self.__resticapi, settings=agent_settings, source=source,
+            resticapi=self.__resticapi, settings=agent_settings, send_report=self.__send_report,
         )
-        if old_key != f"retention_task:{repository_id}:{job_uuid or (job_id if job else None) or 'repository'}":
-            agent_settings.delete(name=old_key)
-        return report
 
     """ Unlock repository """
 

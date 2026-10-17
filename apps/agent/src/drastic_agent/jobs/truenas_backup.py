@@ -178,9 +178,7 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                             force=parent is None,
                             exclude_patterns=exclusions
                             + [f"{literal_pattern(path)}/{pattern.lstrip('/')}" for pattern in [".zfs", *config["exclude_patterns"]]],
-                            tags=[f"job_uuid:{self.job['uuid']}", f"operation_uuid:{report.uuid}", "source:truenas",
-                                  f"dataset:{dataset['id']}", f"artifact_uuid:{artifact['uuid']}",
-                                  f"artifact_key:{artifact['artifact_key']}"],
+                            tags=[*self.backup_tags(artifact, report.uuid), "source:truenas", f"dataset:{dataset['id']}"],
                             callback=report.process_backup_status,
                             callback_pid=True, callback_throttle=500,
                         )

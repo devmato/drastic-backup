@@ -121,6 +121,7 @@ def job(monkeypatch):
         return ""
 
     def stream(command, **kwargs):
+        assert "drastic-owner:owner" in kwargs["tags"]
         assert command[:3] == [sys.executable, "-m", "drastic_agent.proxmox_snapshot"]
         exports.append({**kwargs, "plan": json.loads(Path(command[-1]).read_text())})
         status = {"message_type": "summary", "snapshot_id": f"snap-{len(exports)}",
@@ -134,7 +135,7 @@ def job(monkeypatch):
     api = SimpleNamespace(configured=True, get_node=lambda: "pve", list_qemu_guests=lambda: [{"vmid": 101}],
                           get_qemu_config=lambda _: {"scsi0": "local-lvm:vm-101-disk-0"})
     restic = SimpleNamespace(backup_stdin_from_command=stream, operation_cancellation=lambda _: nullcontext())
-    handler = backup.ProxmoxBackupJobHandler(SimpleNamespace(identifier=1, resticapi=restic,
+    handler = backup.ProxmoxBackupJobHandler(SimpleNamespace(identifier=1, owner_uuid="owner", resticapi=restic,
         get_proxmox_client=lambda: api), {"id": 1, "uuid": "job-1", "config": {}}, 1)
     report = AgentReport.command_report()
     handler.operation = {"id": 1, "uuid": report.uuid}
@@ -280,6 +281,7 @@ def test_native_job_progress_uses_logical_sizes_and_keeps_failed_vm_in_total(job
     totals, processed = [], []
 
     def save(**kwargs):
+        assert "drastic-owner:owner" in kwargs["tags"]
         plan = json.loads((Path(kwargs["cwd"]).parent / "view.json").read_text())
         size = sum(volume["size"] for volume in plan["manifest"]["volumes"]) + sum(map(len, view_metadata(plan).values()))
         totals.append(report.data["backup_bytes_total"])

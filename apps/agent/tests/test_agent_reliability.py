@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import dataset
 import pytest
-from test_agent_retention import Backend, Repo
+from test_agent_retention import OWNER, Backend, Repo
 
 import drastic_agent.jobs.base as backup_base
 import drastic_agent.runtime.agent as runtime_module
@@ -78,6 +78,7 @@ def clean_agent_state():
 
 
 class _OfflineAgent:
+    owner_uuid = OWNER
     def __init__(self, resticapi, repository):
         self.resticapi = resticapi
         self.repository = repository
@@ -142,18 +143,15 @@ class _RetentionAgent(_OfflineAgent):
         runtime = Agent.__new__(Agent)
         runtime._Agent__resticapi = resticapi
         runtime._Agent__set_repository = self.set_repository
+        runtime._Agent__send_report = backend.send_report
+        self.owner_uuid = backend.owner_uuid
         def request(action, **kwargs):
             assert action == "retention_context" and kwargs["repository_id"] == repository["id"]
-            return {"success": True, "result": backend(kwargs["operation_json"])}
+            return {"success": True, "result": backend()}
 
         runtime._Agent__send_request = request
         monkeypatch.setattr(runtime_module, "agent_settings", settings)
-        def retain(**kwargs):
-            report = runtime.cmd_run_retention(**kwargs)
-            backend.accept(report)
-            return report
-
-        self.cmd_run_retention = retain
+        self.cmd_run_retention = runtime.cmd_run_retention
 
 
 def test_real_file_backup_finishes_in_durable_outbox(
@@ -240,7 +238,6 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
                     "type": "file", "retention_id": 73, "config": {"paths": [{"path": str(selection)}], "exclude_patterns": []}},
                     repository_id=73, operation_uuid=str(uuid4())).run()
                 assert report.final_state == AgentOperationState.success
-                backend.accept(report)  # Normal outbox delivery of the terminal backup result.
                 snapshot_id = report.artifacts[0]["snapshot_id"]
                 snapshot = next(item for item in resticapi.snapshots() if item["id"] == snapshot_id)
                 assert snapshot.get("parent") == parents.get(job_id)
@@ -290,12 +287,11 @@ def test_real_backup_on_another_agent_cleans_deleted_job_without_its_local_histo
             report = FileBackupJobHandler(original,
                 {"id": 7, "uuid": original_uuid, "config": {"paths": [{"path": str(source)}]}}, 1).run()
             assert report.state == AgentOperationState.success
-            backend.accept(report)
             history.append({"job_uuid": original_uuid, "operation_uuid": report.uuid, "artifact": report.artifacts[0]})
         foreign_data = restic.backup_stdin("foreign backup", "payload.txt", tags=[f"job_uuid:{uuid4()}"])["snapshot_id"]
         foreign_snapshots = {item["id"]: item for item in restic.snapshots()
                              if item["id"] == foreign_data}
-        # Agent B has no source-agent history; the retained backend reports supply run membership.
+        # Agent B has no source-agent history; owned snapshot tags supply run membership.
         agent_operation_artifacts.delete()
         agent_operations.delete()
         agent_operation_queue.delete()
@@ -417,6 +413,7 @@ def test_scheduled_synced_native_repository_endpoint_failure_is_durable(
             "success": True,
             "result": {
                 "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
+                "backup_owner_uuid": OWNER,
                 "repositories": [
                     {
                         "id": 72,

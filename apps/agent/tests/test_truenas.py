@@ -155,7 +155,7 @@ def nas(state, tmp_path, monkeypatch):
 
 
 def make_handler(api, restic):
-    agent = SimpleNamespace(identifier="agent-1", get_truenas_client=lambda: api, resticapi=restic)
+    agent = SimpleNamespace(identifier="agent-1", owner_uuid="owner", get_truenas_client=lambda: api, resticapi=restic)
     handler = TrueNASBackupJobHandler(agent, {"id": 12, "uuid": "job-12", "config": {"paths": roots(["tank/data"])}}, 1)
     artifacts = []
     handler.start_artifact = lambda key, data, report=None: artifacts.append({"uuid": "artifact", "artifact_key": key, "data": data}) or artifacts[-1]
@@ -231,6 +231,7 @@ def test_partial_dataset_failure_keeps_successful_artifact_and_cleans_all_snapsh
     controls["datasets"].append("tank/other")
 
     def backup(**kwargs):
+        assert "drastic-owner:owner" in kwargs["tags"]
         if "/data/" in kwargs["cwd"]:
             raise OSError("injected read failure")
         return {"snapshot_id": "successful-dataset"}

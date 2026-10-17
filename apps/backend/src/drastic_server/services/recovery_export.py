@@ -88,6 +88,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 "name": user.name,
                 "email": user.email,
                 "default_retention_id": user.default_retention_id,
+                "backup_owner_uuid": user.backup_owner_uuid,
             },
             "agents": [
                 {

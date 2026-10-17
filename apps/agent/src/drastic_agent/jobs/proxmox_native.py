@@ -266,8 +266,7 @@ def run_native(handler, report, guest, index, info=None):
             raise ProxmoxError("Native block view could not be mounted")
         progress.update(phase="backing_up", bytes_total=bytes_to_read, bytes_processed=0, disk_bytes=details["disk_bytes"])
         report.set_data("proxmox_progress", dict(progress))
-        tags = [f"job_uuid:{handler.job['uuid']}", f"operation_uuid:{operation}", "source:proxmox", "guest_type:qemu",
-                f"vmid:{vmid}", "backup_method:native", f"artifact_uuid:{artifact['uuid']}", f"artifact_key:vm:{vmid}"]
+        tags = [*handler.backup_tags(artifact, operation), "source:proxmox", "guest_type:qemu", f"vmid:{vmid}", "backup_method:native"]
         with handler.agent.resticapi.operation_cancellation(report.cancel_event):
             status = handler.agent.resticapi.backup(paths=["."], cwd=str(work / "mount"), parent=parent, force=not bool(parent),
                 tags=tags, callback=report.process_backup_status, callback_pid=True, callback_throttle=500,

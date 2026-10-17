@@ -1,4 +1,5 @@
 import secrets
+from uuid import uuid4
 
 import bcrypt
 
@@ -15,6 +16,7 @@ class User(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'users'
     name = db.Column(db.String(120), nullable=False, unique=True)
     email = db.Column(db.String(120), unique=True)
+    backup_owner_uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     default_retention_id = db.Column(
         db.Integer,
         db.ForeignKey("retentions.id", ondelete="SET NULL", name="fk_users_default_retention", use_alter=True),

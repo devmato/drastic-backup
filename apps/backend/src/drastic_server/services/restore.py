@@ -181,6 +181,8 @@ class RestoreService:
         # Listing spans remote I/O. Check current rows afterwards, in report-ingestion
         # lock order, so a running report committed during listing is visible here.
         agent = require_result(Agent.query.filter_by(id=agent.id, user_id=user_id).populate_existing().with_for_update())
+        if snapshot_uuid(snapshot, "drastic-owner") and (agent.protocol_version or 0) < 23:
+            raise RestoreServiceException("Update the agent to delete owner-tagged restore points (protocol 23)")
         repository = require_result(Repository.query.join(Repository.agents).filter(
             Repository.id == repository.id, Repository.user_id == user_id, Agent.id == agent.id
         ).populate_existing().with_for_update())

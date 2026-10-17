@@ -158,9 +158,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
                 "vmid": vmid, "guest_name": guest.get("name"), "archive_filename": filename,
                 "backup_method": "snapshot", "volumes": [{"disk": item["disk"], "size": item["size"]} for item in plan["volumes"]],
             })
-            tags = [f"job_uuid:{self.job['uuid']}", f"operation_uuid:{self.operation['uuid']}",
-                    "source:proxmox", "guest_type:qemu", f"vmid:{vmid}", "backup_method:snapshot",
-                    f"artifact_uuid:{artifact['uuid']}", f"artifact_key:{artifact['artifact_key']}"]
+            tags = [*self.backup_tags(artifact, self.operation["uuid"]), "source:proxmox", "guest_type:qemu", f"vmid:{vmid}", "backup_method:snapshot"]
             report.log_message(f"Streaming snapshot disks of VM {vmid} to restic")
             last_pool_check = 0
 

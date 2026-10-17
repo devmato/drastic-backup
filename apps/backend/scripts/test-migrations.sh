@@ -56,3 +56,5 @@ run_flask db check
 run_flask db downgrade base
 run_flask db upgrade
 run_flask db check
+DRASTIC_TEST_DATABASE_URI="$database_uri" \
+    uv run --directory "$backend_root" pytest -q tests/test_agent_report_service.py::test_finished_report_deletion_does_not_deadlock_with_child_delivery

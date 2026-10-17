@@ -92,6 +92,7 @@ def test_sync_rolls_back_all_tables_on_write_failure(monkeypatch, tmp_path):
             "success": True,
             "result": {
                 "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
+                "backup_owner_uuid": "00000000-0000-0000-0000-000000000003",
                 "repositories": [
                     {
                         "id": 2,

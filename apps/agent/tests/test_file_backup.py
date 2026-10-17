@@ -15,13 +15,14 @@ class _FailingResticApi:
 
     @staticmethod
     def backup(**kwargs):
+        assert "drastic-owner:owner" in kwargs["tags"]
         raise ResticFailedError("backup failed: operation not permitted", snapshot_id="partial-snap")
 
 
 @pytest.mark.parametrize("os_name", ["linux", "darwin"])
 def test_file_backup_rejects_empty_scope_and_keeps_failed_snapshot_id(monkeypatch, os_name):
     monkeypatch.setattr(file_backup.sys, "platform", os_name)
-    agent = type("Agent", (), {"resticapi": _FailingResticApi()})()
+    agent = type("Agent", (), {"owner_uuid": "owner", "resticapi": _FailingResticApi()})()
     handler = FileBackupJobHandler(
         agent=agent,
         job={"id": 7, "uuid": "job-uuid-7", "config": {"paths": [{"path": "/data"}]}},

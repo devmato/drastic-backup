@@ -9,6 +9,7 @@ from drastic_common.restic import ResticApi
 @dataclass(frozen=True)
 class BackupContext:
     identifier: str | int | None
+    owner_uuid: str
     resticapi: ResticApi
     set_repository: Callable
     execute_actions: Callable

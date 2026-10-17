@@ -1,16 +1,10 @@
 """Serve authenticated agent configuration queries and adapt incoming reports."""
 
-from datetime import timezone
-
-from sqlalchemy import or_
-from sqlalchemy.orm import joinedload, selectinload
-
 from drastic_common.agent.commands import BACKUP_RETRY_PROTOCOL, PATH_INCLUDE_EXCEPTIONS_PROTOCOL
 from drastic_common.backup_selection import requires_include_exceptions
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
-    AgentOperationArtifact,
     AgentOperationState,
     AgentOperationType,
     AgentSession,
@@ -73,8 +67,8 @@ class AgentRequestService:
     def get_repositories(self):
         return self._repositories_payload()
 
-    def retention_context(self, repository_id, operation_json=None, job_uuid=None):
-        """Commit an optional report before returning owned backup results and current settings."""
+    def retention_context(self, repository_id):
+        """Return current ownership, job membership and safety state, not backup history."""
         from drastic_server.models.job import Job
         from drastic_server.models.retention import Retention
 
@@ -82,32 +76,12 @@ class AgentRequestService:
                            if item.id == int(repository_id) and item.user_id == self.agent.user_id), None)
         if repository is None:
             raise AgentException("Repository is not assigned to this agent")
-        if operation_json is not None:
-            if operation_json.get("repository_id") != repository.id:
-                raise AgentException("Report belongs to another repository")
-            self.operation(operation_json)
-        operations = AgentOperation.query.filter_by(user_id=self.agent.user_id, repository_id=repository.id,
-            type=AgentOperationType.backup).filter(or_(AgentOperation.job_id.is_(None),
-                AgentOperation.job.has(Job.uuid == job_uuid)), AgentOperation.artifacts.any(
-                (AgentOperationArtifact.snapshot_id.is_not(None)) & (AgentOperationArtifact.forgotten_at.is_(None))
-            )).options(selectinload(AgentOperation.artifacts), joinedload(AgentOperation.job)).all()
-        runs = []
-        for operation in operations:
-            data = operation.data or {}
-            job_uuid = data.get("job_uuid") or (operation.job.uuid if operation.job else None)
-            if not job_uuid:
-                continue  # Old deleted jobs without an identity cannot be reconciled safely.
-            artifacts = operation.artifacts
-            timestamp = operation.ended or operation.started or operation.created
-            runs.append({"id": operation.uuid, "job_uuid": job_uuid,
-                 "ended": timestamp.replace(tzinfo=timezone.utc).isoformat(),
-                "finished": operation.state != AgentOperationState.running,
-                "artifacts": [{"uuid": item.uuid, "artifact_key": item.artifact_key, "snapshot_id": item.snapshot_id,
-                                "forgotten": item.forgotten_at is not None}
-                              for item in artifacts]})
         policy = Retention.query.filter_by(id=self.agent.user.default_retention_id, user_id=self.agent.user_id).first()
         return {
-            "runs": runs,
+            "owner_uuid": self.agent.user.backup_owner_uuid,
+            "running_operation_uuids": [uuid for (uuid,) in AgentOperation.query.with_entities(AgentOperation.uuid).filter_by(
+                user_id=self.agent.user_id, repository_id=repository.id, type=AgentOperationType.backup,
+                state=AgentOperationState.running)],
             "check_token": repository.retention_check_token,
             "job_uuids": [uuid for (uuid,) in Job.query.with_entities(Job.uuid).join(Agent).filter(Agent.user_id == self.agent.user_id)],
             "default": {key: getattr(policy, key) for key in
@@ -145,6 +119,7 @@ class AgentRequestService:
         return SyncSchema().dump(
             {
                 "agent_uuid": self.agent.uuid,
+                "backup_owner_uuid": self.agent.user.backup_owner_uuid,
                 "diagnostic_enabled": bool(self.agent.user.debug_token_hash),
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),

@@ -52,6 +52,7 @@ def test_agent_sync_schema_dumps_backend_like_objects():
     payload = AgentSyncSchema().dump(
         {
             "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "backup_owner_uuid": "00000000-0000-0000-0000-000000000003",
             "repositories": [Value(id=1, kind="custom", location="rest:http://repo", environment={})],
             "retentions": [Value(id=1, name="Daily", keep_last=1)],
             "jobs": [Value(id=1, uuid="job-1", type=Value(name="file"), config={"paths": []}, effective_retention_id=1)],
@@ -73,6 +74,7 @@ def test_agent_sync_schema_dumps_backend_like_objects():
     assert payload["jobs"][0]["retention_id"] == 1
     assert "retention_id" not in payload["schedules"][0]
     assert payload["agent_uuid"] == "550e8400-e29b-41d4-a716-446655440000"
+    assert payload["backup_owner_uuid"] == "00000000-0000-0000-0000-000000000003"
     assert payload["actions"][0]["module"] == "command"
     assert payload["schedules"][0]["config"] == {}
 

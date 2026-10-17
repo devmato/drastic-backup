@@ -28,6 +28,8 @@ def test_restore_point_identity_requires_unambiguous_job_and_run_tags():
     job, run = "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"
     tags = [f"job_uuid:{job}", f"operation_uuid:{run}"]
     assert restore_point_key({"id": "a", "tags": tags}) == restore_point_key({"id": "b", "tags": tags})
+    assert restore_point_key({"id": "a", "tags": [*tags, f"drastic-owner:{job}"]}) != restore_point_key(
+        {"id": "b", "tags": [*tags, f"drastic-owner:{run}"]})
     for ambiguous in ([], tags[:1], tags + [f"operation_uuid:{job}"], ["job_uuid:invalid", tags[1]]):
         assert restore_point_key({"id": "a", "tags": ambiguous}) == "snapshot:a"
 

@@ -236,9 +236,7 @@ async function syncJobSocketListener() {
 function confirmDeleteOperation(operation) {
   $q.dialog({
     title: 'Delete Operation',
-    message: operation.type === 'backup'
-      ? 'Delete this report and its logs? Backup snapshots remain available for restore, but snapshots belonging to this report will no longer be managed by automatic retention.'
-      : 'Delete this report and its logs?',
+    message: 'Delete this report and its logs? Stored backups and their retention are not affected.',
     cancel: true,
   }).onOk(async () => {
     try {

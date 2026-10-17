@@ -1,4 +1,4 @@
-"""Whole-run retention uses acknowledged reports, never a second catalog in restic."""
+"""Retention selects owned snapshot groups without a historical report catalog."""
 
 import hashlib
 from copy import deepcopy
@@ -10,55 +10,44 @@ import pytest
 
 import drastic_agent.runtime.agent as runtime_module
 from drastic_agent.agent.enums import AgentReportState
-from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services.retention import RetentionService, keep_operation_ids
 from drastic_common.restic.exceptions import ResticError, ResticFailedError
 
-A, B = (str(UUID(int=i)) for i in (1, 2))
+A, B, OWNER, FOREIGN = (str(UUID(int=i)) for i in (1, 2, 3, 4))
 
 
 def test_retention_uses_utc_buckets_and_combines_count_and_calendar_rules():
     runs = [
-        {"id": "new", "ended": "2026-02-01T02:30:00+02:00"},
-        {"id": "january", "ended": "2026-02-01T01:30:00+02:00"},
-        {"id": "december", "ended": "2025-12-31T12:00:00+00:00"},
+        {"id": "new", "started": "2026-02-01T02:30:00+02:00"},
+        {"id": "january", "started": "2026-02-01T01:30:00+02:00"},
+        {"id": "december", "started": "2025-12-31T12:00:00+00:00"},
     ]
     assert keep_operation_ids(runs, {"keep_monthly": 2}) == {"new", "january"}
     assert keep_operation_ids(runs, {"keep_last": 1, "keep_yearly": 2}) == {"new", "december"}
 
 
 class Backend:
-    """An in-memory report transport double; the real ownership/commit checks have backend tests."""
-    def __init__(self, job_uuids=None, default=None):
-        self.runs = {}
+    def __init__(self, job_uuids=None, default=None, owner_uuid=OWNER):
+        self.owner_uuid = owner_uuid
         self.job_uuids = [B] if job_uuids is None else job_uuids
         self.default = {"keep_last": 1} if default is None else default
+        self.running = []
         self.check_token = None
 
     def accept(self, report):
-        if report is None:
-            return
-        payload = report if isinstance(report, dict) else AgentReportSchema().dump(report)
-        data = payload["data"]
-        if payload["type"] == "backup":
-            self.runs[payload["uuid"]] = {"id": payload["uuid"], "job_uuid": data["job_uuid"],
-                "ended": payload["ended"] or payload["started"],
-                "finished": payload["state"] != "running",
-                "artifacts": [{**a, "forgotten": False} for a in payload["artifacts"]]}
-        for run in self.runs.values():
-            for artifact in run["artifacts"]:
-                if any(a["uuid"] == artifact["uuid"] for a in data.get("forgotten_artifacts", [])):
-                    artifact["forgotten"] = True
-        if data.get("retention_check_failed"):
-            self.check_token = payload["uuid"]
-        elif data.get("retention_check_full") and data.get("retention_check_verified") == self.check_token:
+        if report.data.get("retention_check_failed"):
+            self.check_token = report.uuid
+        elif report.data.get("retention_check_full") and report.data.get("retention_check_verified") == self.check_token:
             self.check_token = None
 
-    def __call__(self, report=None):
+    def send_report(self, report):
         self.accept(report)
-        return deepcopy({"job_uuids": self.job_uuids, "default": self.default, "check_token": self.check_token,
-                         "runs": [run for run in self.runs.values() if any(not a["forgotten"] for a in run["artifacts"])]})
+        return True
+
+    def __call__(self):
+        return deepcopy({"owner_uuid": self.owner_uuid, "job_uuids": self.job_uuids, "default": self.default,
+                         "check_token": self.check_token, "running_operation_uuids": self.running})
 
 
 class Repo:
@@ -72,14 +61,13 @@ class Repo:
         operation = str(UUID(int=number))
         artifacts = []
         for index in range(count):
-            identity = hashlib.sha256(f"{operation}:{index}".encode()).hexdigest()
+            identity = hashlib.sha256(f"{backend.owner_uuid}:{operation}:{index}".encode()).hexdigest()
             uuid = str(UUID(int=number * 10000 + index))
-            self.items[identity] = {"id": identity, "tags": [f"job_uuid:{job}", f"operation_uuid:{operation}",
-                f"artifact_uuid:{uuid}", f"artifact_key:{index}"]}
-            artifacts.append({"uuid": uuid, "snapshot_id": identity, "artifact_key": str(index),
-                               "forgotten": False})
-        backend.runs[operation] = {"id": operation, "job_uuid": job, "artifacts": artifacts,
-            "finished": True, "ended": (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=number)).isoformat()}
+            self.items[identity] = {"id": identity,
+                "time": (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=number)).isoformat(),
+                "tags": [f"drastic-owner:{backend.owner_uuid}", f"job_uuid:{job}", f"operation_uuid:{operation}",
+                         f"artifact_uuid:{uuid}", f"artifact_key:{index}"]}
+            artifacts.append({"uuid": uuid, "snapshot_id": identity, "artifact_key": str(index)})
         return artifacts
 
     def snapshots(self):
@@ -117,23 +105,26 @@ def settings(tmp_path):
     database.engine.dispose()
 
 
-def execute(repo, backend, settings, *, policy=None, job_uuid=B, request=None, acknowledge=True):
+def execute(repo, backend, settings, *, policy=None, job_uuid=B, request=None, send=None, current_operation_uuid=None):
     report = RetentionService.run(repository_id=1, job_id=None, job_uuid=job_uuid,
-        current_operation_uuid=None, current_policy=policy, request_context=request or backend,
-        set_repository=lambda _: None, resticapi=repo, settings=settings)
-    if acknowledge:
-        backend.accept(report)
+        current_operation_uuid=current_operation_uuid, current_policy=policy, request_context=request or backend,
+        set_repository=lambda _: None, resticapi=repo, settings=settings, send_report=send or backend.send_report)
+    backend.accept(report)
     return report
 
 
-def test_deleted_job_retains_whole_runs_and_preserves_unreported_snapshots(settings):
+def test_reportless_owned_runs_are_retained_together_while_foreign_and_legacy_snapshots_stay(settings):
     repo, backend = Repo(), Backend()
-    removed = repo.add_run(backend, number=10)
+    old = repo.add_run(backend, number=10)
     kept = repo.add_run(backend, number=11)
-    unknown = repo.add_run(Backend(), job=B, number=12)
+    foreign = repo.add_run(Backend(owner_uuid=FOREIGN), number=10)
+    legacy = repo.add_run(backend, number=9)
+    for artifact in legacy:
+        repo.items[artifact["snapshot_id"]]["tags"].remove(f"drastic-owner:{OWNER}")
+    # The group starts at its first snapshot, regardless of how long later components took.
+    repo.items[old[-1]["snapshot_id"]]["time"] = "2027-01-01T00:00:00+00:00"
     assert execute(repo, backend, settings).state == AgentReportState.success
-    assert set(repo.items) == {a["snapshot_id"] for a in kept + unknown}
-    assert all(a["forgotten"] for a in removed)
+    assert set(repo.items) == {a["snapshot_id"] for a in kept + foreign + legacy}
     assert repo.checks == [{"read_data": False, "read_data_subset": None}]
 
 
@@ -151,73 +142,68 @@ def test_incomplete_backend_response_never_means_all_jobs_were_deleted(settings,
     repo, backend = Repo(), Backend()
     repo.add_run(backend, number=10)
     repo.add_run(backend, number=11)
-    assert execute(repo, backend, settings, request=lambda _: response).state == AgentReportState.warning
+    assert execute(repo, backend, settings, request=lambda: response).state == AgentReportState.warning
     assert len(repo.items) == 4 and not repo.removed
 
 
-@pytest.mark.parametrize("failure", ["forget", "prune", "result", "verification"])
-def test_other_agent_finishes_interrupted_cleanup_from_reports(settings, failure):
+@pytest.mark.parametrize("failure", ["forget", "prune", "verification"])
+def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, monkeypatch):
+    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 0)
     repo, backend = Repo(), Backend()
     repo.add_run(backend, number=10, count=1100)
     kept = repo.add_run(backend, number=11, count=1100)
     if failure == "verification":
         backend.check_token = "known-failure"
-    if failure in {"forget", "prune"}:
-        setattr(repo, "fail_" + failure, True)
-
-    def request(report):
-        response = backend(report)
-        if failure == "verification" and report is not None:
-            raise TimeoutError("Verification acknowledgment lost")
-        return response
-
-    result = execute(repo, backend, settings, request=request, acknowledge=failure != "result")
-    assert result.state == (AgentReportState.success if failure == "result" else AgentReportState.warning)
-    if failure == "verification":
-        assert not repo.removed
-    # The new executor has no local queue, backup history or prune marker.
-    settings.delete()
-    remaining = set(repo.items)
-    backend.default = None
-    assert execute(repo, backend, settings).state == AgentReportState.success
-    assert set(repo.items) == remaining
-    backend.default = {"keep_last": 1}
-    assert execute(repo, backend, settings).state == AgentReportState.success
-    assert set(repo.items) == {a["snapshot_id"] for a in kept}
-    assert repo.prune_calls == (2 if failure in {"prune", "result"} else 1)
-
-
-@pytest.mark.parametrize("damage", ["missing", "older_kept", "tags", "time"])
-def test_no_deletion_when_a_retained_run_is_missing_or_invalid(settings, damage):
-    repo, backend = Repo(), Backend()
-    if damage in {"missing", "older_kept", "tags"}:
-        older = repo.add_run(backend, number=9)
-    only = repo.add_run(backend)
-    if damage == "missing":
-        repo.items.pop(only[0]["snapshot_id"])
-    elif damage == "older_kept":
-        backend.default = {"keep_last": 2}
-        repo.items.pop(older[0]["snapshot_id"])
-    elif damage == "tags":
-        repo.items[only[0]["snapshot_id"]]["tags"] = []
     else:
-        backend.default = {"keep_yearly": 1}
-        next(iter(backend.runs.values()))["ended"] = None
-    execute(repo, backend, settings)
+        setattr(repo, "fail_" + failure, True)
+    result = execute(repo, backend, settings, send=(lambda _: False) if failure == "verification" else None)
+    assert result.state == AgentReportState.warning
+    assert RetentionService.pending_tasks(settings) == []
+    if failure == "prune":
+        monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
+        args, = RetentionService.pending_tasks(settings)
+        result = RetentionService.run(**args, current_policy=None, request_context=backend,
+            set_repository=lambda _: None, resticapi=repo, settings=settings, send_report=backend.send_report)
+    else:
+        settings.delete()  # A different agent needs no local backup history to remove remaining expired snapshots.
+        result = execute(repo, backend, settings)
+    assert result.state == AgentReportState.success
+    assert set(repo.items) == {a["snapshot_id"] for a in kept}
+    assert repo.prune_calls == (2 if failure == "prune" else 1)
+
+
+@pytest.mark.parametrize("tag", ["drastic-owner:invalid", f"drastic-owner:{FOREIGN}", "job_uuid:invalid", "operation_uuid:invalid"])
+def test_ambiguous_or_invalid_snapshot_identity_is_not_deleted(settings, tag):
+    repo, backend = Repo(), Backend()
+    old = repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    for artifact in old:
+        repo.items[artifact["snapshot_id"]]["tags"].append(tag)
+    assert execute(repo, backend, settings).state == AgentReportState.success
     assert not repo.removed
 
 
-@pytest.mark.parametrize("finished", [False, True])
-def test_partial_runs_count_normally_but_running_backups_are_preserved(settings, finished):
+@pytest.mark.parametrize("running", [False, True])
+def test_partial_runs_count_normally_but_known_running_backups_are_preserved(settings, running):
     repo, backend = Repo(), Backend()
-    backend.check_token = None
     old = repo.add_run(backend, number=10)
     partial = repo.add_run(backend, number=11, count=1)
-    backend.runs[str(UUID(int=11))]["finished"] = finished
+    backend.running = [str(UUID(int=11))] if running else []
     assert execute(repo, backend, settings).state == AgentReportState.success
-    assert set(repo.items) == {a["snapshot_id"] for a in (partial if finished else old + partial)}
-    if finished:
-        assert repo.checks[0]["read_data"] is False
+    assert set(repo.items) == {a["snapshot_id"] for a in (old + partial if running else partial)}
+
+
+def test_current_run_counts_while_another_running_run_stays_protected(settings):
+    repo, backend = Repo(), Backend(job_uuids=[A])
+    other = repo.add_run(backend, number=9)
+    expired = repo.add_run(backend, number=10)
+    current = repo.add_run(backend, number=11)
+    current_uuid = str(UUID(int=11))
+    backend.running = [str(UUID(int=9)), current_uuid]
+    assert execute(repo, backend, settings, job_uuid=A, policy={"keep_last": 1},
+        current_operation_uuid=current_uuid).state == AgentReportState.success
+    assert set(repo.items) == {a["snapshot_id"] for a in current + other}
+    assert {item["id"] for item in repo.removed} == {a["snapshot_id"] for a in expired}
 
 
 def test_new_check_failure_cannot_be_cleared_by_an_older_check(settings):
@@ -248,7 +234,6 @@ def test_lock_conflicts_defer_cleanup_without_creating_an_integrity_block(settin
     monkeypatch.setattr(runtime_module, "agent_settings", settings)
     assert agent.cmd_check_repository(1).data["repository_locked"]
     assert backend.check_token is None and settings.find_one(name="retention_check_failed:1") is None
-    assert not repo.removed
     repo.on_check = None
     assert execute(repo, backend, settings).state == AgentReportState.success
     assert all(not check["read_data"] for check in repo.checks)
@@ -258,12 +243,11 @@ def test_new_jobs_after_initial_scan_are_not_orphans(settings):
     repo, backend = Repo(), Backend()
     repo.add_run(backend, number=10)
     repo.add_run(backend, number=11)
-    new_job = str(UUID(int=90))
     added = []
 
     def new_backup():
-        added.extend(repo.add_run(backend, job=new_job, number=91))
-        added.extend(repo.add_run(backend, job=new_job, number=92))
+        for number in (91, 92):
+            added.extend(repo.add_run(backend, job=str(UUID(int=90)), number=number))
 
     repo.on_check = new_backup
     assert execute(repo, backend, settings).state == AgentReportState.success

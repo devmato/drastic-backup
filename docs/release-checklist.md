@@ -18,7 +18,7 @@ Start **Actions → Prepare Release → Run workflow** on `develop`, then run th
 14. Disconnect the backend and verify a synchronized custom-repository schedule runs only while its target and local agent key remain available; verify a native-repository run fails without the backend proxy.
 15. Verify missed schedule slots are not caught up and a busy job or repository records the current slot as skipped without a later retry.
 16. Force a post-backup check failure and verify the backup is `warning`, retention is skipped, and statistics plus `success` and `end` hooks are still attempted. Verify pre-backup failures remain `failed` and successful post-backup steps produce `success`.
-17. Verify retention skips a snapshot with mismatched artifact tags, reports a warning, and performs separate forget and prune steps without repeating forget after a prune retry.
+17. Verify retention groups owned snapshots by job/run without historical reports, leaves foreign, unmarked and ambiguously tagged snapshots untouched, and retries prune after forget has already removed expired snapshots.
 18. Verify restore defaults to `fail_if_exists`, explicit overwrite requires confirmation, and an interrupted started restore is failed with partial-destination markers.
 19. Confirm server and agent images and the native agent Git ref use the same release commit. Verify native install, update rollback and uninstall; Docker-image publishing must cover both supported architectures.
 20. Confirm the rest-server image tag in Compose (or `DRASTIC_REST_SERVER_VERSION` override) is an explicitly tested version.

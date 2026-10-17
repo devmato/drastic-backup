@@ -20,12 +20,7 @@ class FileBackupJobHandler(BackupJobHandler):
         if not paths:
             raise ValueError("Select at least one path that is not excluded")
         artifact = self.start_artifact("default", report=report)
-        tags = [
-            f"job_uuid:{self.job['uuid']}",
-            f"operation_uuid:{self.operation['uuid']}",
-            f"artifact_uuid:{artifact['uuid']}",
-            "artifact_key:default",
-        ]
+        tags = self.backup_tags(artifact, self.operation["uuid"])
 
         report.log_message(f"Launching backup for job {self.job['id']}")
         report.log_message(f"Backing up paths: {', '.join(paths)}")

@@ -73,7 +73,7 @@ def test_truenas_job_validation_and_agent_protocol(api_client):
 
 def test_path_selection_validation_and_round_trip(api_client):
     client, agent, _, _ = api_client
-    agent.protocol_version = 21
+    agent.protocol_version = 23
     agent.connections = {"truenas": {"configured": True, "available": True}}
     db.session.commit()
     root = {"dataset": "tank", "path": ".", "group": "dataset"}

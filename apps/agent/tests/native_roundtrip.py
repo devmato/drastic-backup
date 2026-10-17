@@ -40,7 +40,7 @@ try:
     from drastic_common.restic.repository import ResticRepository
     api=ResticApi(str(BASE/'restic'),repository=ResticRepository(location=str(ROOT/'repo'),password='isolated-native-evaluation'))
     api.init()
-    agent=SimpleNamespace(identifier='native-evaluation',resticapi=api)
+    agent=SimpleNamespace(identifier='native-evaluation',owner_uuid='00000000-0000-0000-0000-000000000003',resticapi=api)
     job={'id':1,'uuid':str(uuid4()),'config':{'backup_mode':'native_cbt','fleecing_storage':''}}
     handler=ProxmoxBackupJobHandler(agent,job,1)
     for operation_id,stage in enumerate(('initial','unchanged','changed','failed','retry','native-full','cbt-reseed','bitmap-lost',
@@ -96,7 +96,7 @@ if os.environ["CRASH_POINT"]=="pre-setup-crash":
    process.stdout=QueryBarrier(process.stdout)
   return process
  native.subprocess.Popen=launch
-handler=ProxmoxBackupJobHandler(SimpleNamespace(identifier="native-evaluation",resticapi=api),json.loads(os.environ["CRASH_JOB"]),1)
+handler=ProxmoxBackupJobHandler(SimpleNamespace(identifier="native-evaluation",owner_uuid="00000000-0000-0000-0000-000000000003",resticapi=api),json.loads(os.environ["CRASH_JOB"]),1)
 report=AgentReport.command_report();handler.operation={"id":99,"uuid":report.uuid};report.set_data("guests",[990103]);report.set_data("backup_items_total",1)
 run_native(handler,report,{"vmid":990103,"name":"drastic-native-build-test"},1)
 '''

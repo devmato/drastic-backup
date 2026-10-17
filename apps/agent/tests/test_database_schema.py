@@ -91,6 +91,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
     payload = AgentSyncSchema().dump(
         {
             "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
+            "backup_owner_uuid": "00000000-0000-0000-0000-000000000003",
             "repositories": [{
                 "id": 1,
                 "kind": "local",
@@ -131,6 +132,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         assert agent.cmd_sync().final_state.name == "success"
         assert requests[-1] == {}
         assert db["jobs"].find_one(id=1)["config"] == {"paths": ["/data"]}
+        assert db["agent"].find_one(name="backup_owner_uuid")["settings"] == payload["backup_owner_uuid"]
         assert db["job_actions"].find_one(id=1)["data"] == {}
         assert agent._Agent__repository_passwords == {1: "password"}
 
@@ -183,6 +185,7 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
     for name in tables:
         db[name].insert({"id": 1})
     db["repository_secrets"].insert({"repository_id": 1, "password": "legacy"})
+    db["agent"].upsert({"name": "backup_owner_uuid", "settings": "previous-owner"}, ["name"])
     db.query("""
         CREATE TRIGGER reject_new_actions BEFORE INSERT ON job_actions
         WHEN NEW.id = 2 BEGIN SELECT RAISE(ABORT, 'injected sync failure'); END
@@ -195,6 +198,7 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
         for name in ("repositories", "retentions", "jobs", "schedules", "actions")
     }
     payload["agent_uuid"] = "550e8400-e29b-41d4-a716-446655440000"
+    payload["backup_owner_uuid"] = "00000000-0000-0000-0000-000000000003"
     monkeypatch.setattr(
         agent, "_Agent__send_request", lambda action: {"success": True, "result": payload}
     )
@@ -207,6 +211,7 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
     for name in tables:
         assert [row["id"] for row in db[name].all()] == [1]
     assert db["repository_secrets"].find_one(repository_id=1)["password"] == "legacy"
+    assert db["agent"].find_one(name="backup_owner_uuid")["settings"] == "previous-owner"
 
 
 def test_statistics_migration_preserves_backup_history_and_replay(local_db):

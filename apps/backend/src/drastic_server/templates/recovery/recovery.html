@@ -43,9 +43,10 @@
       <tr><th>User ID</th><td>{{ export.user.id }}</td></tr>
       <tr><th>Name</th><td>{{ export.user.name }}</td></tr>
       <tr><th>Email</th><td>{{ export.user.email or "Not set" }}</td></tr>
+      <tr><th>Backup owner UUID</th><td>{{ export.user.backup_owner_uuid }}</td></tr>
     </table>
     <p class="note">The account password, password hash, encrypted user recovery key, sessions, and tokens are not included.</p>
-    <p>Back up the application database to preserve backup reports. Retention needs those reports to manage whole backup runs, including after their jobs or agents have been deleted.</p>
+    <p>Preserve the backup owner UUID when reconstructing this account. Retention identifies repository snapshots by this namespace, independently of report history.</p>
   </section>
 
   <section>

@@ -15,4 +15,6 @@ def snapshot_uuid(snapshot, name):
 
 def restore_point_key(snapshot):
     job, operation = snapshot_uuid(snapshot, "job_uuid"), snapshot_uuid(snapshot, "operation_uuid")
-    return f"run:{job}:{operation}" if job and operation else f"snapshot:{snapshot['id']}"
+    owner = snapshot_uuid(snapshot, "drastic-owner")
+    namespace = f"{owner}:" if owner else ""
+    return f"run:{namespace}{job}:{operation}" if job and operation else f"snapshot:{snapshot['id']}"

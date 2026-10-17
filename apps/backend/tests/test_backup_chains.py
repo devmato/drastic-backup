@@ -57,7 +57,7 @@ def setup(monkeypatch, tmp_path):
         db.create_all()
         user = User(name="admin")
         user.set_initial_password("account-password", recovery_key="user-recovery-key")
-        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=21) for i in range(2)]
+        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=23) for i in range(2)]
         for i, agent in enumerate(agents):
             AgentSession(agent=agent, request_sid=f"sid-{i}")
         repository = Repository(user=user, name="Storage", kind="custom", location="/backup")
@@ -189,14 +189,14 @@ def test_old_agent_is_rejected_when_saving_and_skipped_without_waiting_at_dispat
     _, chain, jobs, calls = setup
     jobs[0].agent.protocol_version = 19
     db.session.commit()
-    with pytest.raises(ValueError, match="protocol 21"):
+    with pytest.raises(ValueError, match="protocol 23"):
         save_chain(chain, chain.user_id, {"steps": chain.steps})
     db.session.rollback()
     synced = []
     monkeypatch.setattr(AgentService, "sync", lambda agent, **kw: synced.append(agent.id) or {"state": AgentOperationState.success})
     run = start_chain(chain, now=NOW)
     advance_run(run.id, now=NOW)
-    assert run.steps[0]["state"] == "skipped" and "protocol 21" in run.steps[0]["reason"]
+    assert run.steps[0]["state"] == "skipped" and "protocol 23" in run.steps[0]["reason"]
     assert not calls and not synced
     advance_run(run.id, now=NOW)
     assert calls[0][1] == jobs[1].id
@@ -455,7 +455,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     from drastic_server.services.agent.request import AgentException, AgentRequestService
 
     app, chain, jobs, _ = setup
-    jobs[0].agent.protocol_version = 21
+    jobs[0].agent.protocol_version = 23
     db.session.commit()
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
@@ -484,7 +484,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
         with pytest.raises(AgentException, match="protocol 18"):
             AgentRequestService(jobs[0].agent).sync()
         schedule.enabled = False
-        jobs[0].agent.protocol_version = 21
+        jobs[0].agent.protocol_version = 23
         db.session.commit()
         assert AgentRequestService(jobs[0].agent).sync()["schedules"] == []
         schedule.enabled = True
@@ -511,7 +511,7 @@ def test_retention_changes_sync_chain_only_and_pending_cleanup_agents(setup, mon
     from drastic_server.services.agent.request import AgentRequestService
 
     app, chain, jobs, _ = setup
-    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent", protocol_version=21)
+    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent", protocol_version=23)
     AgentSession(agent=cleanup_agent, request_sid="cleanup-sid")
     offline_agent = Agent(user_id=chain.user_id, secret="offline-agent")
     other_user = User(name="unrelated")

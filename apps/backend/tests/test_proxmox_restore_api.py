@@ -104,7 +104,7 @@ def test_job_retention_defaults_ownership_and_sync(restore_api, monkeypatch):
     from drastic_server.services.jobs.configuration import configure_job_retention
 
     client, _, agent, foreign, job, _ = restore_api
-    agent.protocol_version = 21
+    agent.protocol_version = 23
     policy = Retention(user_id=agent.user_id, name="Default", keep_last=3)
     second = Retention(user_id=agent.user_id, name="Other", keep_last=2)
     other = Retention(user_id=foreign.user_id, name="Foreign", keep_last=1)
@@ -165,15 +165,17 @@ def test_all_repository_snapshots_are_listed_and_foreign_backups_restore_as_file
     assert client.post("/api/restores/", json={**payload, "mode": "proxmox_vm", "vmid": 101, "storage": "local"}).status_code == 400
 
 
-@pytest.mark.parametrize("case", ["success", "foreign_agent", "stale_members", "running", "old_protocol"])
+@pytest.mark.parametrize("case", ["success", "owned", "owned_old_protocol", "foreign_agent", "stale_members", "running", "old_protocol"])
 def test_restore_point_deletion_groups_by_run_and_checks_access(restore_api, monkeypatch, case):
     client, source, agent, foreign, job, _ = restore_api
-    agent.protocol_version = 22 if case != "old_protocol" else 21
+    agent.protocol_version = {"owned": 23, "old_protocol": 21}.get(case, 22)
     run = AgentOperation(agent=agent, job=job, repository_id=source["repository_id"], type=AgentOperationType.backup,
                          state=AgentOperationState.running if case == "running" else AgentOperationState.success)
     db.session.add(run)
     db.session.commit()
     tags = [f"job_uuid:{job.uuid}", f"operation_uuid:{run.uuid}"]
+    if case.startswith("owned"):
+        tags.append(f"drastic-owner:{agent.user.backup_owner_uuid}")
     snapshots = [{"id": "a", "tags": tags}, {"id": "b", "tags": tags}, {"id": "other", "tags": []}]
     artifact = AgentOperationArtifact(operation=run, artifact_key="default", snapshot_id="a", state="success")
     db.session.add(artifact)
@@ -190,9 +192,11 @@ def test_restore_point_deletion_groups_by_run_and_checks_access(restore_api, mon
     payload = {"agent_id": foreign.id if case == "foreign_agent" else agent.id, "repository_id": source["repository_id"],
                "snapshot_id": "a", "snapshot_ids": ["a"] if case == "stale_members" else ["a", "b"]}
     response = client.post("/api/restores/snapshots/delete", json=payload)
-    assert response.status_code == (202 if case == "success" else 404 if case == "foreign_agent" else 400)
-    if case == "success":
+    assert response.status_code == (202 if case in {"success", "owned"} else 404 if case == "foreign_agent" else 400)
+    if case in {"success", "owned"}:
         assert set(dispatched[0]["snapshot_ids"]) == {"a", "b"}
+        namespace = f"{agent.user.backup_owner_uuid}:" if case == "owned" else ""
+        assert dispatched[0]["point_key"] == f"run:{namespace}{job.uuid}:{run.uuid}"
         from drastic_server.services.operations.reports import AgentOperationService
 
         AgentOperationService(agent).ingest({"uuid": dispatched[0]["operation_uuid"], "type": "retention", "state": "failed",
@@ -201,6 +205,9 @@ def test_restore_point_deletion_groups_by_run_and_checks_access(restore_api, mon
         assert artifact.forgotten_at is not None
     else:
         assert not dispatched
+        assert AgentOperation.query.filter_by(type=AgentOperationType.retention).count() == 0
+        if case == "owned_old_protocol":
+            assert "protocol 23" in response.json["message"]
 
 
 def test_deleted_job_cleanup_reports_do_not_affect_other_jobs(restore_api):

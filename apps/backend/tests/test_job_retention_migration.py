@@ -2,6 +2,7 @@
 
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
+from uuid import UUID
 
 import pytest
 import sqlalchemy as sa
@@ -60,4 +61,25 @@ def test_retention_migration_preserves_data_and_refuses_lossy_downgrade():
         assert connection.exec_driver_sql("SELECT retention_id FROM job_schedules").scalar() is None
         assert connection.exec_driver_sql("SELECT * FROM agent_operations").one() == (7, 8, 3, 6, "{}")
         assert connection.exec_driver_sql("SELECT * FROM agent_operation_artifacts").one() == (9, 7)
+    engine.dispose()
+
+
+def test_backup_owner_migration_assigns_distinct_persistent_namespaces_without_changing_users():
+    path = Path(__file__).resolve().parents[1] / "migrations/versions/backup_owner.py"
+    spec = spec_from_file_location("backup_owner_migration", path)
+    migration = module_from_spec(spec)
+    spec.loader.exec_module(migration)
+    engine = sa.create_engine("sqlite:///:memory:")
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name TEXT NOT NULL)")
+        connection.exec_driver_sql("INSERT INTO users VALUES (1, 'first'), (2, 'second')")
+        with Operations.context(MigrationContext.configure(connection)):
+            migration.upgrade()
+            owners = connection.exec_driver_sql("SELECT backup_owner_uuid FROM users ORDER BY id").scalars().all()
+            assert len(set(owners)) == 2 and all(UUID(owner).version == 4 for owner in owners)
+            assert connection.exec_driver_sql("SELECT backup_owner_uuid FROM users ORDER BY id").scalars().all() == owners
+            assert not next(column for column in sa.inspect(connection).get_columns("users") if column["name"] == "backup_owner_uuid")["nullable"]
+            assert ["backup_owner_uuid"] in [constraint["column_names"] for constraint in sa.inspect(connection).get_unique_constraints("users")]
+            migration.downgrade()
+        assert connection.exec_driver_sql("SELECT * FROM users ORDER BY id").all() == [(1, "first"), (2, "second")]
     engine.dispose()

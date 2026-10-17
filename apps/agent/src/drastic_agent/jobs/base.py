@@ -315,6 +315,11 @@ class BackupJobHandler:
             self._sync_operation(self.report)
         return artifact
 
+    def backup_tags(self, artifact, operation_uuid):
+        return [f"drastic-owner:{self.agent.owner_uuid}", f"job_uuid:{self.job['uuid']}",
+                f"operation_uuid:{operation_uuid}", f"artifact_uuid:{artifact['uuid']}",
+                f"artifact_key:{artifact['artifact_key']}"]
+
     def finish_artifact(self, artifact, state=AgentOperationState.success, snapshot_id=None, data=None):
         artifact["state"] = state.name if hasattr(state, "name") else str(state)
         artifact["snapshot_id"] = snapshot_id
