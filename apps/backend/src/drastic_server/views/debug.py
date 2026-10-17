@@ -128,7 +128,7 @@ def browser_event():
 
 
 def owned_operation(user_id, operation_id):
-    return AgentOperation.query.join(Agent).filter(Agent.user_id == user_id, AgentOperation.id == operation_id).first()
+    return AgentOperation.query.filter_by(user_id=user_id, id=operation_id).first()
 
 
 def operation_payload(operation):
@@ -182,7 +182,7 @@ def configuration(user_id, kind, item_id):
         schema = RepositoryResponseSchema(only=("id", "name", "kind", "location", "restic_id"))
     elif kind == "schedule":
         item = JobSchedule.query.join(Job).join(Agent).filter(Agent.user_id == user_id, JobSchedule.id == item_id).first()
-        schema = AgentJobScheduleSchema(only=("id", "job_id", "repository_id", "retention_id", "enabled", "cron_string", "config"))
+        schema = AgentJobScheduleSchema(only=("id", "job_id", "repository_id", "enabled", "cron_string", "config"))
     else:
         item = Retention.query.filter_by(user_id=user_id, id=item_id).first()
         schema = RetentionResponseSchema(exclude=("rtype", "created"))
@@ -236,7 +236,7 @@ def call_tool(user, name, args):
         return {**agent_payload(agent), "sample": event_payload(latest) if latest else None,
                 "jobs": [configuration(user.id, "job", job.id) for job in Job.query.filter_by(agent_id=agent.id).limit(100)]}
     if name == "list_operations":
-        query = AgentOperation.query.join(Agent).filter(Agent.user_id == user.id)
+        query = AgentOperation.query.filter_by(user_id=user.id)
         for key in ("agent_id", "job_id"):
             if key in args:
                 query = query.filter(getattr(AgentOperation, key) == args[key])

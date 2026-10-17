@@ -9,6 +9,7 @@ from drastic_server.schemas.restore import (
     RestoreEntriesResponseSchema,
     RestoreOptionsQuerySchema,
     RestoreOptionsResponseSchema,
+    RestorePointDeleteSchema,
     RestoreSnapshotsQuerySchema,
     RestoreSnapshotsResponseSchema,
     RestoreStartInputSchema,
@@ -46,6 +47,18 @@ class RestoreSnapshots(MethodView):
     def get(self, args):
         try:
             return RestoreService.list_snapshots(int(get_jwt_identity()), **args)
+        except (RestoreServiceException, TimeoutError) as exc:
+            _handle_restore_error(exc)
+
+
+@blp.route("/snapshots/delete")
+class RestorePointDelete(MethodView):
+    @jwt_required()
+    @blp.arguments(RestorePointDeleteSchema)
+    @blp.response(202, RestoreStartResponseSchema)
+    def post(self, data):
+        try:
+            return RestoreService.delete_point(int(get_jwt_identity()), data)
         except (RestoreServiceException, TimeoutError) as exc:
             _handle_restore_error(exc)
 

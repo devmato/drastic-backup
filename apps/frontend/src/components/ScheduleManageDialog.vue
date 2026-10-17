@@ -42,7 +42,6 @@
               <div class="col-12"><q-separator /></div>
               <div class="col-12"><q-checkbox v-model="showAllRepositories" dense label="Show all repositories" /></div>
               <div class="col-12"><q-select outlined dense hide-bottom-space v-model="form.repository_id" :options="repositoryOptions" label="Repository" :hint="repositoryHint" emit-value map-options :rules="[val => !!val || 'Required']" /></div>
-              <div class="col-12"><q-select outlined dense v-model="form.retention_id" :options="retentionOptions" label="Retention Policy" emit-value map-options /></div>
               <div class="col-12"><q-toggle v-model="form.repository_check.enabled" label="Run repository check after successful backup" /></div>
               <div v-if="form.repository_check.enabled" class="col-12"><q-input outlined dense v-model="form.repository_check.read_data" label="Read data" hint="Optional: 1/10, 5% or 100%. Leave empty for a basic check." /></div>
               <div class="col-12"><BackupRetryFields v-model="form.retry" /></div>
@@ -72,7 +71,6 @@ const props = defineProps({
   schedule: { type: Object, default: null },
   repositories: { type: Array, default: () => [] },
   allRepositories: { type: Array, default: () => [] },
-  retentions: { type: Array, default: () => [] },
   timeOnly: { type: Boolean, default: false },
   timezone: { type: String, default: '' },
   agentId: { type: [Number, String], default: null },
@@ -87,7 +85,6 @@ const form = reactive({
   type: 'daily', hour: 0, minute: 0, weekdays: [0, 1, 2, 3, 4, 5, 6], day: 1, months: [1],
   date: '', interval: 60, offset: 0, restrict_days: false, restrict_hours: false, from_hour: 0, to_hour: 23, expression: '',
   repository_id: null,
-  retention_id: null,
   enabled: true,
   repository_check: { enabled: false, read_data: null },
   retry: retrySettings(),
@@ -137,10 +134,6 @@ const repositoryHint = computed(() => {
     ? 'No repositories assigned to this agent. Enable "Show all repositories" to select one.'
     : 'No repositories available.'
 })
-const retentionOptions = computed(() => [
-  { label: 'None', value: null },
-  ...props.retentions.map(retention => ({ label: retention.name, value: retention.id })),
-])
 
 const dialogVisible = defineModel({ type: Boolean, required: true })
 
@@ -164,14 +157,12 @@ function resetForm() {
     const assignedRepositoryIds = new Set(props.repositories.map(repository => repository.id))
     showAllRepositories.value = !assignedRepositoryIds.has(schedule.repository_id)
     form.repository_id = schedule.repository_id
-    form.retention_id = schedule.retention_id || null
     form.enabled = schedule.enabled
     form.repository_check = cloneRepositoryCheck(schedule.config?.repository_check)
     return
   }
 
   form.repository_id = repositoryOptions.value.length > 0 ? repositoryOptions.value[0].value : null
-  form.retention_id = null
   form.enabled = true
   form.repository_check = cloneRepositoryCheck()
 }
@@ -194,7 +185,6 @@ function submitForm() {
       enabled: form.enabled,
       ...(!props.timeOnly ? {
         repository_id: form.repository_id,
-        retention_id: form.retention_id,
         config: { repository_check: cloneRepositoryCheck(form.repository_check), retry: retrySettings(form.retry) },
       } : {}),
     })

@@ -34,7 +34,7 @@ export function sameSchedule(left, right) {
     const timing = Object.entries(scheduleTiming(schedule)).sort(([a], [b]) => a.localeCompare(b))
       .map(([key, value]) => [key, Array.isArray(value) ? [...value].sort((a, b) => a - b) : value])
     const check = schedule.config?.repository_check
-    return [timing, Boolean(schedule.enabled), schedule.repository_id, schedule.retention_id || null,
+    return [timing, Boolean(schedule.enabled), schedule.repository_id,
       Boolean(check?.enabled), check?.enabled ? String(check.read_data || '').trim() || null : null,
       retrySettings(schedule.config?.retry)]
   }

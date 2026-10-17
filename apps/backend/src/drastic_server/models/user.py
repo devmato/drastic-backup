@@ -15,6 +15,11 @@ class User(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'users'
     name = db.Column(db.String(120), nullable=False, unique=True)
     email = db.Column(db.String(120), unique=True)
+    default_retention_id = db.Column(
+        db.Integer,
+        db.ForeignKey("retentions.id", ondelete="SET NULL", name="fk_users_default_retention", use_alter=True),
+        nullable=True,
+    )
     password = db.Column(db.String(120), nullable=False)
     encrypted_recovery_key = db.Column(db.JSON, nullable=False)
     debug_token_hash = db.Column(db.String(64), nullable=True, unique=True)

@@ -29,6 +29,8 @@
                   <div class="q-gutter-sm">
                     <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val?.trim() || 'Required']" />
                     <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
+                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.retention" :options="retentionOptions" label="Retention" emit-value map-options :rules="[val => val != null || 'Required']" />
+                    <div class="text-caption">Applies to all backups of this job, separately in each repository. After deleting the job, the default policy applies.</div>
                     <q-banner v-if="!supportsJob(selectedAgent, jobForm.type)" class="bg-warning text-black">This job requires a configured connection and its local prerequisites. Existing job settings are retained.</q-banner>
                     <q-btn flat no-caps dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
                       <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>
@@ -86,6 +88,8 @@ import FileBackupJobForm from 'components/jobs/forms/FileBackupJobForm.vue'
 import ProxmoxBackupJobForm from 'components/jobs/forms/ProxmoxBackupJobForm.vue'
 import TrueNASBackupJobForm from 'components/jobs/forms/TrueNASBackupJobForm.vue'
 import { useAgentStore } from 'stores/agent'
+import { useRetentionStore } from 'stores/retention'
+import { getApiErrorMessage } from 'src/utils/api-error'
 import { supportsJob } from 'src/utils/agent-connections'
 import { hasTrueNASSelection } from 'src/utils/truenas-selection'
 import JobActionsPanel from 'components/jobs/panels/JobActionsPanel.vue'
@@ -94,6 +98,12 @@ import { scheduleTiming, retrySettings } from 'src/utils/schedule'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
+const retentionStore = useRetentionStore()
+const retentionOptions = computed(() => [
+  { label: `Use default (${retentionStore.retentions.find(item => item.is_default)?.name || 'none configured'})`, value: 'default' },
+  { label: 'Disabled', value: 'disabled' },
+  ...retentionStore.retentions.map(item => ({ label: item.name, value: item.id })),
+])
 
 const props = defineProps({
   editingJob: { type: Object, default: null },
@@ -187,6 +197,7 @@ watch(
   value => {
     if (value) {
       resetForm()
+      retentionStore.loadRetentions().catch(error => $q.notify({ message: getApiErrorMessage(error), color: 'negative' }))
     }
   }
 )
@@ -210,6 +221,7 @@ function createEmptyJobForm() {
   return {
     name: '',
     type: 'file',
+    retention: 'default',
     config: {
       paths: [],
       exclude_patterns: [],
@@ -246,7 +258,6 @@ function cloneSchedule(schedule) {
     ...schedule,
     timing: scheduleTiming(schedule),
     repository_id: schedule.repository_id,
-    retention_id: schedule.retention_id || null,
     config: cloneScheduleConfig(schedule.config),
   }
 }
@@ -282,6 +293,7 @@ function resetForm() {
     form.name = props.editingJob.name
     form.type = props.editingJob.type || 'file'
     form.config = cloneConfig(form.type, props.editingJob.config)
+    form.retention = props.editingJob.retention_mode === 'custom' ? props.editingJob.retention_id : props.editingJob.retention_mode || 'default'
     draftActions.value = props.editingJob.actions.map(cloneAction)
     draftSchedules.value = props.editingJob.schedules.map(cloneSchedule)
   } else if (form.type === 'proxmox') {
@@ -296,6 +308,7 @@ function resetForm() {
   jobForm.name = form.name
   jobForm.type = form.type
   jobForm.config = form.config
+  jobForm.retention = form.retention
 }
 
 function normalizeScheduleRepositoryId(schedule) {
@@ -319,6 +332,11 @@ function goPrevious() {
 }
 
 function submitForm() {
+  if (jobForm.retention == null) {
+    activeSection.value = 'general'
+    $q.notify({ message: 'Select a retention policy', color: 'negative' })
+    return
+  }
   if (!canLeaveGeneral.value) {
     activeSection.value = 'general'
     $q.notify({ message: 'Enter a job name and select a job type', color: 'red', position: 'top' })
@@ -348,6 +366,8 @@ function submitForm() {
 
   const payload = {
     name: jobForm.name,
+    retention_mode: typeof jobForm.retention === 'number' ? 'custom' : jobForm.retention,
+    retention_id: typeof jobForm.retention === 'number' ? jobForm.retention : null,
     config: cloneConfig(jobForm.type, jobForm.config),
     actions: draftActions.value.map(action => ({
       id: action.id,
@@ -358,7 +378,6 @@ function submitForm() {
     schedules: draftSchedules.value.map(schedule => ({
       timing: schedule.timing,
       repository_id: normalizeScheduleRepositoryId(schedule),
-      retention_id: schedule.retention_id || null,
       enabled: schedule.enabled,
       id: schedule.id,
       config: cloneScheduleConfig(schedule.config),

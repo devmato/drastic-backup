@@ -4,6 +4,7 @@ from uuid import uuid4
 from sqlalchemy import Enum
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.ext.mutable import MutableDict
+from sqlalchemy.orm import validates
 
 from drastic_common.agent.enums import (
     AgentOperationLogLevel,
@@ -103,13 +104,16 @@ class AgentOperation(IdMixin, TimeMixin, db.Model):
     __table_args__ = (
         db.Index("ix_agent_operations_agent_started", "agent_id", "started"),
         db.Index("ix_agent_operations_job_started", "job_id", "started"),
+        db.Index("ix_agent_operations_user_repository", "user_id", "repository_id"),
     )
 
     uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user = db.relationship("User", foreign_keys=[user_id])
     agent_id = db.Column(
         db.Integer,
-        db.ForeignKey("agents.id", ondelete="CASCADE"),
-        nullable=False,
+        db.ForeignKey("agents.id", ondelete="SET NULL"),
+        nullable=True,
     )
     agent = db.relationship("Agent", foreign_keys=[agent_id], backref=db.backref("operations"))
     repository_id = db.Column(
@@ -158,6 +162,20 @@ class AgentOperation(IdMixin, TimeMixin, db.Model):
     )
     started = db.Column(db.DateTime, nullable=True)
     ended = db.Column(db.DateTime, nullable=True)
+
+    @validates("agent")
+    def retain_owner(self, key, agent):
+        # Reports keep their owner when their source agent is removed.
+        if agent is not None:
+            self.user = agent.user
+        return agent
+
+    @property
+    def agent_display_name(self):
+        if self.agent:
+            return self.agent.display_name
+        name = (self.data or {}).get("source_agent_name")
+        return f"{name} (deleted)" if name else "Deleted agent"
 
     @property
     def log(self):

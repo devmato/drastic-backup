@@ -1,12 +1,14 @@
 from contextlib import nullcontext
 from threading import Event
 from types import SimpleNamespace
+from uuid import uuid4
 
 import pytest
 
 from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.services.restore import RestoreService
 from drastic_common.restic.exceptions import ResticError
+from drastic_common.restic.snapshots import restore_point_key
 
 
 class FakeReport:
@@ -34,6 +36,8 @@ class FakeRestic:
         self._snapshots = snapshots
         self._restore_error = restore_error
         self.restore_calls = []
+        self.forgotten = []
+        self.prune_error = None
 
     def snapshots(self, tags=None):
         return self._snapshots
@@ -43,6 +47,14 @@ class FakeRestic:
         if self._restore_error:
             raise self._restore_error
         return '{"message_type":"summary"}'
+
+    def forget_snapshots(self, ids, prune=False):
+        self.forgotten.extend(ids)
+
+    def prune(self):
+        if self.prune_error:
+            raise self.prune_error
+        return {}
 
 
 @pytest.mark.parametrize("target", ["/", "//", "///"])
@@ -91,6 +103,35 @@ def test_agent_requires_exact_snapshot_id_and_job_tag(monkeypatch, tmp_path):
 
     assert report.final_state == AgentReportState.failed
     assert restic.restore_calls == []
+
+
+@pytest.mark.parametrize("snapshot_id,mode,success", [("snapshot-full-id", "plain_file", True),
+    ("missing", "plain_file", False), ("snapshot-full-id", "proxmox_vm", False)])
+def test_foreign_restore_requires_exact_repository_snapshot_and_plain_mode(monkeypatch, tmp_path, snapshot_id, mode, success):
+    report, restic = run_restore(monkeypatch, tmp_path, [{"id": "snapshot-full-id", "tags": []}],
+        job_id=None, job_uuid=None, expected_job_tag=None, snapshot_id=snapshot_id, mode=mode)
+    assert bool(restic.restore_calls) is success
+    assert report.final_state == (AgentReportState.success if success else AgentReportState.failed)
+
+
+@pytest.mark.parametrize("case", ["run", "foreign", "prune_failure", "changed", "missing_member"])
+def test_delete_restore_point_checks_group_and_reports_removed_snapshots(case):
+    tags = [f"job_uuid:{uuid4()}", f"operation_uuid:{uuid4()}"]
+    snapshots = [{"id": "a", "tags": tags}, {"id": "b", "tags": tags}, {"id": "foreign", "tags": []}]
+    restic = FakeRestic(snapshots)
+    anchor = snapshots[-1] if case == "foreign" else snapshots[0]
+    ids = ["foreign"] if case == "foreign" else ["a", "b"]
+    if case == "changed":
+        snapshots.append({"id": "new", "tags": tags})
+    elif case == "prune_failure":
+        restic.prune_error = ResticError("prune failed")
+    elif case == "missing_member":
+        snapshots.pop(1)
+    report = RestoreService.delete_point(SimpleNamespace(resticapi=restic, configure_repository=lambda _: None),
+        repository_id=1, snapshot_ids=ids, point_key=restore_point_key(anchor), operation_uuid=str(uuid4()))
+    assert report.state == (AgentReportState.failed if case in {"changed", "prune_failure"} else AgentReportState.success)
+    assert restic.forgotten == ([] if case == "changed" else ["a"] if case == "missing_member" else ids)
+    assert set(report.data["deleted_snapshot_ids"]) == (set() if case == "changed" else set(ids))
 
 
 def test_agent_fails_when_restore_output_exists(monkeypatch, tmp_path):

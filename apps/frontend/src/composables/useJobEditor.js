@@ -10,7 +10,6 @@ export function useJobEditor(jobStore, agentStore, userStore) {
     return {
       timing: schedule.timing,
       repository_id: schedule.repository_id,
-      retention_id: schedule.retention_id || null,
       enabled: schedule.enabled,
       config: schedule.config || {},
       recovery_key: recoveryKey,

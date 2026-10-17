@@ -18,8 +18,18 @@ from drastic_common.restic.exceptions import (
     ResticCancelledError,
     ResticFailedError,
     ResticTimeoutError,
+    is_repository_locked,
 )
 from drastic_common.restic.repository import ResticRepository
+from drastic_common.restic.snapshots import restore_point_key
+
+
+def test_restore_point_identity_requires_unambiguous_job_and_run_tags():
+    job, run = "00000000-0000-0000-0000-000000000001", "00000000-0000-0000-0000-000000000002"
+    tags = [f"job_uuid:{job}", f"operation_uuid:{run}"]
+    assert restore_point_key({"id": "a", "tags": tags}) == restore_point_key({"id": "b", "tags": tags})
+    for ambiguous in ([], tags[:1], tags + [f"operation_uuid:{job}"], ["job_uuid:invalid", tags[1]]):
+        assert restore_point_key({"id": "a", "tags": ambiguous}) == "snapshot:a"
 
 
 def test_mount_defers_snapshot_lookup_to_supervised_consumer(monkeypatch, tmp_path):
@@ -266,6 +276,14 @@ def test_partial_backup_keeps_snapshot_identity_without_reporting_success(monkey
     with pytest.raises(ResticFailedError) as failure:
         ResticApi("restic").backup(["/data"])
     assert failure.value.snapshot_id == "snap-1"
+    assert failure.value.return_code == 3 and not is_repository_locked(failure.value)
+
+
+def test_check_preserves_lock_exit_code_without_classifying_it_as_corruption(monkeypatch):
+    monkeypatch.setattr(subprocess, "Popen", lambda *a, **kw: _FakeResticProcess(["restic"], return_code=11))
+    with pytest.raises(ResticFailedError) as failure:
+        ResticApi("restic").check()
+    assert failure.value.return_code == 11 and is_repository_locked(failure.value)
 
 
 @pytest.mark.parametrize("mode", ["files", "stdin", "producer"])

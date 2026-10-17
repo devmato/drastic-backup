@@ -5,8 +5,10 @@
         <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Retention Policy" @click="showManageDialog(null)" />
       </template>
     </PageHeader>
+    <q-select class="q-mb-md" outlined :model-value="defaultRetentionId" :options="defaultOptions" label="Default retention policy" emit-value map-options :disable="savingDefault || retentionStore.loading" :loading="savingDefault" @update:model-value="setDefault" />
+    <div class="text-caption q-mb-md">Applies to jobs using the default and to backups of deleted jobs. Without a default, deleted-job backups are retained. Selecting a policy also applies it to existing backups.</div>
     <q-card v-if="retentionStore.retentions.length === 0 && !retentionStore.loading" flat bordered>
-      <EmptyState icon="recycling" title="No retention policies configured yet" description="Add a policy to manage snapshot retention for your backup schedules." />
+      <EmptyState icon="recycling" title="No retention policies configured yet" description="Add a policy to manage snapshot retention for your backup jobs." />
     </q-card>
     <q-table
       v-else
@@ -54,7 +56,7 @@
 import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
-import { ref, onMounted } from 'vue'
+import { computed, ref, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import { useRetentionStore } from 'stores/retention'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -62,6 +64,21 @@ import RetentionManageDialog from 'components/retentions/RetentionManageDialog.v
 
 const $q = useQuasar()
 const retentionStore = useRetentionStore()
+const savingDefault = ref(false)
+const defaultRetentionId = computed(() => retentionStore.retentions.find(item => item.is_default)?.id || null)
+const defaultOptions = computed(() => [{ label: 'None', value: null }, ...retentionStore.retentions.map(item => ({ label: item.name, value: item.id }))])
+
+async function setDefault(id) {
+  if (id === defaultRetentionId.value) return
+  savingDefault.value = true
+  try {
+    await retentionStore.updateRetention(id ?? defaultRetentionId.value, { is_default: id !== null })
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+  } finally {
+    savingDefault.value = false
+  }
+}
 
 const manageDialogVisible = ref(false)
 const managedRetention = ref(null)

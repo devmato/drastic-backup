@@ -542,7 +542,6 @@ def test_new_operation_rejects_cross_agent_references(monkeypatch, foreign_refer
             schedule = JobSchedule(
                 job=job,
                 repository=repository,
-                retention=retention,
                 cron_string="0 0 * * *",
             )
             parent = AgentOperation(

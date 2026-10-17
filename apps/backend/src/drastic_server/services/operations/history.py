@@ -1,7 +1,7 @@
 """Owner-scoped operation history and deletion constraints."""
 
 from sqlalchemy import func
-from sqlalchemy.orm import contains_eager, joinedload
+from sqlalchemy.orm import joinedload
 
 from drastic_common.agent.enums import AgentOperationState, AgentOperationType
 from drastic_server.extensions import db
@@ -12,16 +12,14 @@ from drastic_server.services.queries import require_result
 
 
 def get_operation(user_id, operation_id):
-    return require_result(AgentOperation.query.join(Agent).filter(
-        Agent.user_id == user_id, AgentOperation.id == operation_id,
-    ))
+    return require_result(AgentOperation.query.filter_by(user_id=user_id, id=operation_id))
 
 
 def _filtered_operations(user_id, agent_id, filters):
     """Use the same owner and time constraints for history and dashboard counts."""
     if agent_id is not None:
         require_result(Agent.query.filter_by(id=agent_id, user_id=user_id))
-    query = AgentOperation.query.join(Agent).filter(Agent.user_id == user_id)
+    query = AgentOperation.query.filter_by(user_id=user_id)
     if agent_id is not None:
         query = query.filter(AgentOperation.agent_id == agent_id)
     for key in ("type", "job_id"):
@@ -53,7 +51,7 @@ def _filtered_operations(user_id, agent_id, filters):
 def list_operations(user_id, agent_id, filters):
     """Return filtered history; agent_id=None includes all agents owned by the user."""
     return _filtered_operations(user_id, agent_id, filters).options(
-        contains_eager(AgentOperation.agent), joinedload(AgentOperation.job), joinedload(AgentOperation.repository),
+        joinedload(AgentOperation.agent), joinedload(AgentOperation.job), joinedload(AgentOperation.repository),
     ).order_by(
         func.coalesce(AgentOperation.started, AgentOperation.created).desc(), AgentOperation.id.desc(),
     ).all()

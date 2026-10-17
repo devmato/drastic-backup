@@ -1,298 +1,179 @@
+"""Retain whole reported backup runs, using restic tags to verify their snapshots."""
+
 import json
 from datetime import datetime, timezone
 from time import time
 
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
+from drastic_common.restic.exceptions import is_repository_locked
 
 
-def _parse_datetime(value):
+def parse_datetime(value):
     if isinstance(value, datetime):
         return value.astimezone(timezone.utc)
-    if not value:
-        return datetime.min.replace(tzinfo=timezone.utc)
-    try:
-        # Legacy naive timestamps were written in the agent's local timezone.
-        return datetime.fromisoformat(str(value)).astimezone(timezone.utc)
-    except ValueError:
-        return datetime.min.replace(tzinfo=timezone.utc)
+    if value:
+        try:
+            return datetime.fromisoformat(value).astimezone(timezone.utc)
+        except ValueError:
+            pass
+    return datetime.min.replace(tzinfo=timezone.utc)
 
 
-def _retention_bucket(run, bucket):
-    ended = _parse_datetime(run.get("ended") or run.get("started"))
-    if ended == datetime.min.replace(tzinfo=timezone.utc):
-        return None
-    ended = ended.astimezone()
-    if bucket == "hourly":
-        return ended.strftime("%Y-%m-%d-%H")
-    if bucket == "weekly":
-        year, week, _ = ended.isocalendar()
-        return f"{year}-W{week:02d}"
-    if bucket == "monthly":
-        return ended.strftime("%Y-%m")
-    if bucket == "yearly":
-        return ended.strftime("%Y")
-    return None
+def keep_operation_ids(operations, retention):
+    """Select whole runs from newest-first reports using UTC calendar buckets."""
+    kept = set()
+    keep_last = int(retention.get("keep_last") or 0)
+    if keep_last > 0:
+        kept.update(operation["id"] for operation in operations[:keep_last])
+    for field, bucket in (("keep_hourly", "hourly"), ("keep_weekly", "weekly"),
+                          ("keep_monthly", "monthly"), ("keep_yearly", "yearly")):
+        limit = int(retention.get(field) or 0)
+        if limit <= 0:
+            continue
+        seen = set()
+        for operation in operations:
+            ended = parse_datetime(operation.get("ended") or operation.get("started"))
+            if ended == datetime.min.replace(tzinfo=timezone.utc):
+                continue
+            key = (ended.isocalendar()[:2] if bucket == "weekly" else
+                   ended.strftime({"hourly": "%Y-%m-%d-%H", "monthly": "%Y-%m", "yearly": "%Y"}[bucket]))
+            if key not in seen:
+                seen.add(key)
+                kept.add(operation["id"])
+                if len(seen) >= limit:
+                    break
+    return kept
+
+
+def validate_policy(policy):
+    if policy is None:
+        return
+    fields = ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")
+    if not isinstance(policy, dict) or set(policy) - {*fields, "name"}:
+        raise ValueError("Invalid retention policy")
+    values = [policy.get(key) if policy.get(key) is not None else 0 for key in fields]
+    if any(type(value) is not int or value < 0 for value in values) or not any(values):
+        raise ValueError("Retention must keep at least one backup")
+
+
+def validate_context(context):
+    if (not isinstance(context, dict) or set(context) != {"job_uuids", "default", "runs", "check_token"}
+            or not isinstance(context["job_uuids"], list) or not isinstance(context["runs"], list)):
+        raise ValueError("Missing or incomplete backend retention context; cleanup deferred")
+    validate_policy(context["default"])
+    return context
 
 
 class RetentionService:
     @staticmethod
-    def pending_tasks(settings_table):
+    def pending_tasks(settings):
         tasks = []
-        for row in settings_table.all():
-            if not str(row.get("name", "")).startswith("retention_task:"):
-                continue
-            payload = json.loads(row["settings"])
-            if payload.get("retry_at", 0) <= time():
-                tasks.append(payload["args"])
+        for row in settings.all():
+            if row["name"].startswith("retention_task:"):
+                payload = json.loads(row["settings"])
+                if payload.get("retry_at", 0) <= time():
+                    payload["args"].pop("retention_id", None)
+                    tasks.append(payload["args"])
         return tasks
 
-    @classmethod
-    def run(
-        cls,
-        *,
-        repository_id,
-        retention_id,
-        job_id,
-        current_operation_uuid=None,
-        set_repository,
-        resticapi,
-        retentions_table,
-        operations_table,
-        operation_artifacts_table,
-        settings_table,
-        retry=False,
-    ):
-        task_key = f"retention_task:{repository_id}:{job_id}"
-        prune_key = f"retention_prune:{repository_id}"
-        prune_only = retry and retention_id is None
-        task = {"args": {"repository_id": repository_id, "retention_id": retention_id,
-                         "job_id": job_id, "current_operation_uuid": current_operation_uuid},
-                "retry_at": time() + 900}
-        # Keep intent before any deletion, including across agent restarts.
-        settings_table.upsert({"name": task_key, "settings": json.dumps(task)}, ["name"])
-        report = AgentReport(
-            type=AgentOperationType.retention,
-            repository_id=repository_id,
-            job_id=job_id,
-            retention_id=retention_id,
-            parent_operation_uuid=current_operation_uuid,
-            source=AgentOperationSource.triggered if current_operation_uuid else AgentOperationSource.manual,
-        )
-        try:
-            retention = None if prune_only else retentions_table.find_one(id=retention_id)
-        except Exception as exc:
-            report.log_message(
-                f"Could not load retention policy {retention_id}: {exc}",
-                final_state=AgentOperationState.failed,
-            )
-            return report.finish()
-
-        if not retention and not prune_only:
-            prune_pending = bool(settings_table.find_one(name=prune_key))
-            if prune_pending:
-                # Forget may already have succeeded. Keep only repository cleanup,
-                # never select more snapshots using the deleted policy.
-                task["args"]["retention_id"] = None
-                settings_table.upsert({"name": task_key, "settings": json.dumps(task)}, ["name"])
-            else:
-                settings_table.delete(name=task_key)
-            report.retention_id = None  # The removed policy cannot be referenced by the backend.
-            report.data = {"retired_policy_id": retention_id, "cleanup_pending": prune_pending}
-            report.log_message(
-                f"Retention policy with id {retention_id} no longer available; policy retry retired"
-                + ("; pending prune retained" if prune_pending else ""),
-                final_state=AgentOperationState.warning,
-            )
-            return report.finish()
-
-        try:
-            if prune_only and not settings_table.find_one(name=prune_key):
-                settings_table.delete(name=task_key)
-                report.log_message("Pending prune already completed")
-                return report.finish()
-            repository = set_repository(repository_id)
-            blocked_check = settings_table.find_one(name=f"retention_check_failed:{repository_id}")
-            if retry or blocked_check:
-                report.log_message("Retrying pending retention; checking repository before deletion")
-                if blocked_check and blocked_check.get("settings"):
-                    resticapi.check(read_data=True, read_data_subset=None)
-                else:
-                    resticapi.check()
-                settings_table.delete(name=f"retention_check_failed:{repository_id}")
-            if prune_only:
-                report.log_message("Pruning repository after policy removal; no snapshots will be forgotten")
-                report.data["prune"] = resticapi.prune()
-                settings_table.delete(name=prune_key)
-                settings_table.delete(name=task_key)
-                return report.finish()
-            report.log_message(
-                f"Running retention policy: {retention['name']} on repository {repository['location']}"
-            )
-            backup_operations = list(
-                operations_table.find(
-                    job_id=job_id, repository_id=repository_id, type="backup"
-                )
-            )
-            successful_operations = [
-                operation
-                for operation in backup_operations
-                if operation.get("state") in {AgentOperationState.success.name, AgentOperationState.warning.name}
-            ]
-            current = next((operation for operation in backup_operations
-                            if operation.get("uuid") == current_operation_uuid
-                            and operation.get("state") == AgentOperationState.running.name), None)
-            if current and not (current.get("data") or {}).get("partial_failure"):
-                artifacts = list(operation_artifacts_table.find(operation_id=current["id"]))
-                if artifacts and all(artifact.get("state") == AgentOperationState.success.name
-                                     and artifact.get("snapshot_id") for artifact in artifacts):
-                    # The snapshot is complete, but the parent finishes only after retention/hooks.
-                    successful_operations.append({**current, "ended": datetime.now(timezone.utc).isoformat()})
-            partial_operations = [
-                operation
-                for operation in backup_operations
-                if operation.get("state") == AgentOperationState.failed.name
-                and isinstance(operation.get("data"), dict)
-                and operation["data"].get("partial_failure") is True
-            ]
-            successful_operations.sort(
-                key=lambda operation: _parse_datetime(
-                    operation.get("ended") or operation.get("started")
-                ),
-                reverse=True,
-            )
-
-            keep_operation_ids = cls.keep_operation_ids(successful_operations, retention)
-            candidate_operations = [
-                operation
-                for operation in [*successful_operations, *partial_operations]
-                if operation.get("id") not in keep_operation_ids and operation.get("uuid") != current_operation_uuid
-            ]
-            candidate_operation_ids = {operation["id"] for operation in candidate_operations}
-            candidate_artifacts = []
-            for operation in candidate_operations:
-                candidate_artifacts.extend(
-                    (operation, artifact)
-                    for artifact in operation_artifacts_table.find(operation_id=operation["id"])
-                    if artifact.get("snapshot_id") and not artifact.get("forgotten_at")
-                    and (
-                        operation.get("state") != AgentOperationState.failed.name
-                        or artifact.get("state") == AgentOperationState.success.name
-                    )
-                )
-
-            repository_snapshots = resticapi.snapshots() or []
-            if isinstance(repository_snapshots, dict):
-                repository_snapshots = [repository_snapshots]
-            snapshots_by_id = {
-                snapshot.get("id"): snapshot
-                for snapshot in repository_snapshots
-                if snapshot.get("id")
-            }
-
-            reconciled_artifacts = []
-            missing_artifacts = []
-            unknown_artifacts = []
-            for operation, artifact in candidate_artifacts:
-                snapshot = snapshots_by_id.get(artifact["snapshot_id"])
-                if snapshot is None:
-                    missing_artifacts.append(artifact)
-                    continue
-
-                tags = set(snapshot.get("tags") or [])
-                expected_tags = {
-                    f"operation_uuid:{operation['uuid']}",
-                    f"artifact_uuid:{artifact['uuid']}",
-                }
-                if not expected_tags.issubset(tags):
-                    unknown_artifacts.append(artifact)
-                    continue
-                reconciled_artifacts.append(artifact)
-
-            snapshot_ids = [artifact["snapshot_id"] for artifact in reconciled_artifacts]
-
-            report.data = {
-                "kept_operation_ids": sorted(keep_operation_ids),
-                "pruned_operation_ids": sorted(candidate_operation_ids),
-                "snapshot_ids": snapshot_ids,
-                "forgotten_artifacts": [],
-                "missing_snapshot_ids": [
-                    artifact["snapshot_id"] for artifact in missing_artifacts
-                ],
-                "skipped_snapshot_ids": [
-                    artifact["snapshot_id"] for artifact in unknown_artifacts
-                ],
-            }
-
-            # Repository admission serializes retention on this agent. Keep the intent
-            # outside synced repository data, and commit it before forget can succeed.
-            if snapshot_ids or missing_artifacts:
-                settings_table.upsert({"name": prune_key, "settings": "pending"}, ["name"])
-
-            if snapshot_ids:
-                report.data["forget"] = resticapi.forget_snapshots(snapshot_ids, prune=False)
-
-            forgotten_at = datetime.now(timezone.utc).isoformat()
-            for artifact in [*reconciled_artifacts, *missing_artifacts]:
-                artifact["forgotten_at"] = forgotten_at
-                operation_artifacts_table.update(artifact, ["id"])
-                report.data["forgotten_artifacts"].append(
-                    {
-                        "uuid": artifact.get("uuid"),
-                        "forgotten_at": forgotten_at,
-                        "snapshot_id": artifact.get("snapshot_id"),
-                        "repository_missing": artifact in missing_artifacts,
-                    }
-                )
-
-            if settings_table.find_one(name=prune_key):
-                report.log_message("Pruning repository after snapshot removal")
-                report.data["prune"] = resticapi.prune()
-                settings_table.delete(name=prune_key)
-
-            if unknown_artifacts:
-                report.log_message(
-                    "Skipped snapshots whose repository tags do not match local artifacts: "
-                    + ", ".join(artifact["snapshot_id"] for artifact in unknown_artifacts),
-                    final_state=AgentOperationState.warning,
-                )
-
-            report.log_message(f"Removed {len(snapshot_ids)} snapshots: {', '.join(snapshot_ids)}")
-        except Exception as exc:
-            report.log_message(f"Error during retention: {exc}", final_state=AgentOperationState.failed)
-
-        if report.final_state == AgentOperationState.success:
-            settings_table.delete(name=task_key)
-        return report.finish()
+    @staticmethod
+    def record_check_failure(settings, repository_id):
+        settings.upsert({"name": f"retention_check_failed:{repository_id}", "settings": "100%"}, ["name"])
 
     @staticmethod
-    def keep_operation_ids(operations, retention):
-        keep_operation_ids = set()
-
-        keep_last = int(retention.get("keep_last") or 0)
-        if keep_last > 0:
-            keep_operation_ids.update(operation["id"] for operation in operations[:keep_last])
-
-        for field_name, bucket_name in (
-            ("keep_hourly", "hourly"),
-            ("keep_weekly", "weekly"),
-            ("keep_monthly", "monthly"),
-            ("keep_yearly", "yearly"),
-        ):
-            limit = int(retention.get(field_name) or 0)
-            if limit <= 0:
+    def select_runs(runs, snapshots, policies, current_operation_uuid):
+        groups = {}
+        for run in runs:
+            groups.setdefault(run["job_uuid"], []).append(run)
+        selected = []
+        for job_uuid, job_runs in groups.items():
+            policy = policies.get(job_uuid)
+            if policy is None:
                 continue
+            # Select from the reports first. Missing snapshots only block cleanup when
+            # their run must be kept; expired runs may already be partly removed.
+            eligible = [run for run in job_runs if (run["finished"] or run["id"] == current_operation_uuid)
+                        and any(a["snapshot_id"] and not a["forgotten"] for a in run["artifacts"])]
+            if not eligible:
+                continue
+            eligible.sort(key=lambda run: (parse_datetime(run["ended"]), run["id"]), reverse=True)
+            kept = keep_operation_ids(eligible, policy)
+            if not kept:
+                raise ValueError("No backup could be selected for retention; cleanup stopped")
+            kept.add(current_operation_uuid)
+            for run in eligible:
+                artifacts = [a for a in run["artifacts"] if a["snapshot_id"] and not a["forgotten"]]
+                for artifact in artifacts:
+                    snapshot = snapshots.get(artifact["snapshot_id"])
+                    if snapshot is None:
+                        if run["id"] in kept:
+                            raise ValueError("A retained backup has missing snapshots; cleanup stopped")
+                        continue
+                    expected = {f"job_uuid:{job_uuid}", f"operation_uuid:{run['id']}",
+                                f"artifact_uuid:{artifact['uuid']}", f"artifact_key:{artifact['artifact_key']}"}
+                    if not expected.issubset(snapshot.get("tags") or []):
+                        raise ValueError("Snapshot does not match its backup report; cleanup stopped")
+                if run["id"] not in kept:
+                    selected.extend({"uuid": a["uuid"], "snapshot_id": a["snapshot_id"], "operation_uuid": run["id"]}
+                                    for a in artifacts)
+        return selected
 
-            seen_buckets = set()
-            for operation in operations:
-                bucket = _retention_bucket(operation, bucket_name)
-                if not bucket or bucket in seen_buckets:
-                    continue
-                keep_operation_ids.add(operation["id"])
-                seen_buckets.add(bucket)
-                if len(seen_buckets) >= limit:
-                    break
-
-        return keep_operation_ids
-
-    keep_run_ids = keep_operation_ids
+    @classmethod
+    def run(cls, *, repository_id, job_id, job_uuid, current_operation_uuid, current_policy,
+            request_context, set_repository, resticapi, settings, source=None):
+        task_key = f"retention_task:{repository_id}:{job_uuid or job_id or 'repository'}"
+        prune_key = f"retention_prune:{repository_id}"
+        settings.upsert({"name": task_key, "settings": json.dumps({"args": {
+            "repository_id": repository_id, "job_id": job_id, "job_uuid": job_uuid,
+            "current_operation_uuid": current_operation_uuid}, "retry_at": time() + 900})}, ["name"])
+        report = AgentReport(type=AgentOperationType.retention, repository_id=repository_id, job_id=job_id,
+            parent_operation_uuid=current_operation_uuid,
+            source=AgentOperationSource.triggered if current_operation_uuid else AgentOperationSource.manual,
+            data={"scope": "repository", "job_uuid": job_uuid, "cleanup_pending": True})
+        try:
+            validate_policy(current_policy)
+            set_repository(repository_id)
+            snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
+            scanned_jobs = {tag.removeprefix("job_uuid:") for snapshot in snapshots.values()
+                            for tag in snapshot.get("tags", []) if tag.startswith("job_uuid:")}
+            # This also acknowledges the current backup result before it can replace older runs.
+            context = validate_context(request_context(source))
+            policies = dict.fromkeys(scanned_jobs - set(context["job_uuids"]), context["default"])
+            if job_uuid in context["job_uuids"]:
+                policies[job_uuid] = current_policy
+            selected = cls.select_runs(context["runs"], snapshots, policies, current_operation_uuid)
+            if selected or settings.find_one(name=prune_key):
+                full = bool(context["check_token"] or settings.find_one(name=f"retention_check_failed:{repository_id}"))
+                try:
+                    report.data["check"] = resticapi.check(read_data=full, read_data_subset=None)
+                except Exception as exc:
+                    if is_repository_locked(exc):
+                        report.data["repository_locked"] = True
+                    else:
+                        cls.record_check_failure(settings, repository_id)
+                        report.data["retention_check_failed"] = True
+                    raise
+                report.data.update(retention_check_full=full, retention_check_verified=context["check_token"])
+                snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
+                # Acknowledge full verification, not a deletion plan, and check for newer failures.
+                context = validate_context(request_context(report if full else None))
+                if context["check_token"]:
+                    raise ValueError("A repository check failure remains unresolved; cleanup deferred")
+                settings.delete(name=f"retention_check_failed:{repository_id}")
+                selected = cls.select_runs(context["runs"], snapshots, policies, current_operation_uuid)
+                ids = [item["snapshot_id"] for item in selected if item["snapshot_id"] in snapshots]
+                settings.upsert({"name": prune_key, "settings": "pending"}, ["name"])
+                for start in range(0, len(ids), 1000):
+                    resticapi.forget_snapshots(ids[start:start + 1000], prune=False)
+                report.data["prune"] = resticapi.prune()
+                # Until prune succeeds, reports retain the original IDs. Re-evaluating
+                # them also retries prune when forget already removed every selected snapshot.
+                report.data["forgotten_artifacts"] = [{**item, "forgotten_at": datetime.now(timezone.utc).isoformat()}
+                                                       for item in selected]
+                settings.delete(name=prune_key)
+            settings.delete(name=task_key)
+            report.data["cleanup_pending"] = False
+        except Exception as exc:
+            report.log_message(str(exc), final_state=AgentOperationState.warning)
+        return report.finish()

@@ -62,7 +62,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   assert.equal(page.metricCards.value[0].value, '1 KiB')
 
   page.operation.value = {
-    id: 1, type: 'backup', state: 'success', source: 'manual',
+    id: 1, agent_id: 1, type: 'backup', state: 'success', source: 'manual',
     agent_hostname: 'Backup host', agent_display_name: 'Backup host', job_id: 2, job_name: 'Documents', repository_id: 3, repository_name: 'Offsite',
     started: '2026-10-01T22:38:44', ended: '2026-10-01T23:47:32',
     data: {
@@ -453,7 +453,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   store.getOperation = async () => page.operation.value
   quasar.notify = () => {}
   for (const type of ['backup', 'restore']) {
-    page.operation.value = { id: 1, job_id: 2, type, state: 'running', data: {} }
+    page.operation.value = { id: 1, agent_id: 1, job_id: 2, type, state: 'running', data: {} }
     const before = cancellations.length
     page.confirmCancelOperation()
     assert.equal(cancellations.length, before, 'cancellation must wait for confirmation')
@@ -468,4 +468,11 @@ test('background operation updates stay quiet and preserve data on failure', asy
   page.operation.value = { id: 3, job_id: 4, type: 'backup', state: 'running', data: {} }
   await confirm()
   assert.equal(cancellations.length, 2, 'stale confirmation must not cancel a completed or different operation')
+  page.operation.value = { id: 1, agent_id: null, agent_display_name: 'Old host (deleted)', type: 'restore', state: 'running', data: {} }
+  const device = page.summaryColumns.value[1].find(item => item.label === 'Device')
+  assert.equal(device.value, 'Old host (deleted)')
+  assert.equal(device.to, undefined, 'retained reports must not link to a deleted agent')
+  const previousConfirmation = confirm
+  page.confirmCancelOperation()
+  assert.equal(confirm, previousConfirmation, 'a deleted agent cannot receive a cancellation command')
 })

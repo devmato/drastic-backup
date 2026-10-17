@@ -1,560 +1,270 @@
-import json
-from types import SimpleNamespace
+"""Whole-run retention uses acknowledged reports, never a second catalog in restic."""
+
+import hashlib
+from copy import deepcopy
+from datetime import datetime, timedelta, timezone
+from uuid import UUID
 
 import dataset
 import pytest
 
-import drastic_agent.jobs.base as base_module
-import drastic_agent.runtime.agent as agent_module
-from drastic_agent.agent.enums import AgentReportState, AgentReportType
-from drastic_agent.agent.report import AgentReport
+import drastic_agent.runtime.agent as runtime_module
+from drastic_agent.agent.enums import AgentReportState
+from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.runtime.agent import Agent
-from drastic_agent.services.retention import RetentionService
-from drastic_common.restic.exceptions import ResticError
+from drastic_agent.services.retention import RetentionService, keep_operation_ids
+from drastic_common.restic.exceptions import ResticError, ResticFailedError
+
+A, B = (str(UUID(int=i)) for i in (1, 2))
 
 
-@pytest.fixture(autouse=True)
-def retention_settings(monkeypatch, tmp_path):
-    db = dataset.connect(f"sqlite:///{tmp_path}/retention.db")
-    table = db["agent"]
-    table.create_column("name", db.types.text)
-    table.create_column("settings", db.types.text)
-    monkeypatch.setattr(agent_module, "agent_settings", table)
-    yield table
-    db.engine.dispose()
+def test_retention_uses_utc_buckets_and_combines_count_and_calendar_rules():
+    runs = [
+        {"id": "new", "ended": "2026-02-01T02:30:00+02:00"},
+        {"id": "january", "ended": "2026-02-01T01:30:00+02:00"},
+        {"id": "december", "ended": "2025-12-31T12:00:00+00:00"},
+    ]
+    assert keep_operation_ids(runs, {"keep_monthly": 2}) == {"new", "january"}
+    assert keep_operation_ids(runs, {"keep_last": 1, "keep_yearly": 2}) == {"new", "december"}
 
 
-class FakeTable:
-    def __init__(self, row):
-        self.row = row
+class Backend:
+    """An in-memory report transport double; the real ownership/commit checks have backend tests."""
+    def __init__(self, job_uuids=None, default=None):
+        self.runs = {}
+        self.job_uuids = [B] if job_uuids is None else job_uuids
+        self.default = {"keep_last": 1} if default is None else default
+        self.check_token = None
 
-    def find_one(self, **kwargs):
-        return self.row
+    def accept(self, report):
+        if report is None:
+            return
+        payload = report if isinstance(report, dict) else AgentReportSchema().dump(report)
+        data = payload["data"]
+        if payload["type"] == "backup":
+            self.runs[payload["uuid"]] = {"id": payload["uuid"], "job_uuid": data["job_uuid"],
+                "ended": payload["ended"] or payload["started"],
+                "finished": payload["state"] != "running",
+                "artifacts": [{**a, "forgotten": False} for a in payload["artifacts"]]}
+        for run in self.runs.values():
+            for artifact in run["artifacts"]:
+                if any(a["uuid"] == artifact["uuid"] for a in data.get("forgotten_artifacts", [])):
+                    artifact["forgotten"] = True
+        if data.get("retention_check_failed"):
+            self.check_token = payload["uuid"]
+        elif data.get("retention_check_full") and data.get("retention_check_verified") == self.check_token:
+            self.check_token = None
+
+    def __call__(self, report=None):
+        self.accept(report)
+        return deepcopy({"job_uuids": self.job_uuids, "default": self.default, "check_token": self.check_token,
+                         "runs": [run for run in self.runs.values() if any(not a["forgotten"] for a in run["artifacts"])]})
 
 
-class FakeResticApi:
-    def __init__(self, result=None):
-        self.result = result or []
-        self.calls = []
-        self.prune_error = None
+class Repo:
+    def __init__(self):
+        self.items, self.removed, self.checks = {}, [], []
+        self.fail_forget = self.fail_prune = False
+        self.prune_calls = 0
+        self.on_check = None
 
-    def forget(self, **kwargs):
-        self.calls.append(kwargs)
-        return self.result
-
-    def forget_snapshots(self, snapshot_ids, prune=True):
-        self.calls.append({"snapshot_ids": snapshot_ids, "prune": prune})
-        return self.result
+    def add_run(self, backend, job=A, number=10, count=2):
+        operation = str(UUID(int=number))
+        artifacts = []
+        for index in range(count):
+            identity = hashlib.sha256(f"{operation}:{index}".encode()).hexdigest()
+            uuid = str(UUID(int=number * 10000 + index))
+            self.items[identity] = {"id": identity, "tags": [f"job_uuid:{job}", f"operation_uuid:{operation}",
+                f"artifact_uuid:{uuid}", f"artifact_key:{index}"]}
+            artifacts.append({"uuid": uuid, "snapshot_id": identity, "artifact_key": str(index),
+                               "forgotten": False})
+        backend.runs[operation] = {"id": operation, "job_uuid": job, "artifacts": artifacts,
+            "finished": True, "ended": (datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=number)).isoformat()}
+        return artifacts
 
     def snapshots(self):
-        return [
-            {
-                "id": "snap-new",
-                "tags": ["operation_uuid:operation-new", "artifact_uuid:artifact-new"],
-            },
-            {
-                "id": "snap-old",
-                "tags": ["operation_uuid:operation-old", "artifact_uuid:artifact-old"],
-            },
-        ]
+        return deepcopy(list(self.items.values()))
+
+    def forget_snapshots(self, ids, prune=False):
+        assert not prune and len(ids) <= 1000
+        for identity in ids:
+            self.removed.append(self.items.pop(identity))
+        if self.fail_forget:
+            self.fail_forget = False
+            raise ResticError("Reply lost after partial removal")
+
+    def check(self, **kwargs):
+        self.checks.append(kwargs)
+        if self.on_check:
+            self.on_check()
+        return {"errors": 0}
 
     def prune(self):
-        self.calls.append({"prune": True})
-        if self.prune_error:
-            error = self.prune_error
-            self.prune_error = None
-            raise error
-        return {"removed": 1}
+        self.prune_calls += 1
+        if self.fail_prune:
+            self.fail_prune = False
+            raise ResticError("Prune interrupted")
+        return {}
 
 
-class FakeRunsTable:
-    def __init__(self):
-        self.rows = [
-            {"id": 1, "uuid": "operation-new", "type": "backup", "job_id": 7, "repository_id": 1, "state": "success", "ended": "2026-05-10T03:00:00"},
-            {"id": 2, "uuid": "operation-old", "type": "backup", "job_id": 7, "repository_id": 1, "state": "success", "ended": "2026-05-10T02:00:00"},
-        ]
-
-    def find(self, **kwargs):
-        return [
-            row
-            for row in self.rows
-            if all(row.get(key) == value for key, value in kwargs.items())
-        ]
-
-
-class FakeArtifactsTable:
-    def __init__(self):
-        self.rows = [
-            {"id": 1, "uuid": "artifact-new", "operation_id": 1, "snapshot_id": "snap-new", "forgotten_at": None},
-            {"id": 2, "uuid": "artifact-old", "operation_id": 2, "snapshot_id": "snap-old", "forgotten_at": None},
-        ]
-
-    def find(self, **kwargs):
-        return [
-            row
-            for row in self.rows
-            if all(row.get(key) == value for key, value in kwargs.items())
-        ]
-
-    def update(self, row, keys):
-        for index, existing in enumerate(self.rows):
-            if all(existing[key] == row[key] for key in keys):
-                self.rows[index] = dict(row)
-                return
-
-
-def test_cmd_run_retention_prunes_old_operation_artifacts(monkeypatch):
-    agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi(result=[{"remove": [{"id": "snap-1"}]}])
-    artifact_table = FakeArtifactsTable()
-
-    monkeypatch.setattr(
-        agent_module,
-        "retentions",
-        FakeTable(
-            {
-                "id": 2,
-                "name": "Daily",
-                "keep_last": 1,
-                "keep_hourly": None,
-                "keep_weekly": None,
-                "keep_monthly": None,
-                "keep_yearly": None,
-            }
-        ),
-    )
-    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", artifact_table)
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert resticapi.calls == [
-        {"snapshot_ids": ["snap-old"], "prune": False},
-        {"prune": True},
-    ]
-    assert report.data["kept_operation_ids"] == [1]
-    assert report.data["pruned_operation_ids"] == [2]
-    assert report.data["snapshot_ids"] == ["snap-old"]
-    assert artifact_table.rows[1]["forgotten_at"] is not None
-    assert report.final_state == AgentReportState.success
-    assert any("Removed 1 snapshots: snap-old" in line for line in report.log_list)
-
-    resticapi.calls.clear()
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-    assert report.final_state == AgentReportState.success
-    assert resticapi.calls == []
-
-
-def test_pending_retention_recovers_after_forget_before_local_commit(tmp_path, monkeypatch):
-    from drastic_agent.services import retention as retention_module
-
-    database = dataset.connect(f"sqlite:///{tmp_path}/cleanup.db")
-    settings = database["agent"]
-    settings.create_column("name", database.types.text)
-    settings.create_column("settings", database.types.text)
-    resticapi = FakeResticApi()
-    artifact_table = FakeArtifactsTable()
-    snapshots = resticapi.snapshots()
-    calls = []
-
-    def forget(snapshot_ids, prune=False):
-        calls.append(list(snapshot_ids))
-        snapshots[:] = [item for item in snapshots if item["id"] not in snapshot_ids]
-
-    resticapi.forget_snapshots = forget
-    resticapi.snapshots = lambda: snapshots
-    resticapi.check = lambda: calls.append("check")
-    artifact_table.update = lambda *args: (_ for _ in ()).throw(RuntimeError("agent stopped after forget"))
-    args = dict(repository_id=1, retention_id=2, job_id=7, current_operation_uuid="operation-new",
-                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
-                retentions_table=FakeTable({"id": 2, "name": "Keep one", "keep_last": 1}),
-                operations_table=FakeRunsTable(), operation_artifacts_table=artifact_table, settings_table=settings)
-    monkeypatch.setattr(retention_module, "time", lambda: 1000)
-    first = RetentionService.run(**args)
-    assert first.final_state == AgentReportState.failed
-    assert settings.find_one(name="retention_task:1:7")
+@pytest.fixture
+def settings(tmp_path):
+    database = dataset.connect(f"sqlite:///{tmp_path}/settings.db")
+    table = database["agent"]
+    table.create_column("name", database.types.text)
+    table.create_column("settings", database.types.text)
+    yield table
     database.engine.dispose()
-    reopened = dataset.connect(f"sqlite:///{tmp_path}/cleanup.db")
-    args["settings_table"] = reopened["agent"]
-    artifact_table = FakeArtifactsTable()  # Reload the pre-crash local artifact history.
-    args["operation_artifacts_table"] = artifact_table
-    monkeypatch.setattr(retention_module, "time", lambda: 2000)
-    assert RetentionService.pending_tasks(reopened["agent"])[0]["current_operation_uuid"] == "operation-new"
-    second = RetentionService.run(**args, retry=True)
-    assert second.final_state == AgentReportState.success
-    assert calls == [["snap-old"], "check"]
-    assert artifact_table.rows[1]["forgotten_at"] is not None
-    assert resticapi.calls == [{"prune": True}]
-    assert not list(reopened["agent"].all())
-    reopened.engine.dispose()
 
 
-@pytest.mark.parametrize("failed_check", ["100%", "5%", "1/10"])
-def test_failed_data_check_blocks_cleanup_until_full_recheck_passes(retention_settings, failed_check):
-    retention_settings.upsert({"name": "retention_check_failed:1", "settings": failed_check}, ["name"])
-    resticapi = FakeResticApi()
-    checked = []
-    failing = True
-
-    def check(**kwargs):
-        checked.append(kwargs)
-        if failing:
-            raise ResticError("repository data damaged")
-
-    resticapi.check = check
-    args = dict(repository_id=1, retention_id=2, job_id=7,
-                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
-                retentions_table=FakeTable({"id": 2, "name": "Keep one", "keep_last": 1}),
-                operations_table=FakeRunsTable(), operation_artifacts_table=FakeArtifactsTable(),
-                settings_table=retention_settings)
-    assert RetentionService.run(**args).final_state == AgentReportState.failed
-    assert resticapi.calls == []
-    assert retention_settings.find_one(name="retention_task:1:7")
-    failing = False
-    assert RetentionService.run(**args, retry=True).final_state == AgentReportState.success
-    assert checked == [{"read_data": True, "read_data_subset": None}] * 2
-    assert not retention_settings.find_one(name="retention_check_failed:1")
-    assert not retention_settings.find_one(name="retention_task:1:7")
+def execute(repo, backend, settings, *, policy=None, job_uuid=B, request=None, acknowledge=True):
+    report = RetentionService.run(repository_id=1, job_id=None, job_uuid=job_uuid,
+        current_operation_uuid=None, current_policy=policy, request_context=request or backend,
+        set_repository=lambda _: None, resticapi=repo, settings=settings)
+    if acknowledge:
+        backend.accept(report)
+    return report
 
 
-def test_successful_sample_cannot_clear_failed_data_check_block(monkeypatch, retention_settings):
-    monkeypatch.setattr(base_module, "agent_settings", retention_settings)
-    failing = True
-
-    def check(**kwargs):
-        if failing:
-            raise ResticError("damaged pack found in sample")
-
-    handler = base_module.BackupJobHandler(
-        agent=SimpleNamespace(resticapi=SimpleNamespace(check=check)), job={"id": 7}, repository_id=1,
-        run_options={"repository_check": {"enabled": True, "read_data": "5%"}},
-    )
-    assert handler._run_post_backup_check(AgentReport.command_report()) is False
-    assert retention_settings.find_one(name="retention_check_failed:1")["settings"] == "100%"
-    failing = False
-    for stored in ("100%", "5%", "1/10"):
-        retention_settings.upsert({"name": "retention_check_failed:1", "settings": stored}, ["name"])
-        assert handler._run_post_backup_check(AgentReport.command_report()) is True
-        assert retention_settings.find_one(name="retention_check_failed:1"), "new sample must not unblock retention"
-    handler.run_options["repository_check"]["read_data"] = "100%"
-    assert handler._run_post_backup_check(AgentReport.command_report()) is True
-    assert retention_settings.find_one(name="retention_check_failed:1") is None
+def test_deleted_job_retains_whole_runs_and_preserves_unreported_snapshots(settings):
+    repo, backend = Repo(), Backend()
+    removed = repo.add_run(backend, number=10)
+    kept = repo.add_run(backend, number=11)
+    unknown = repo.add_run(Backend(), job=B, number=12)
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == {a["snapshot_id"] for a in kept + unknown}
+    assert all(a["forgotten"] for a in removed)
+    assert repo.checks == [{"read_data": False, "read_data_subset": None}]
 
 
-@pytest.mark.parametrize("prune_pending", [False, True])
-def test_deleted_policy_retires_retry_but_preserves_prune_across_restart(monkeypatch, retention_settings, prune_pending):
-    from drastic_agent.services import retention as retention_module
+@pytest.mark.parametrize("policy,remaining", [(None, 4), ({"keep_last": 1}, 2), ({"keep_last": 2}, 4)])
+def test_existing_jobs_use_only_the_executing_jobs_policy(settings, policy, remaining):
+    repo, backend = Repo(), Backend(job_uuids=[A, B])
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    assert execute(repo, backend, settings, job_uuid=A, policy=policy).state == AgentReportState.success
+    assert len(repo.items) == remaining
 
-    monkeypatch.setattr(retention_module, "time", lambda: 1000)
-    policy = FakeTable({"id": 2, "name": "Keep one", "keep_last": 1})
-    resticapi = FakeResticApi()
-    if prune_pending:
-        resticapi.prune_error = ResticError("prune interrupted")
+
+@pytest.mark.parametrize("response", [None, {}, {"job_uuids": []}, {"success": False}])
+def test_incomplete_backend_response_never_means_all_jobs_were_deleted(settings, response):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    assert execute(repo, backend, settings, request=lambda _: response).state == AgentReportState.warning
+    assert len(repo.items) == 4 and not repo.removed
+
+
+@pytest.mark.parametrize("failure", ["forget", "prune", "result", "verification"])
+def test_other_agent_finishes_interrupted_cleanup_from_reports(settings, failure):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10, count=1100)
+    kept = repo.add_run(backend, number=11, count=1100)
+    if failure == "verification":
+        backend.check_token = "known-failure"
+    if failure in {"forget", "prune"}:
+        setattr(repo, "fail_" + failure, True)
+
+    def request(report):
+        response = backend(report)
+        if failure == "verification" and report is not None:
+            raise TimeoutError("Verification acknowledgment lost")
+        return response
+
+    result = execute(repo, backend, settings, request=request, acknowledge=failure != "result")
+    assert result.state == (AgentReportState.success if failure == "result" else AgentReportState.warning)
+    if failure == "verification":
+        assert not repo.removed
+    # The new executor has no local queue, backup history or prune marker.
+    settings.delete()
+    remaining = set(repo.items)
+    backend.default = None
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == remaining
+    backend.default = {"keep_last": 1}
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == {a["snapshot_id"] for a in kept}
+    assert repo.prune_calls == (2 if failure in {"prune", "result"} else 1)
+
+
+@pytest.mark.parametrize("damage", ["missing", "older_kept", "tags", "time"])
+def test_no_deletion_when_a_retained_run_is_missing_or_invalid(settings, damage):
+    repo, backend = Repo(), Backend()
+    if damage in {"missing", "older_kept", "tags"}:
+        older = repo.add_run(backend, number=9)
+    only = repo.add_run(backend)
+    if damage == "missing":
+        repo.items.pop(only[0]["snapshot_id"])
+    elif damage == "older_kept":
+        backend.default = {"keep_last": 2}
+        repo.items.pop(older[0]["snapshot_id"])
+    elif damage == "tags":
+        repo.items[only[0]["snapshot_id"]]["tags"] = []
     else:
-        resticapi.snapshots = lambda: (_ for _ in ()).throw(ResticError("repository offline"))
-    args = dict(repository_id=1, retention_id=2, job_id=7, current_operation_uuid="operation-new",
-                set_repository=lambda repository_id: {"location": "/repo"}, resticapi=resticapi,
-                retentions_table=policy, operations_table=FakeRunsTable(),
-                operation_artifacts_table=FakeArtifactsTable(), settings_table=retention_settings)
-    assert RetentionService.run(**args).final_state == AgentReportState.failed
-    policy.row = None  # Successful synchronization removed the deleted policy.
-    resticapi.calls.clear()
-    retired = RetentionService.run(**args, retry=True)
-    assert retired.final_state == AgentReportState.warning
-    assert retired.retention_id is None
-    assert retired.data == {"retired_policy_id": 2, "cleanup_pending": prune_pending}
-    assert resticapi.calls == [], "policy retirement must not delete anything"
-
-    reopened = dataset.connect(str(retention_settings.db.engine.url))
-    try:
-        monkeypatch.setattr(retention_module, "time", lambda: 2000)
-        tasks = RetentionService.pending_tasks(reopened["agent"])
-        if not prune_pending:
-            assert tasks == []
-            return
-        assert tasks == [{"repository_id": 1, "retention_id": None, "job_id": 7, "current_operation_uuid": "operation-new"}]
-        assert reopened["agent"].find_one(name="retention_prune:1")
-        resticapi.check = lambda: resticapi.calls.append({"check": True})
-        resticapi.snapshots = lambda: pytest.fail("prune-only retry must not select snapshots")
-        policy.find_one = lambda **kwargs: pytest.fail("deleted policy must not be retried")
-        prune_args = {**args, **tasks[0], "settings_table": reopened["agent"], "retry": True}
-        resticapi.prune_error = ResticError("repository locked")
-        assert RetentionService.run(**prune_args).final_state == AgentReportState.failed
-        assert json.loads(reopened["agent"].find_one(name="retention_task:1:7")["settings"])["args"]["retention_id"] is None
-        assert reopened["agent"].find_one(name="retention_prune:1")
-        assert RetentionService.run(**prune_args).final_state == AgentReportState.success
-        assert resticapi.calls == [{"check": True}, {"prune": True}] * 2
-        assert not list(reopened["agent"].all())
-    finally:
-        reopened.engine.dispose()
+        backend.default = {"keep_yearly": 1}
+        next(iter(backend.runs.values()))["ended"] = None
+    execute(repo, backend, settings)
+    assert not repo.removed
 
 
-def test_retention_database_error_keeps_policy_retry(retention_settings):
-    def unavailable(**kwargs):
-        raise RuntimeError("database temporarily unavailable")
-
-    report = RetentionService.run(
-        repository_id=1, retention_id=2, job_id=7, retry=True,
-        set_repository=lambda repository_id: pytest.fail("policy lookup failed"),
-        resticapi=FakeResticApi(), retentions_table=SimpleNamespace(find_one=unavailable),
-        operations_table=FakeRunsTable(), operation_artifacts_table=FakeArtifactsTable(),
-        settings_table=retention_settings,
-    )
-    assert report.final_state == AgentReportState.failed
-    assert report.retention_id == 2
-    pending = json.loads(retention_settings.find_one(name="retention_task:1:7")["settings"])
-    assert pending["args"]["retention_id"] == 2
+@pytest.mark.parametrize("finished", [False, True])
+def test_partial_runs_count_normally_but_running_backups_are_preserved(settings, finished):
+    repo, backend = Repo(), Backend()
+    backend.check_token = None
+    old = repo.add_run(backend, number=10)
+    partial = repo.add_run(backend, number=11, count=1)
+    backend.runs[str(UUID(int=11))]["finished"] = finished
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == {a["snapshot_id"] for a in (partial if finished else old + partial)}
+    if finished:
+        assert repo.checks[0]["read_data"] is False
 
 
-@pytest.mark.parametrize("month, utc_hour", [(7, 2), (1, 3)])
-def test_retention_sorts_mixed_legacy_and_utc_runs(monkeypatch, berlin_timezone, month, utc_hour):
+def test_new_check_failure_cannot_be_cleared_by_an_older_check(settings):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    repo.on_check = lambda: setattr(backend, "check_token", "new-failure")
+    assert execute(repo, backend, settings).state == AgentReportState.warning
+    assert not repo.removed and backend.check_token == "new-failure"
+    repo.on_check = None
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert [check["read_data"] for check in repo.checks] == [False, True]
+
+
+def test_lock_conflicts_defer_cleanup_without_creating_an_integrity_block(settings, monkeypatch):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+
+    def locked():
+        raise ResticFailedError("repository locked", return_code=11)
+
+    repo.on_check = locked
+    assert execute(repo, backend, settings).state == AgentReportState.warning
     agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi()
-    runs = FakeRunsTable()
-    runs.rows[0]["ended"] = f"2026-{month:02d}-10T{utc_hour:02d}:00:00+00:00"
-    runs.rows[1]["ended"] = f"2026-{month:02d}-10T03:00:00"
-    monkeypatch.setattr(agent_module, "retentions", FakeTable({"id": 2, "name": "Daily", "keep_last": 1}))
-    monkeypatch.setattr(agent_module, "agent_operations", runs)
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", FakeArtifactsTable())
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert report.final_state == AgentReportState.success
-    assert report.data["kept_operation_ids"] == [1]
-    assert report.data["pruned_operation_ids"] == [2]
-    assert report.data["forgotten_artifacts"][0]["forgotten_at"].endswith("+00:00")
-    same_hour = {"id": 3, "ended": f"2026-{month:02d}-10T04:30:00"}
-    assert RetentionService.keep_operation_ids(
-        [runs.rows[0], same_hour, runs.rows[1]], {"keep_hourly": 2},
-    ) == {1, 2}
+    agent._Agent__set_repository = lambda _: None
+    agent._Agent__resticapi = repo
+    monkeypatch.setattr(runtime_module, "agent_settings", settings)
+    assert agent.cmd_check_repository(1).data["repository_locked"]
+    assert backend.check_token is None and settings.find_one(name="retention_check_failed:1") is None
+    assert not repo.removed
+    repo.on_check = None
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert all(not check["read_data"] for check in repo.checks)
 
 
-def test_retention_never_forgets_snapshot_with_mismatched_tags(monkeypatch):
-    agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi()
-    resticapi.snapshots = lambda: [{"id": "snap-old", "tags": ["operation_uuid:other"]}]
-    artifact_table = FakeArtifactsTable()
-    monkeypatch.setattr(
-        agent_module,
-        "retentions",
-        FakeTable({"id": 2, "name": "Daily", "keep_last": 1}),
-    )
-    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", artifact_table)
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
+def test_new_jobs_after_initial_scan_are_not_orphans(settings):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    new_job = str(UUID(int=90))
+    added = []
 
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
+    def new_backup():
+        added.extend(repo.add_run(backend, job=new_job, number=91))
+        added.extend(repo.add_run(backend, job=new_job, number=92))
 
-    assert not any("snapshot_ids" in call for call in resticapi.calls)
-    assert resticapi.calls == []
-    assert artifact_table.rows[1]["forgotten_at"] is None
-    assert report.data["skipped_snapshot_ids"] == ["snap-old"]
-    assert report.final_state == AgentReportState.warning
-
-
-def test_retention_retries_prune_without_forgetting_twice(monkeypatch, retention_settings):
-    agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi()
-    resticapi.prune_error = ResticError("prune interrupted")
-    artifact_table = FakeArtifactsTable()
-    monkeypatch.setattr(
-        agent_module,
-        "retentions",
-        FakeTable({"id": 2, "name": "Daily", "keep_last": 1}),
-    )
-    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", artifact_table)
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-
-    first_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-    assert retention_settings.find_one(name="retention_prune:1")
-    # Reopen persisted state and retry from another job on the same repository.
-    restarted_db = dataset.connect(str(retention_settings.db.engine.url))
-    monkeypatch.setattr(agent_module, "agent_settings", restarted_db["agent"])
-    resticapi.calls.clear()
-    try:
-        second_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=8)
-    finally:
-        monkeypatch.setattr(agent_module, "agent_settings", retention_settings)
-        restarted_db.engine.dispose()
-
-    assert first_report.final_state == AgentReportState.failed
-    assert artifact_table.rows[1]["forgotten_at"] is not None
-    assert resticapi.calls == [{"prune": True}]
-    assert second_report.final_state == AgentReportState.success
-    assert retention_settings.find_one(name="retention_prune:1") is None
-
-    resticapi.calls.clear()
-    Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-    assert resticapi.calls == []
-
-
-def test_retention_retry_reconciles_forget_committed_before_local_update(monkeypatch, retention_settings):
-    agent = Agent.__new__(Agent)
-
-    class ForgetCommittedThenFailedResticApi(FakeResticApi):
-        def __init__(self):
-            super().__init__()
-            self.repository_snapshots = super().snapshots()
-
-        def snapshots(self):
-            return self.repository_snapshots
-
-        def forget_snapshots(self, snapshot_ids, prune=True):
-            assert retention_settings.find_one(name="retention_prune:1")
-            self.calls.append({"snapshot_ids": snapshot_ids, "prune": prune})
-            self.repository_snapshots = [
-                snapshot
-                for snapshot in self.repository_snapshots
-                if snapshot["id"] not in snapshot_ids
-            ]
-            raise ResticError("connection lost after forget committed")
-
-    resticapi = ForgetCommittedThenFailedResticApi()
-    artifact_table = FakeArtifactsTable()
-    monkeypatch.setattr(
-        agent_module,
-        "retentions",
-        FakeTable({"id": 2, "name": "Daily", "keep_last": 1}),
-    )
-    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", artifact_table)
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-
-    first_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert first_report.final_state == AgentReportState.failed
-    assert artifact_table.rows[1]["forgotten_at"] is None
-    assert resticapi.calls == [{"snapshot_ids": ["snap-old"], "prune": False}]
-
-    resticapi.calls.clear()
-    second_report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert resticapi.calls == [{"prune": True}]
-    assert artifact_table.rows[1]["forgotten_at"] is not None
-    assert second_report.data["missing_snapshot_ids"] == ["snap-old"]
-    assert second_report.final_state == AgentReportState.success
-
-
-def test_pending_prune_is_scoped_to_repository(monkeypatch, retention_settings):
-    agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi()
-    monkeypatch.setattr(agent_module, "retentions", FakeTable({"name": "Keep all", "keep_last": 2}))
-    monkeypatch.setattr(agent_module, "agent_operations", FakeRunsTable())
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", FakeArtifactsTable())
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-    retention_settings.insert({"name": "retention_prune:2", "settings": "pending"})
-
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert report.final_state == AgentReportState.success
-    assert resticapi.calls == []
-    assert retention_settings.find_one(name="retention_prune:2")
-
-
-def test_retention_forgets_tagged_successful_artifact_from_partial_failed_backup(monkeypatch):
-    agent = Agent.__new__(Agent)
-    resticapi = FakeResticApi()
-    failed_operation = {
-        "id": 3,
-        "uuid": "operation-partial",
-        "type": "backup",
-        "job_id": 7,
-        "repository_id": 1,
-        "state": "failed",
-        "ended": "2026-05-10T01:00:00",
-        "data": {"partial_failure": True},
-    }
-    runs_table = FakeRunsTable()
-    runs_table.rows.append(failed_operation)
-    artifact_table = FakeArtifactsTable()
-    artifact_table.rows.append(
-        {
-            "id": 3,
-            "uuid": "artifact-partial",
-            "operation_id": 3,
-            "snapshot_id": "snap-partial",
-            "state": "success",
-            "forgotten_at": None,
-        }
-    )
-    resticapi.snapshots = lambda: [
-        {
-            "id": "snap-partial",
-            "tags": [
-                "operation_uuid:operation-partial",
-                "artifact_uuid:artifact-partial",
-            ],
-        }
-    ]
-    monkeypatch.setattr(
-        agent_module,
-        "retentions",
-        FakeTable({"id": 2, "name": "Daily", "keep_last": 2}),
-    )
-    monkeypatch.setattr(agent_module, "agent_operations", runs_table)
-    monkeypatch.setattr(agent_module, "agent_operation_artifacts", artifact_table)
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {
-        "id": repository_id,
-        "location": "/repo",
-    }
-
-    report = Agent.cmd_run_retention(agent, repository_id=1, retention_id=2, job_id=7)
-
-    assert resticapi.calls == [
-        {"snapshot_ids": ["snap-partial"], "prune": False},
-        {"prune": True},
-    ]
-    assert artifact_table.rows[2]["forgotten_at"] is not None
-    assert failed_operation["state"] == "failed"
-    assert report.final_state == AgentReportState.success
-
-
-def test_operation_queue_is_persisted_in_database():
-    from drastic_agent.storage.database import agent_operation_queue
-
-    agent_operation_queue.delete()
-    AgentReport.pending_reports = []
-    AgentReport.finished_reports.clear()
-
-    report = AgentReport.job_report(job_id=1, repository_id=2)
-    AgentReport.save_queue()
-
-    row = agent_operation_queue.find_one(uuid=report.uuid)
-    assert row["status"] == "finished"
-
-
-def test_cmd_check_repository_stores_check_report():
-    agent = Agent.__new__(Agent)
-    AgentReport.pending_reports = []
-    AgentReport.finished_reports.clear()
-
-    class FakeResticApi:
-        def __init__(self):
-            self.calls = []
-
-        def check(self, **kwargs):
-            self.calls.append(kwargs)
-            return {"message_type": "summary", "errors": 0}
-
-    resticapi = FakeResticApi()
-    agent._Agent__resticapi = resticapi
-    agent._Agent__set_repository = lambda repository_id: {"id": repository_id, "location": "/repo"}
-
-    report = Agent.cmd_check_repository(agent, repository_id=5, read_data_subset="1/10")
-
-    assert report.type == AgentReportType.repository_check
-    assert report.repository_id == 5
-    assert report.final_state == AgentReportState.success
-    assert report.data["read_data"] == "1/10"
-    assert report.data["check"] == {"message_type": "summary", "errors": 0}
-    assert resticapi.calls == [{"read_data": False, "read_data_subset": "1/10"}]
+    repo.on_check = new_backup
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert {a["snapshot_id"] for a in added}.issubset(repo.items)

@@ -124,7 +124,7 @@ test('report filters persist in URLs and background reloads use applied filters'
   await page.applyFilters()
   assert.deepEqual(links[0].query, { group: 'other', state: 'warning', agent_id: '2', job_id: '3', ...period })
   page.showOperation(page.operations.value[0])
-  assert.equal(links[1].path, '/agents/2/operations/7')
+  assert.equal(links[1].path, '/agents/operations/7')
   assert.deepEqual(links[1].query, links[0].query)
   assert.equal(links[1].query.group, 'other')
   route.query.agent_id = '1'

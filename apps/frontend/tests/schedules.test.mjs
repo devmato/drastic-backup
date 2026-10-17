@@ -38,7 +38,7 @@ for (const timeOnly of [false, true]) {
       assert.deepEqual(Object.keys(saved).sort(), ['cron_description', 'enabled', 'timing'])
     } else {
       assert.equal(saved.repository_id, 2)
-      assert.equal(saved.retention_id, 7)
+      assert.equal(saved.retention_id, undefined)
       assert.equal(saved.config.repository_check.read_data, '100%')
       assert.equal(saved.config.retry.max_attempts, 4)
       assert.equal(saved.config.retry.delay_minutes, 20)
@@ -78,7 +78,7 @@ test('chain edits preserve schedules and allow the same job on another repositor
     ;({ editChain, save, form, newStep, jobOptions })`, {
     computed, reactive, ref, scheduleTiming, retrySettings, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
     defineProps: () => ({ agentJobs: [{ display_name: 'Agent', jobs: [{ id: 1, name: 'Files', agent_id: 1 }] }],
-      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 18 }] }),
+      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 21 }] }),
     defineEmits: () => () => {},
     useRoute: () => ({ query: {} }), useRouter: () => ({}), useQuasar: () => ({ notify: () => {} }),
     useChainStore: () => ({ saveChain: async (id, payload) => { assert.equal(id, 3); saved = payload } }),
@@ -100,6 +100,6 @@ test('chain edits preserve schedules and allow the same job on another repositor
   assert.equal(saved.schedules[1].enabled, false)
   assert.deepEqual(Object.keys(saved.schedules[0]).sort(), ['enabled', 'timing'])
   assert.deepEqual(Array.from(saved.steps, step => [step.job_id, step.repository_id, step.retention_id]),
-    [[1, 2, 7], [1, 3, 8]])
+    [[1, 2, undefined], [1, 3, undefined]])
   assert.equal(JSON.stringify(original), before)
 })

@@ -33,7 +33,7 @@ def _start(user_id, repository_id, data, *, check):
         agent=agent, repository=repository,
         operation_type=AgentOperationType.repository_check if check else AgentOperationType.repository_unlock,
         msg=f"{label} started", log_message=f"{label} queued",
-        data={"read_data": data.get("read_data_subset")} if check else None,
+        data={"read_data": data.get("read_data_subset"), "retention_check_token": repository.retention_check_token} if check else None,
     )
     if check:
         response = AgentService.check_repository(agent, repository_id=repository.id,

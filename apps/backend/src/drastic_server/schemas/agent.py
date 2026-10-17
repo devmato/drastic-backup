@@ -127,7 +127,7 @@ class AgentOperationArtifactResponseSchema(Schema):
 class AgentOperationResponseSchema(Schema):
     id = fields.Integer(required=True)
     uuid = fields.String(required=True)
-    agent_id = fields.Integer(required=True)
+    agent_id = fields.Integer(allow_none=True)
     repository_id = fields.Integer(allow_none=True)
     job_id = fields.Integer(allow_none=True)
     schedule_id = fields.Integer(allow_none=True)
@@ -159,13 +159,13 @@ class AgentOperationResponseSchema(Schema):
 
 class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
     agent_hostname = fields.String(attribute="agent.hostname", dump_default=None, allow_none=True)
-    agent_display_name = fields.String(attribute="agent.display_name", dump_default=None, allow_none=True)
+    agent_display_name = fields.String(allow_none=True)
     job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
     repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
 
 
 class AgentOperationListResponseSchema(AgentOperationResponseSchema):
-    agent_display_name = fields.String(attribute="agent.display_name", allow_none=True)
+    agent_display_name = fields.String(allow_none=True)
     job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
     repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
 

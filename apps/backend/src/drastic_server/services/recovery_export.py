@@ -87,6 +87,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 "id": user.id,
                 "name": user.name,
                 "email": user.email,
+                "default_retention_id": user.default_retention_id,
             },
             "agents": [
                 {
@@ -180,6 +181,12 @@ def _job_payload(
         },
         "type": job.type,
         "config": job.config,
+        "retention": {
+            "mode": job.retention_mode,
+            "id": job.retention_id,
+            "effective_id": job.effective_retention_id,
+            "name": retention_names.get(job.effective_retention_id),
+        },
         "actions": [
             {
                 "id": action.id,
@@ -200,14 +207,6 @@ def _job_payload(
                     "id": schedule.repository_id,
                     "name": repository_names.get(schedule.repository_id),
                 },
-                "retention": (
-                    {
-                        "id": schedule.retention_id,
-                        "name": retention_names.get(schedule.retention_id),
-                    }
-                    if schedule.retention_id is not None
-                    else None
-                ),
             }
             for schedule in schedules
         ],

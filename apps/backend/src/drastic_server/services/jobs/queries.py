@@ -31,7 +31,6 @@ def list_jobs(user_id):
     return Agent.query.options(
         selectinload(Agent.repositories),
         selectinload(Agent.jobs).selectinload(Job.schedules).selectinload(JobSchedule.repository),
-        selectinload(Agent.jobs).selectinload(Job.schedules).selectinload(JobSchedule.retention),
         selectinload(Agent.jobs).selectinload(Job.actions),
         selectinload(Agent.jobs).selectinload(Job.operations),
     ).filter(Agent.user_id == user_id).all()
@@ -41,7 +40,6 @@ def job_detail(user_id, job_id):
     return require_result(Job.query.options(
         selectinload(Job.agent).selectinload(Agent.repositories),
         selectinload(Job.schedules).selectinload(JobSchedule.repository),
-        selectinload(Job.schedules).selectinload(JobSchedule.retention),
         selectinload(Job.actions),
         selectinload(Job.operations),
     ).join(Agent).filter(Job.id == job_id, Agent.user_id == user_id))

@@ -19,6 +19,7 @@ from drastic_server.services.agent import AgentService
 from drastic_server.services.chains import (
     advance_run,
     chain_payload,
+    save_chain,
     start_chain,
     submit_pending_runs,
     tick,
@@ -30,8 +31,6 @@ NOW = datetime(2026, 10, 7, 2, 0)
 
 def test_chain_cancellation_during_retry_wait_does_not_dispatch(setup):
     _, chain, jobs, calls = setup
-    for job in jobs:
-        job.agent.protocol_version = 18
     chain.retry = {"enabled": True, "max_attempts": 3, "delay_minutes": 1}
     db.session.commit()
     run = start_chain(chain, now=NOW)
@@ -58,7 +57,7 @@ def setup(monkeypatch, tmp_path):
         db.create_all()
         user = User(name="admin")
         user.set_initial_password("account-password", recovery_key="user-recovery-key")
-        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=11) for i in range(2)]
+        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=21) for i in range(2)]
         for i, agent in enumerate(agents):
             AgentSession(agent=agent, request_sid=f"sid-{i}")
         repository = Repository(user=user, name="Storage", kind="custom", location="/backup")
@@ -68,6 +67,7 @@ def setup(monkeypatch, tmp_path):
             agent.repositories.append(repository)
         db.session.add_all([user, *agents, repository, retention, *jobs])
         db.session.flush()
+        user.default_retention_id = retention.id
         chain = BackupChain(user_id=user.id, name="Nightly", schedules=[{"enabled": True, "cron_string": "0 2 * * *"}],
                             start_timeout_minutes=1, steps=[{"job_id": job.id, "repository_id": repository.id,
                                                             "retention_id": retention.id, "config": {}} for job in jobs])
@@ -109,17 +109,15 @@ def test_serial_order_retention_and_failure_continuation_survive_sessions(setup,
         chain.steps = [chain.steps[0], {**chain.steps[0], "repository_id": repository.id, "retention_id": None}]
         db.session.commit()
     if retry_result:
-        for job in jobs:
-            job.agent.protocol_version = 18
         chain.retry = {"enabled": True, "max_attempts": 2, "delay_minutes": 1}
         db.session.commit()
     retries = retry_result in {"success", "failed"}
-    expected_targets = [(step["repository_id"], step["retention_id"]) for step in chain.steps]
+    expected_targets = [(step["repository_id"], job.effective_retention_id) for step, job in zip(chain.steps, jobs, strict=True)]
     run = start_chain(chain, now=NOW)
     run_id = run.id
     advance_run(run_id, now=NOW)
     assert len(calls) == 1
-    assert calls[0][3]["retention_id"] == chain.steps[0]["retention_id"]
+    assert "retention_id" not in calls[0][3]
     advance_run(run_id, now=NOW)
     assert len(calls) == 1
     first_uuid = calls[0][3]["operation_uuid"]
@@ -143,7 +141,8 @@ def test_serial_order_retention_and_failure_continuation_survive_sessions(setup,
         advance_run(run_id, now=NOW + timedelta(seconds=80))
     advance_run(run_id, now=NOW + timedelta(seconds=80))
     assert [call[1] for call in calls] == ([jobs[0].id] if retries else []) + [job.id for job in jobs]
-    assert [(call[2], call[3]["retention_id"]) for call in calls] == (expected_targets[:1] if retries else []) + expected_targets
+    assert [(call[2], AgentOperation.query.filter_by(uuid=call[3]["operation_uuid"]).one().retention_id)
+            for call in calls] == (expected_targets[:1] if retries else []) + expected_targets
     finish_step(db.session.get(BackupChainRun, run_id), jobs, 1)
     advance_run(run_id, now=NOW)
     advance_run(run_id, now=NOW)
@@ -184,6 +183,23 @@ def test_offline_step_times_out_then_next_agent_runs(setup):
     db.session.refresh(run)
     assert run.steps[0]["state"] == "skipped"
     assert [call[1] for call in calls] == [jobs[1].id]
+
+
+def test_old_agent_is_rejected_when_saving_and_skipped_without_waiting_at_dispatch(setup, monkeypatch):
+    _, chain, jobs, calls = setup
+    jobs[0].agent.protocol_version = 19
+    db.session.commit()
+    with pytest.raises(ValueError, match="protocol 21"):
+        save_chain(chain, chain.user_id, {"steps": chain.steps})
+    db.session.rollback()
+    synced = []
+    monkeypatch.setattr(AgentService, "sync", lambda agent, **kw: synced.append(agent.id) or {"state": AgentOperationState.success})
+    run = start_chain(chain, now=NOW)
+    advance_run(run.id, now=NOW)
+    assert run.steps[0]["state"] == "skipped" and "protocol 21" in run.steps[0]["reason"]
+    assert not calls and not synced
+    advance_run(run.id, now=NOW)
+    assert calls[0][1] == jobs[1].id
 
 
 def test_unknown_start_timeout_fences_delayed_command_before_skipping(setup, monkeypatch):
@@ -439,7 +455,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     from drastic_server.services.agent.request import AgentException, AgentRequestService
 
     app, chain, jobs, _ = setup
-    jobs[0].agent.protocol_version = 18 if retry_enabled else 12
+    jobs[0].agent.protocol_version = 21
     db.session.commit()
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
@@ -468,6 +484,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
         with pytest.raises(AgentException, match="protocol 18"):
             AgentRequestService(jobs[0].agent).sync()
         schedule.enabled = False
+        jobs[0].agent.protocol_version = 21
         db.session.commit()
         assert AgentRequestService(jobs[0].agent).sync()["schedules"] == []
         schedule.enabled = True
@@ -494,7 +511,7 @@ def test_retention_changes_sync_chain_only_and_pending_cleanup_agents(setup, mon
     from drastic_server.services.agent.request import AgentRequestService
 
     app, chain, jobs, _ = setup
-    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent")
+    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent", protocol_version=21)
     AgentSession(agent=cleanup_agent, request_sid="cleanup-sid")
     offline_agent = Agent(user_id=chain.user_id, secret="offline-agent")
     other_user = User(name="unrelated")

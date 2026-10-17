@@ -43,7 +43,7 @@ def emit_jobs_update(user_id):
 
 def emit_operation_update(operation):
     emit_ui_event(
-        operation.agent.user_id,
+        operation.user_id,
         f"operationupdate{operation.id}",
         {
             "operation_id": operation.id,

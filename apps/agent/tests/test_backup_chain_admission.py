@@ -14,12 +14,13 @@ from drastic_agent.storage.database import (
     agent_operations,
     jobs,
     repositories,
+    retentions,
 )
 
 
 @pytest.fixture
 def agent(monkeypatch):
-    tables = (agent_operation_artifacts, agent_operation_queue, agent_operations, jobs, repositories)
+    tables = (agent_operation_artifacts, agent_operation_queue, agent_operations, jobs, repositories, retentions)
     for table in tables:
         table.delete()
     AgentReport.pending_reports = []
@@ -41,6 +42,15 @@ def agent(monkeypatch):
 def request(uuid="chain-step"):
     return {"command": "run_job", "args": {"job_id": 17, "repository_id": 27, "operation_uuid": uuid,
             "run_options": {"chain_run_id": 1, "start_deadline": (datetime.now(timezone.utc) + timedelta(minutes=1)).isoformat()}}}
+
+
+def test_admission_validates_current_job_policy_not_stale_command_policy(agent):
+    jobs.update({"id": 17, "retention_id": 1}, ["id"])
+    retentions.insert({"id": 1, "name": "Current", "keep_last": 2})
+    args = {**request()["args"], "retention_id": 999}
+    assert agent._Agent__validate_run_job_admission(args) is None
+    retentions.delete(id=1)
+    assert "Retention policy 1" in agent._Agent__validate_run_job_admission(args)
 
 
 def test_duplicate_admission_before_after_completion_and_restart(agent, monkeypatch):

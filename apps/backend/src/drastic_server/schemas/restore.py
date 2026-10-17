@@ -47,7 +47,7 @@ class RestoreSnapshotsQuerySchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    job_id = fields.Integer(required=True)
+    job_id = fields.Integer(load_default=None, allow_none=True)
     agent_id = fields.Integer(required=True)
     repository_id = fields.Integer(required=True)
 
@@ -63,6 +63,14 @@ class RestoreSnapshotSchema(Schema):
 
 class RestoreSnapshotsResponseSchema(Schema):
     snapshots = fields.List(fields.Dict(keys=fields.String(), values=fields.Raw()), required=True)
+
+
+class RestorePointDeleteSchema(Schema):
+    agent_id = fields.Integer(required=True)
+    repository_id = fields.Integer(required=True)
+    snapshot_id = fields.String(required=True, validate=validate.Length(min=1))
+    snapshot_ids = fields.List(fields.String(validate=validate.Length(min=1)), required=True,
+                               validate=validate.Length(min=1, max=10000))
 
 
 class RestoreEntriesQuerySchema(Schema):
@@ -83,7 +91,7 @@ class RestoreStartInputSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
-    job_id = fields.Integer(required=True)
+    job_id = fields.Integer(load_default=None, allow_none=True)
     agent_id = fields.Integer(required=True)
     repository_id = fields.Integer(required=True)
     mode = fields.String(required=True, validate=validate.OneOf(("plain_file", "proxmox_vm", "proxmox_prepare", "proxmox_files")))
@@ -133,7 +141,8 @@ class ProxmoxRestoreInputSchema(Schema):
     action = fields.String(required=True, validate=validate.OneOf(("options", "entries", "close")))
     mode = fields.String(load_default="proxmox_vm", validate=validate.OneOf(("proxmox_vm", "proxmox_files")))
     agent_id = fields.Integer(required=True)
-    job_id = fields.Integer()
+    job_id = fields.Integer(load_default=None, allow_none=True)
+    job_uuid = fields.UUID(allow_none=True)
     repository_id = fields.Integer()
     snapshot_id = fields.String(validate=validate.Length(min=1))
     session_id = fields.UUID()
@@ -143,8 +152,10 @@ class ProxmoxRestoreInputSchema(Schema):
     @post_load
     def validate_session(self, data, **kwargs):
         if data["action"] != "options":
-            if not all(data.get(key) for key in ("job_id", "repository_id", "snapshot_id", "session_id")):
-                raise ValidationError("Job, repository, snapshot and restore session are required")
+            if data.get("job_id") is None and not data.get("job_uuid"):
+                raise ValidationError("Job identity is required for a restore session")
+            if not all(data.get(key) for key in ("repository_id", "snapshot_id", "session_id")):
+                raise ValidationError("Repository, snapshot and restore session are required")
             data["session_id"] = str(data["session_id"])
             if data["action"] == "entries" and not data.get("volume"):
                 raise ValidationError("Guest volume is required")

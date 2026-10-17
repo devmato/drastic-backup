@@ -190,6 +190,12 @@ def initialize_schema():
             """)
             agent_schema.upsert({"name": "agent", "version": 6}, ["name"])
 
+    if current < 7:
+        db["jobs"].create_column("retention_id", db.types.bigint)
+        # Old schedule selections must never execute after the policy reset.
+        db.query("UPDATE job_schedules SET retention_id = NULL")
+        agent_schema.upsert({"name": "agent", "version": 7}, ["name"])
+
 initialize_schema()
 
 schedule_runs = db["schedule_runs"]

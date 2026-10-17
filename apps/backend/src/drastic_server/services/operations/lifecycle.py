@@ -1,6 +1,6 @@
 """Persist operation transitions before publishing them or dispatching work."""
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from uuid import uuid4
 
 from drastic_server.extensions import db
@@ -15,7 +15,6 @@ from drastic_server.utils.realtime import emit_job_state, emit_operation_update
 
 DISPATCH_STATUS_KEY = "dispatch_status"
 DISPATCH_STATUS_UPDATED_AT_KEY = "dispatch_status_updated_at"
-DISPATCH_UNKNOWN_RECONCILE_AFTER = timedelta(minutes=15)
 
 
 def start_agent_operation(
@@ -39,7 +38,7 @@ def start_agent_operation(
         state=AgentOperationState.running,
         source=source,
         started=datetime.now(timezone.utc).replace(tzinfo=None),
-        data=data or {},
+        data={**(data or {}), DISPATCH_STATUS_KEY: "pending"},
     )
     db.session.add(operation)
     db.session.flush()
@@ -78,6 +77,12 @@ def agent_operation_start_response(operation, msg, *, success=True, dispatch_sta
 
 
 def unknown_agent_operation_dispatch_response(operation, msg):
+    operation = AgentOperation.query.filter_by(id=operation.id).populate_existing().with_for_update().one()
+    # Agent reports replace reservation data, including its pending/unknown flag.
+    # A late transport timeout must not overwrite that confirmation or its receipts.
+    if operation.state != AgentOperationState.running or (operation.data or {}).get(DISPATCH_STATUS_KEY) not in {"pending", "unknown"}:
+        db.session.commit()
+        return agent_operation_start_response(operation, "Operation already confirmed by agent")
     operation.data = {
         **(operation.data or {}),
         DISPATCH_STATUS_KEY: "unknown",
@@ -87,35 +92,15 @@ def unknown_agent_operation_dispatch_response(operation, msg):
     return agent_operation_start_response(operation, msg, dispatch_status="unknown")
 
 
-def reconcile_unknown_agent_operation_dispatches(*, now=None):
-    cutoff = (now or datetime.now()) - DISPATCH_UNKNOWN_RECONCILE_AFTER
-    operations = AgentOperation.query.filter(
-        AgentOperation.state == AgentOperationState.running,
-        AgentOperation.data[DISPATCH_STATUS_KEY].as_string() == "unknown",
-    ).all()
-    reconciled = 0
-    for operation in operations:
-        timestamp = (operation.data or {}).get(DISPATCH_STATUS_UPDATED_AT_KEY)
-        try:
-            dispatch_updated_at = datetime.fromisoformat(timestamp)
-            if dispatch_updated_at > cutoff:
-                continue
-        except (TypeError, ValueError):
-            continue
-
-        fail_started_agent_operation(
-            operation,
-            "Agent did not confirm operation dispatch within 15 minutes",
-        )
-        reconciled += 1
-
-    return reconciled
-
-
 def fail_started_agent_operation(operation, message):
+    operation = AgentOperation.query.filter_by(id=operation.id).populate_existing().with_for_update().one()
+    if operation.state != AgentOperationState.running or (operation.data or {}).get(DISPATCH_STATUS_KEY) not in {"pending", "unknown"}:
+        db.session.commit()
+        return
     operation.state = AgentOperationState.failed
     operation.ended = datetime.now(timezone.utc).replace(tzinfo=None)
-    next_sequence = max((log.sequence or 0 for log in operation.logs), default=0) + 1
+    logs = AgentOperationLog.query.filter_by(operation_id=operation.id).populate_existing().with_for_update().all()
+    next_sequence = max((log.sequence or 0 for log in logs), default=0) + 1
     db.session.add(
         AgentOperationLog(
             operation=operation,

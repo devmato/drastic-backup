@@ -2,10 +2,12 @@
 
 from drastic_server.extensions import db
 from drastic_server.integrations.agent import AgentService
-from drastic_server.models.job import JobAction, JobActionModuleEnum, JobSchedule
+from drastic_server.models.agent import Agent, AgentOperation
+from drastic_server.models.job import Job, JobAction, JobActionModuleEnum, JobSchedule
 from drastic_server.schemas.job import ActionCreateInputSchema
 from drastic_server.services.exceptions import ResourceConflict
 from drastic_server.services.jobs.configuration import (
+    configure_job_retention,
     create_job_instance,
     create_job_schedule,
     ensure_job_connection,
@@ -13,6 +15,7 @@ from drastic_server.services.jobs.configuration import (
     update_job_schedule,
 )
 from drastic_server.services.jobs.queries import get_action, get_agent, get_job, get_schedule
+from drastic_server.services.queries import require_result
 from drastic_server.utils.realtime import emit_job_state, emit_jobs_update
 
 
@@ -29,6 +32,7 @@ def create_job(user_id, data):
         raise ValueError("Agent is offline")
     ensure_job_connection(agent, data["type"], data.get("config"))
     job = create_job_instance(data=data, agent_id=agent.id)
+    configure_job_retention(user_id, job, data)
     db.session.add(job)
     db.session.commit()
     publish_job(job)
@@ -41,6 +45,7 @@ def update_job(user_id, job_id, data):
         raise ValueError("Agent is offline")
     ensure_job_connection(job.agent, job.type.name, data.get("config", job.config))
     update_job_instance(job=job, data=data)
+    configure_job_retention(user_id, job, data)
     db.session.commit()
     publish_job(job)
 
@@ -49,11 +54,14 @@ def delete_job(user_id, job_id):
     from drastic_server.services.chains import require_unused_chain_reference
 
     job = get_job(user_id, job_id)
-    agent = job.agent
+    agent = require_result(Agent.query.filter_by(id=job.agent_id, user_id=user_id).populate_existing().with_for_update())
+    job = require_result(Job.query.filter_by(id=job_id, agent_id=agent.id).populate_existing().with_for_update())
     try:
         require_unused_chain_reference(user_id, "job_id", job.id)
     except ValueError as exc:
         raise ResourceConflict(str(exc)) from exc
+    for operation in AgentOperation.query.filter_by(job_id=job.id).populate_existing().with_for_update().all():
+        operation.data = {**operation.data, "job_uuid": job.uuid}
     JobSchedule.query.filter(JobSchedule.job_id == job.id).delete()
     JobAction.query.filter(JobAction.job_id == job.id).delete()
     db.session.delete(job)

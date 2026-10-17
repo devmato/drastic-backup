@@ -58,7 +58,7 @@ for (const [kind, item, changes] of [
   })
 }
 
-test('TrueNAS job drafts preserve path rules and patterns on save', () => {
+test('TrueNAS job drafts preserve path rules, patterns and retention on save', () => {
   const source = readFileSync(new URL('../src/components/jobs/JobManageDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const props = { editingJob: null }
@@ -72,6 +72,7 @@ test('TrueNAS job drafts preserve path rules and patterns on save', () => {
     watch: () => {},
     useQuasar: () => ({ notify: () => assert.fail('unexpected validation error') }),
     useAgentStore: () => ({ agents: [] }),
+    useRetentionStore: () => ({ retentions: [] }),
   })
   const config = {
     paths: [{ dataset: 'tank', path: '.', group: 'dataset' }],
@@ -81,6 +82,15 @@ test('TrueNAS job drafts preserve path rules and patterns on save', () => {
   dialog.resetForm()
   dialog.submitForm()
   assert.deepEqual(JSON.parse(JSON.stringify(saved.config)), config)
+  for (const selection of ['default', 'disabled', 7]) {
+    dialog.jobForm.retention = selection
+    dialog.submitForm()
+    assert.equal(saved.retention_mode, selection === 7 ? 'custom' : selection)
+    assert.equal(saved.retention_id, selection === 7 ? 7 : null)
+    props.editingJob = { ...props.editingJob, ...saved }
+    dialog.resetForm()
+    assert.equal(dialog.jobForm.retention, selection)
+  }
   dialog.jobForm.config.paths[0].dataset = 'other'
   assert.equal(config.paths[0].dataset, 'tank')
   assert.equal(saved.config.paths[0].dataset, 'tank')
@@ -101,6 +111,7 @@ test('Proxmox job drafts preserve exclusions when editing and saving', () => {
     watch: () => {},
     useQuasar: () => ({ notify: () => assert.fail('unexpected validation error') }),
     useAgentStore: () => ({ agents: [] }),
+    useRetentionStore: () => ({ retentions: [] }),
   })
   dialog.resetForm()
   dialog.jobForm.config.exclude_guest_ids.push(102)
@@ -129,6 +140,7 @@ test('job submission validates general fields even when another section is activ
     watch: () => {},
     useQuasar: () => ({ notify: notice => notices.push(notice) }),
     useAgentStore: () => ({ agents: [] }),
+    useRetentionStore: () => ({ retentions: [] }),
   })
   for (const [type, config] of [
     ['file', { paths: [{ path: '/data', group: 'folder' }] }],
@@ -471,6 +483,7 @@ test('TrueNAS cannot submit a job whose explicit roots are all excluded', () => 
     watch: () => {},
     useQuasar: () => ({ notify: notice => notices.push(notice) }),
     useAgentStore: () => ({ agents: [] }),
+    useRetentionStore: () => ({ retentions: [] }),
   })
   Object.assign(dialog.jobForm, { name: 'NAS', type: 'truenas', config: { paths: [root('tank/data')], exclude_paths: [root('tank/data')] } })
   assert.equal(dialog.entriesConfigured.value, false)

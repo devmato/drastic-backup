@@ -2,7 +2,9 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields, validate
 
-AGENT_PROTOCOL_VERSION = 19
+AGENT_PROTOCOL_VERSION = 22
+RESTORE_POINTS_PROTOCOL = 22
+JOB_RETENTION_PROTOCOL = 21
 BACKUP_RETRY_PROTOCOL = 18
 RESTORE_METADATA_OPTIONS_PROTOCOL = 17
 PATH_INCLUDE_EXCEPTIONS_PROTOCOL = 16
@@ -12,6 +14,7 @@ DEBUG_SECTIONS = ("runtime", "logs", "threads")
 class AgentCommandName(str, enum.Enum):
     list_restore_snapshots = "list_restore_snapshots"
     list_restore_entries = "list_restore_entries"
+    delete_restore_point = "delete_restore_point"
     run_restore = "run_restore"
     cancel_restore = "cancel_restore"
     proxmox_restore = "proxmox_restore"
@@ -42,7 +45,8 @@ class AgentCommandName(str, enum.Enum):
 
 # Protocol 0 is the legacy command set, before web-based Proxmox settings.
 AGENT_COMMAND_MIN_PROTOCOL = {
-    AgentCommandName.run_job: 19,
+    AgentCommandName.run_job: JOB_RETENTION_PROTOCOL,
+    AgentCommandName.delete_restore_point: RESTORE_POINTS_PROTOCOL,
     AgentCommandName.list_restore_snapshots: 15,
     AgentCommandName.list_restore_entries: 15,
     AgentCommandName.run_restore: 15,
@@ -63,6 +67,7 @@ ASYNC_AGENT_COMMANDS = frozenset(
     {
         AgentCommandName.run_job,
         AgentCommandName.run_restore,
+        AgentCommandName.delete_restore_point,
         AgentCommandName.check_repository,
         AgentCommandName.unlock_repository,
     }

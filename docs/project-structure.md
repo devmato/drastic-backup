@@ -79,6 +79,10 @@ Important paths:
 
 `drastic_common/backup_selection.py` translates literal File/TrueNAS path rules into Restic exclusions and identifies configurations requiring include-exception support. The frontend shares browser inheritance and state feedback in `src/utils/path-selection.js`.
 
+Agent `services/retention.py` reconciles snapshots with retained backend reports and selects whole runs by count or UTC calendar buckets. Backend `services/retention.py` manages policies; `services/agent/request.py` supplies current job UUIDs, the default and owned backup results. `services/operations/reports.py` records completed cleanup and repository check state using the existing report workflow.
+
+`drastic_common/restic/snapshots.py` identifies restore-point groups from job/run tags. Backend and agent restore services use it for listing and whole-point deletion; the frontend displays groups and selects individual components for restore.
+
 `drastic_common/version.py` generates product versions and full source revisions. Packages and Docker builds preserve them in generated `build-version.txt` and `build-revision.txt` files, including when Git is unavailable at runtime.
 
 ## Release Tooling

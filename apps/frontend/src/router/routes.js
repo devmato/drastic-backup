@@ -16,6 +16,7 @@ const routes = [
       { path: '', component: () => import('pages/AgentsPage.vue') },
       { path: 'install', component: () => import('pages/AgentInstallPage.vue') },
       { path: 'operations', component: () => import('pages/AgentReportsPage.vue') },
+      { path: 'operations/:operationId', component: () => import('pages/AgentOperationDetailPage.vue') },
       { path: ':agentId', component: () => import('pages/AgentDetailPage.vue') },
       { path: ':agentId/operations', redirect: to => ({
         path: '/agents/operations', query: { ...to.query, agent_id: to.params.agentId }, hash: to.hash,

@@ -4,7 +4,7 @@
       <q-card-section class="col-auto row items-start q-col-gutter-sm q-pa-md">
         <div class="col">
           <div class="text-h6">Restore {{ job?.name }}</div>
-          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">{{ job?.type === 'proxmox' ? 'Restore a VM or export files from its backup.' : 'Restore selected files or directories to a local path on the target agent.' }}</div>
+          <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Browse, restore or delete backup points in an assigned repository, including backups without a Drastic job.</div>
         </div>
       </q-card-section>
 
@@ -35,14 +35,13 @@
                 <div class="q-gutter-sm">
                   <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
                   <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
-                  <q-select v-if="modeOptions.length > 1" outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
                   <q-select
                     :dense="!$q.platform.has.touch" hide-bottom-space
                     outlined
                     lazy-rules="ondemand"
-                    v-model="selectedSnapshotId"
-                    :options="snapshotOptions"
-                    label="Snapshot"
+                    v-model="selectedPointId"
+                    :options="pointOptions"
+                    label="Restore point"
                     emit-value
                     map-options
                     :loading="loadingSnapshots"
@@ -53,11 +52,18 @@
                       <q-btn flat dense round icon="refresh" aria-label="Reload snapshots" :disable="!canLoadSnapshots || loadingSnapshots || submitting" @click.stop="loadSnapshots">
                         <q-tooltip>Reload snapshots</q-tooltip>
                       </q-btn>
+                      <q-btn flat dense round icon="delete" color="negative" aria-label="Delete restore point"
+                        :disable="!selectedPoint || !supportsRestorePoints || loadingSnapshots || submitting" @click.stop="confirmDeletePoint">
+                        <q-tooltip>{{ supportsRestorePoints ? 'Delete this restore point and all its snapshots' : 'Update the agent to delete restore points (protocol 22)' }}</q-tooltip>
+                      </q-btn>
                     </template>
                     <template v-slot:no-option>
                       <q-item><q-item-section>No compatible snapshots found.</q-item-section></q-item>
                     </template>
                   </q-select>
+                  <q-select v-if="selectedPoint?.snapshots.length > 1" outlined :dense="!$q.platform.has.touch" hide-bottom-space
+                    v-model="selectedSnapshotId" :options="componentOptions" label="Backup component" emit-value map-options :disable="submitting" />
+                  <q-select v-if="modeOptions.length > 1" outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedMode" :options="modeOptions" label="Restore mode" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
                 </div>
               </div>
 
@@ -150,6 +156,7 @@ import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 
 const props = defineProps({
   job: { type: Object, default: null },
+  agentId: { type: Number, default: null },
   agents: { type: Array, default: () => [] },
   repositories: { type: Array, default: () => [] },
 })
@@ -186,12 +193,14 @@ const agentOptions = computed(() => props.agents.filter(agent => agent.online).m
 const assignedRepositories = computed(() => props.agents.find(agent => agent.id === selectedAgentId.value)?.repositories || props.repositories)
 const repositoryOptions = computed(() => assignedRepositories.value.map(repo => ({ label: `${repo.name} (${repo.location})`, value: repo.id })))
 const modeOptions = computed(() => [
-  ...(props.job?.type === 'proxmox' ? [{ label: 'Whole VM', value: 'proxmox_vm' }, { label: 'Files from VM', value: 'proxmox_files' }] : []),
-  { label: props.job?.type === 'proxmox' ? 'Archive files' : 'Plain file restore', value: 'plain_file' },
+  ...(selectedSnapshot.value?.proxmox_archive && !selectedSnapshot.value?.restore_error ? [{ label: 'Whole VM', value: 'proxmox_vm' }, { label: 'Files from VM', value: 'proxmox_files' }] : []),
+  { label: selectedSnapshot.value?.proxmox_archive ? 'Archive files' : 'Plain file restore', value: 'plain_file' },
 ])
+const selectedSnapshot = computed(() => snapshots.value.find(snapshot => snapshot.id === selectedSnapshotId.value))
 const isProxmoxMode = computed(() => selectedMode.value !== 'plain_file')
 const isFileMode = computed(() => selectedMode.value !== 'proxmox_vm')
 const supportsRestoreMetadataOptions = computed(() => (props.agents.find(agent => agent.id === selectedAgentId.value)?.protocol_version || 0) >= 17)
+const supportsRestorePoints = computed(() => (props.agents.find(agent => agent.id === selectedAgentId.value)?.protocol_version || 0) >= 22)
 const proxmoxSection = computed(() => isFileMode.value ? 'selection' : 'target')
 const sections = computed(() => [
   { name: 'source', label: 'Source', icon: 'backup' },
@@ -201,14 +210,38 @@ const sections = computed(() => [
 const activeSectionIndex = computed(() => sections.value.findIndex(section => section.name === activeSection.value))
 const previousSection = computed(() => sections.value[activeSectionIndex.value - 1])
 const nextSection = computed(() => sections.value[activeSectionIndex.value + 1])
-const restoreSource = computed(() => ({ job_id: props.job?.id, agent_id: selectedAgentId.value, repository_id: selectedRepositoryId.value, snapshot_id: selectedSnapshotId.value }))
+const restoreSource = computed(() => ({ job_id: props.job?.id,
+  job_uuid: selectedSnapshot.value?.tags?.find(tag => tag.startsWith('job_uuid:'))?.slice(9),
+  agent_id: selectedAgentId.value, repository_id: selectedRepositoryId.value, snapshot_id: selectedSnapshotId.value }))
 const sourceKey = computed(() => `${JSON.stringify(restoreSource.value)}:${selectedMode.value}`)
-const canLoadSnapshots = computed(() => Boolean(props.job?.id && selectedAgentId.value && selectedRepositoryId.value))
-const snapshotOptions = computed(() => snapshots.value.filter(snapshot => !isProxmoxMode.value || (snapshot.proxmox_archive && !snapshot.restore_error)).map(snapshot => ({ label: snapshotLabel(snapshot), value: snapshot.id })))
+const canLoadSnapshots = computed(() => Boolean(selectedAgentId.value && selectedRepositoryId.value))
+const restorePoints = computed(() => {
+  const groups = new Map()
+  for (const snapshot of snapshots.value) {
+    const id = snapshot.restore_point_id || snapshot.id
+    if (!groups.has(id)) groups.set(id, { id, snapshots: [] })
+    groups.get(id).snapshots.push(snapshot)
+  }
+  return [...groups.values()]
+})
+const selectedPoint = computed(() => restorePoints.value.find(point => point.snapshots.some(snapshot => snapshot.id === selectedSnapshotId.value)))
+const selectedPointId = computed({
+  get: () => selectedPoint.value?.id,
+  set: id => { selectedSnapshotId.value = restorePoints.value.find(point => point.id === id)?.snapshots[0]?.id || null },
+})
+const pointOptions = computed(() => restorePoints.value.map(point => {
+  const snapshot = point.snapshots[0]
+  const label = String(point.id).startsWith('run:')
+    ? `${snapshot.job_name || 'Backup run'} — ${snapshot.time ? new Date(snapshot.time).toLocaleString() : 'unknown time'} — ${point.snapshots.length} component(s) — ${String(point.id).slice(-8)}`
+    : snapshotLabel(snapshot)
+  return { value: point.id, label }
+}))
+const componentOptions = computed(() => (selectedPoint.value?.snapshots || []).map(snapshot => ({ value: snapshot.id, label: snapshotLabel(snapshot) })))
 const sourceReady = computed(() => canLoadSnapshots.value && !loadingSnapshots.value
   && agentOptions.value.some(agent => agent.value === selectedAgentId.value)
   && repositoryOptions.value.some(repository => repository.value === selectedRepositoryId.value)
-  && snapshotOptions.value.some(snapshot => snapshot.value === selectedSnapshotId.value))
+  && Boolean(selectedSnapshot.value)
+  && modeOptions.value.some(mode => mode.value === selectedMode.value))
 const selectionReady = computed(() => !isFileMode.value || (selectedMode.value === 'proxmox_files'
   ? Boolean(proxmoxSelection.value.session_id && proxmoxSelection.value.volume && proxmoxSelection.value.include_paths?.length) && !proxmoxPanel.value?.busy
   : includePaths.value.length > 0))
@@ -225,6 +258,31 @@ function canOpenSection(name) {
   return name === 'source' || (sourceReady.value && (name === 'selection' || selectionReady.value))
 }
 
+function confirmDeletePoint() {
+  if (!selectedPoint.value || !supportsRestorePoints.value || submitting.value) return
+  const point = selectedPoint.value
+  const agentId = selectedAgentId.value, repositoryId = selectedRepositoryId.value
+  $q.dialog({ title: 'Delete restore point',
+    message: `Permanently delete ${pointOptions.value.find(option => option.value === point.id)?.label}? This removes all ${point.snapshots.length} snapshot(s) in this restore point. It cannot be undone.`,
+    cancel: true, ok: { label: 'Delete', color: 'negative', noCaps: true },
+  }).onOk(async () => {
+    if (submitting.value || !dialogVisible.value || agentId !== selectedAgentId.value
+      || repositoryId !== selectedRepositoryId.value || point.id !== selectedPoint.value?.id) return
+    submitting.value = true
+    try {
+      const result = await restoreStore.deleteRestorePoint({ agentId, repositoryId,
+        snapshotId: point.snapshots[0].id, snapshotIds: point.snapshots.map(snapshot => snapshot.id) })
+      // Use the existing operation page for progress, dispatch uncertainty and partial failures.
+      emit('started', { ...result, agent_id: agentId })
+      dialogVisible.value = false
+    } catch (e) {
+      if (!shouldIgnoreApiError(e)) $q.notify({ message: getApiErrorMessage(e), color: 'negative' })
+    } finally {
+      submitting.value = false
+    }
+  })
+}
+
 function onFormSubmit() {
   if (submitting.value) return
   if (nextSection.value) {
@@ -238,7 +296,7 @@ function resetDialog() {
   activeSection.value = 'source'
   restoreForm.value?.resetValidation()
   loadingSnapshots.value = false
-  selectedAgentId.value = props.agents.find(agent => agent.id === props.job?.agent_id && agent.online)?.id || props.agents.find(agent => agent.online)?.id || null
+  selectedAgentId.value = props.agents.find(agent => agent.id === (props.agentId || props.job?.agent_id) && agent.online)?.id || props.agents.find(agent => agent.online)?.id || null
   selectedRepositoryId.value = assignedRepositories.value[0]?.id || null
   selectedMode.value = props.job?.type === 'proxmox' ? 'proxmox_vm' : 'plain_file'
   selectedSnapshotId.value = null
@@ -260,10 +318,10 @@ async function loadSnapshots() {
   restoreForm.value?.resetValidation()
   loadingSnapshots.value = true
   try {
-    const result = await restoreStore.getSnapshots({ jobId: props.job.id, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
+    const result = await restoreStore.getSnapshots({ jobId: props.job?.id, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
     if (request !== snapshotsRequest || !dialogVisible.value) return
     snapshots.value = result
-    selectedSnapshotId.value = snapshotOptions.value[0]?.value || null
+    selectedSnapshotId.value = snapshots.value[0]?.id || null
   } catch (e) {
     if (request !== snapshotsRequest) return
     snapshots.value = []
@@ -299,7 +357,7 @@ async function submitRestore() {
         ? { ownership_by_name: ownershipByName.value, skip_xattrs: skipXattrs.value } : {}),
     })
     proxmoxPanel.value?.handOff()
-    emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job.id })
+    emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job?.id || null })
     dialogVisible.value = false
   } catch (e) {
     if (shouldIgnoreApiError(e)) return
@@ -315,7 +373,8 @@ function snapshotLabel(snapshot) {
   const vmid = snapshot.tags?.find(tag => tag.startsWith('vmid:'))?.slice(5)
   const guest = vmid ? `VM ${vmid}${snapshot.guest_name ? ` (${snapshot.guest_name})` : ''} — ` : ''
   const dataset = snapshot.tags?.find(tag => tag.startsWith('dataset:'))?.slice(8)
-  return `${dataset ? `${dataset} — ` : guest}${time} — ${id}`
+  const paths = !guest && !dataset ? (snapshot.paths || []).join(', ') : ''
+  return `${dataset ? `${dataset} — ` : guest}${paths ? `${paths} — ` : ''}${time} — ${id}`
 }
 
 watch(dialogVisible, value => {
@@ -334,7 +393,10 @@ watch(sourceKey, () => {
 watch(selectedMode, () => {
   ownershipByName.value = false
   skipXattrs.value = false
-  selectedSnapshotId.value = snapshotOptions.value[0]?.value || null
+})
+
+watch(selectedSnapshotId, () => {
+  selectedMode.value = selectedSnapshot.value?.proxmox_archive && !selectedSnapshot.value?.restore_error ? 'proxmox_vm' : 'plain_file'
 })
 
 watch(selectedAgentId, () => {

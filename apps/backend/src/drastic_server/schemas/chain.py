@@ -13,7 +13,6 @@ class ChainStepInputSchema(Schema):
 
     job_id = fields.Integer(required=True, strict=True, validate=validate.Range(min=1))
     repository_id = fields.Integer(required=True, strict=True, validate=validate.Range(min=1))
-    retention_id = fields.Integer(load_default=None, allow_none=True, strict=True, validate=validate.Range(min=1))
     config = fields.Nested(ScheduleConfigSchema, load_default=dict)
 
 

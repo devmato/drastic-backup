@@ -94,7 +94,7 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         )
         agent.repositories.append(repository)
         retention = Retention(user=user, name="Daily", keep_last=5, keep_weekly=2)
-        job = Job(agent=agent, name="Files <nightly>", type=AgentJobType.file)
+        job = Job(agent=agent, name="Files <nightly>", type=AgentJobType.file, retention=retention, retention_mode="custom")
         job.config = {"paths": [{"path": "/srv/<important>", "group": "folder"}]}
         action = JobAction(
             job=job,
@@ -105,7 +105,6 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app):
         schedule = JobSchedule(
             job=job,
             repository=repository,
-            retention=retention,
             enabled=True,
             advanced=True,
             cron_string="15 2 * * 1",

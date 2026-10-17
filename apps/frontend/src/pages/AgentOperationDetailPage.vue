@@ -4,7 +4,7 @@
       <template #breadcrumbs>
         <q-breadcrumbs>
           <q-breadcrumbs-el label="Agents" icon="desktop_windows" to="/agents" />
-          <q-breadcrumbs-el :label="agentDisplayName" :to="`/agents/${route.params.agentId}`" />
+          <q-breadcrumbs-el :label="agentDisplayName" :to="agentId ? `/agents/${agentId}` : undefined" />
           <q-breadcrumbs-el label="Operations" :to="operationListRoute" />
           <q-breadcrumbs-el :label="`Operation #${route.params.operationId}`" />
         </q-breadcrumbs>
@@ -243,8 +243,9 @@ async function cancelOperation(operationId) {
 }
 
 const operation = ref(null)
-const agentDisplayName = computed(() => agentStore.agents.find(agent => String(agent.id) === String(route.params.agentId))?.display_name
-  || operation.value?.agent_display_name || `Agent #${route.params.agentId}`)
+const agentId = computed(() => operation.value ? operation.value.agent_id : route.params.agentId)
+const agentDisplayName = computed(() => agentStore.agents.find(agent => String(agent.id) === String(agentId.value))?.display_name
+  || operation.value?.agent_display_name || 'Agent')
 const loading = ref(false)
 const logFilter = ref('')
 const logPagination = ref({ rowsPerPage: 0, sortBy: 'time', descending: false })
@@ -316,6 +317,7 @@ const backupProgress = computed(() => operationData.value.backup_progress)
 const isBackupOperation = computed(() => operation.value?.type === 'backup')
 const isRestoreOperation = computed(() => operation.value?.type === 'restore')
 const canCancelOperation = computed(() => operation.value?.state === 'running'
+  && Boolean(operation.value.agent_id)
   && (isRestoreOperation.value || isBackupOperation.value && Boolean(operation.value.job_id)))
 const bytesProcessed = computed(() => numberOrNull(operationData.value.bytes_processed))
 const bytesTotal = computed(() => {
@@ -534,7 +536,8 @@ const summaryColumns = computed(() => {
       ...(current.repository_id ? [{ label: 'Repository', value: current.repository_name || `#${current.repository_id}` }] : []),
     ],
     [
-      { label: 'Device', value: agentDisplayName.value, to: { path: '/agents/operations', query: { ...operationFilters(route.query), agent_id: String(route.params.agentId) } } },
+      { label: 'Device', value: agentDisplayName.value, to: agentId.value
+        ? { path: '/agents/operations', query: { ...operationFilters(route.query), agent_id: String(agentId.value) } } : undefined },
       ...metricCards.value,
     ],
   ]
@@ -689,7 +692,7 @@ function cleanupOperationSocketListener() {
 }
 
 async function syncOperationSocketListener() {
-  if (!operation.value || operation.value.state !== 'running') {
+  if (!operation.value?.agent_id || operation.value.state !== 'running') {
     cleanupOperationSocketListener()
     return
   }

@@ -13,28 +13,30 @@ function createRestoreDialog(type = 'file', protocol = 17) {
     { id: 4, display_name: 'Other agent', online: true, repositories: [repository] },
   ], repositories: [repository] }
   const requests = []
+  let confirm
+  const visible = ref(true)
   const dialog = runInNewContext(`${source}\n;({ resetDialog, snapshots, selectedSnapshotId, activeSection,
     sections, canGoNext, onFormSubmit, submitRestore, selectedAgentId, selectedMode, includePaths,
     overwritePolicy, overwriteConfirmed, proxmoxSelection, proxmoxPanel, advancedOpen,
-    ownershipByName, skipXattrs, supportsRestoreMetadataOptions })`, {
+    ownershipByName, skipXattrs, supportsRestoreMetadataOptions, selectedPointId, restorePoints, confirmDeletePoint })`, {
     computed, ref, watch: () => {}, defineProps: () => props,
-    defineModel: () => ref(false), defineEmits: () => () => {}, defineOptions: () => {},
-    useQuasar: () => ({ notify: () => {} }),
-    useRestoreStore: () => ({}),
+    defineModel: () => visible, defineEmits: () => () => {}, defineOptions: () => {},
+    useQuasar: () => ({ notify: () => {}, dialog: () => ({ onOk: callback => { confirm = callback } }) }),
+    useRestoreStore: () => ({ deleteRestorePoint: async data => { requests.push(data); return { operation_id: 6 } } }),
     useOperationStore: () => ({ startRestore: async data => { requests.push(data); return { operation_id: 5 } } }),
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
   })
   dialog.resetDialog()
   dialog.snapshots.value = [{ id: 'snapshot', proxmox_archive: true }]
   dialog.selectedSnapshotId.value = 'snapshot'
-  return { dialog, requests }
+  return { dialog, requests, confirm: () => confirm(), visible }
 }
 
-test('Proxmox restore selection hides unsupported snapshots while archive restore keeps them', () => {
+test('repository restore derives supported modes from each snapshot without a live job', () => {
   const source = readFileSync(new URL('../src/components/restore/RestoreDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const dialog = runInNewContext(`${source}\n;({ snapshots, selectedMode, snapshotOptions })`, {
-    computed, ref, defineProps: () => ({ job: { type: 'proxmox' }, agents: [], repositories: [] }),
+  const dialog = runInNewContext(`${source}\n;({ snapshots, selectedSnapshotId, modeOptions })`, {
+    computed, ref, defineProps: () => ({ job: null, agents: [], repositories: [] }),
     defineModel: () => ref(false), defineEmits: () => () => {}, defineOptions: () => {},
     useQuasar: () => ({}), useRestoreStore: () => ({}), useOperationStore: () => ({}), watch: () => {},
   })
@@ -43,12 +45,34 @@ test('Proxmox restore selection hides unsupported snapshots while archive restor
     { id: 'legacy-vma', proxmox_archive: false }, { id: 'manifest', proxmox_archive: false },
     { id: 'failed', proxmox_archive: true, restore_error: 'Backup failed' },
   ]
-  for (const mode of ['proxmox_vm', 'proxmox_files']) {
-    dialog.selectedMode.value = mode
-    assert.deepEqual([...dialog.snapshotOptions.value].map(snapshot => snapshot.value), ['tar', 'native'])
+  for (const id of ['tar', 'native', 'legacy-vma', 'manifest', 'failed']) {
+    dialog.selectedSnapshotId.value = id
+    assert.deepEqual([...dialog.modeOptions.value].map(mode => mode.value), ['tar', 'native'].includes(id)
+      ? ['proxmox_vm', 'proxmox_files', 'plain_file'] : ['plain_file'])
   }
-  dialog.selectedMode.value = 'plain_file'
-  assert.equal(dialog.snapshotOptions.value.length, 5)
+})
+
+test('restore points group run components and deletion confirms exactly that group', async () => {
+  const { dialog, requests, confirm, visible } = createRestoreDialog('proxmox', 22)
+  dialog.snapshots.value = [
+    { id: 'a', restore_point_id: 'run:job:operation', proxmox_archive: true },
+    { id: 'b', restore_point_id: 'run:job:operation', proxmox_archive: true },
+    { id: 'foreign', restore_point_id: 'snapshot:foreign' },
+  ]
+  dialog.selectedPointId.value = 'run:job:operation'
+  assert.equal(dialog.restorePoints.value.length, 2)
+  assert.equal(dialog.selectedSnapshotId.value, 'a')
+  dialog.selectedSnapshotId.value = 'b'
+  dialog.confirmDeletePoint()
+  assert.equal(requests.length, 0)
+  dialog.selectedPointId.value = 'snapshot:foreign'
+  await confirm()
+  assert.equal(requests.length, 0, 'stale confirmation must not delete another selection')
+  dialog.selectedPointId.value = 'run:job:operation'
+  dialog.confirmDeletePoint()
+  await confirm()
+  assert.deepEqual([...requests[0].snapshotIds], ['a', 'b'])
+  assert.equal(visible.value, false, 'progress is handed to the existing operation view')
 })
 
 test('file-browser preparation shows terminal failures and resets status on retry', async () => {

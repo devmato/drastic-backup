@@ -365,6 +365,7 @@ class ResticApi:
                 raise ResticFailedError(
                     f"Restic failed with exit code {return_code}: {stderr_output}",
                     snapshot_id=status.get("snapshot_id") if isinstance(status, dict) else None,
+                    return_code=return_code,
                 )
 
         except FileNotFoundError as err:
@@ -602,6 +603,7 @@ class ResticApi:
                 raise ResticFailedError(
                     f"Restic failed with exit code {return_code}: {stderr_output}",
                     snapshot_id=snapshot_id,
+                    return_code=return_code,
                 )
 
             if producer_return_code != 0:

@@ -13,6 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
     BACKUP_RETRY_PROTOCOL,
+    JOB_RETENTION_PROTOCOL,
     AgentCommandName,
 )
 from drastic_common.backup_retry import BackupRetrySchema, retry_allowed
@@ -28,7 +29,6 @@ from drastic_server.models.agent import (
 from drastic_server.models.chain import BackupChain, BackupChainRun
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
-from drastic_server.models.retention import Retention
 from drastic_server.services.agent import (
     AgentService,
     is_agent_conflict_response,
@@ -40,11 +40,10 @@ from drastic_server.services.jobs.configuration import (
     ensure_job_connection,
     normalize_schedule_config,
     schedule_trigger,
-    validate_retention,
 )
 from drastic_server.services.queries import require_result
 
-CHAIN_PROTOCOL = 11
+CHAIN_PROTOCOL = JOB_RETENTION_PROTOCOL
 CHAIN_DISPATCH_WORKERS = 4
 TERMINAL_STEPS = {"success", "warning", "failed", "cancelled", "skipped"}
 
@@ -109,10 +108,9 @@ def save_chain(chain, user_id, data):
         if retry["enabled"] and (job.agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL:
             raise ValueError(f"Update agent {job.agent.display_name} for backup retries (protocol {BACKUP_RETRY_PROTOCOL})")
         assign_agent_repository(user_id, job.agent, step["repository_id"], data.get("recovery_key"))
-        validate_retention(user_id, step["retention_id"])
         config = normalize_schedule_config(step.get("config"))
         config.pop("retry", None)  # Chain policy is the only retry policy for its steps.
-        steps.append({**step, "config": config})
+        steps.append({"job_id": job.id, "repository_id": step["repository_id"], "config": config})
     chain.user_id = user_id
     chain.name = data["name"].strip()
     chain.schedules = [schedule_trigger(schedule) for schedule in data["schedules"]]
@@ -129,12 +127,10 @@ def describe_steps(steps):
     for step in steps:
         job = db.session.get(Job, step["job_id"])
         repository = db.session.get(Repository, step["repository_id"])
-        retention = db.session.get(Retention, step["retention_id"]) if step.get("retention_id") else None
         result.append({**step, "job_name": job.name if job else "Deleted job",
                        "agent_id": job.agent_id if job else None,
                        "agent_name": job.agent.display_name if job else "Deleted agent",
-                       "repository_name": repository.name if repository else "Deleted repository",
-                       "retention_name": retention.name if retention else None})
+                       "repository_name": repository.name if repository else "Deleted repository"})
     return result
 
 
@@ -332,10 +328,6 @@ def advance_run(run_id, *, now=None):
             ensure_job_connection(agent, job.type.name, job.config)
             if not any(item.id == repository.id for item in agent.repositories):
                 raise ValueError("Repository is no longer assigned to agent")
-            if step.get("retention_id"):
-                retention = db.session.get(Retention, step["retention_id"])
-                if not retention or retention.user_id != user_id:
-                    raise ValueError("Retention policy no longer available")
         except ValueError as exc:
             if step["state"] == "dispatching" and not _fence_start(agent, step):
                 return
@@ -355,7 +347,7 @@ def advance_run(run_id, *, now=None):
         operation = AgentOperation.query.filter_by(uuid=step["operation_uuid"]).first()
         if not operation:
             operation = AgentOperation(uuid=step["operation_uuid"], agent=agent, job=job, repository=repository,
-                                       retention_id=step.get("retention_id"), type=AgentOperationType.backup,
+                                       retention_id=job.effective_retention_id, type=AgentOperationType.backup,
                                        source=AgentOperationSource.triggered, state=AgentOperationState.running,
                                        started=now, data={"chain_run_id": run.id})
             db.session.add(operation)
@@ -363,7 +355,7 @@ def advance_run(run_id, *, now=None):
         was_uncertain = step["state"] == "dispatching"
         step.update(state="dispatching", operation_id=operation.id, reason="Waiting for start confirmation")
         _save_progress(run_id, token, steps)  # Commit intent before sending, including the UUID.
-        response = AgentService.run_job(agent, job.id, repository.id, retention_id=step.get("retention_id"),
+        response = AgentService.run_job(agent, job.id, repository.id,
                                         operation_uuid=step["operation_uuid"],
                                         run_options={**step["config"], "chain_run_id": run.id, "start_deadline": step["start_deadline"],
                                                      "retry": step.get("retry") or {}, "attempt": step.get("attempt", 1)})

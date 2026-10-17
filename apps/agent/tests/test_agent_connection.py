@@ -775,7 +775,7 @@ def test_run_due_schedules_starts_each_matching_schedule_once_per_minute(monkeyp
     monkeypatch.setattr(
         agent,
         "cmd_run_job",
-        lambda job_id, repository_id, retention_id=None, run_options=None: started_jobs.append(
+        lambda job_id, repository_id, run_options=None: started_jobs.append(
             (job_id, repository_id)
         ),
     )

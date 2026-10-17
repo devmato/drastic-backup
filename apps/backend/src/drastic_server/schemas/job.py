@@ -46,11 +46,9 @@ class JobScheduleResponseSchema(Schema):
     cron_description = fields.String(attribute="cron_description", required=True)
     timing = fields.Dict(attribute="timing")
     repository_id = fields.Integer(required=True)
-    retention_id = fields.Integer(allow_none=True)
     config = fields.Method("get_config")
     repository_name = fields.Method("get_repository_name")
     repository_location = fields.Method("get_repository_location")
-    retention_name = fields.Method("get_retention_name")
 
     def get_repository_name(self, obj):
         return obj.repository.name if obj.repository else None
@@ -60,9 +58,6 @@ class JobScheduleResponseSchema(Schema):
 
     def get_repository_location(self, obj):
         return obj.repository.public_location if obj.repository else None
-
-    def get_retention_name(self, obj):
-        return obj.retention.name if obj.retention else None
 
 
 class JobActionResponseSchema(Schema):
@@ -90,6 +85,9 @@ class JobLastOperationSchema(Schema):
 
 
 class JobResponseSchema(Schema):
+    retention_mode = fields.String()
+    retention_id = fields.Integer(allow_none=True)
+    effective_retention_id = fields.Integer(allow_none=True)
     id = fields.Integer(required=True)
     uuid = fields.String(required=True)
     name = fields.String(required=True)
@@ -147,7 +145,7 @@ class JobResponseSchema(Schema):
                                         "position": index + 1, "step_count": len(chain.steps),
                                         "schedules": describe_schedules(chain.schedules),
                                         "previous_job_name": previous_job.name if previous_job else None,
-                                        "repository_id": step["repository_id"], "retention_id": step.get("retention_id")})
+                                        "repository_id": step["repository_id"]})
         return memberships
 
 
@@ -178,6 +176,8 @@ class JobCreateInputSchema(Schema):
     name = fields.String(required=True, validate=validate.Length(min=1))
     type = fields.String(required=True, validate=validate.OneOf(_JOB_TYPE_NAMES))
     config = fields.Dict(required=True)
+    retention_mode = fields.String(load_default="default", validate=validate.OneOf(("default", "disabled", "custom")))
+    retention_id = fields.Integer(allow_none=True, load_default=None)
 
     @validates_schema
     def validate_config(self, data, **kwargs):
@@ -201,6 +201,8 @@ class JobUpdateInputSchema(Schema):
 
     name = fields.String(validate=validate.Length(min=1))
     config = fields.Dict()
+    retention_mode = fields.String(validate=validate.OneOf(("default", "disabled", "custom")))
+    retention_id = fields.Integer(allow_none=True)
 
 
 class JobOperationRunInputSchema(Schema):
@@ -221,7 +223,6 @@ class JobOperationRunInputSchema(Schema):
 
 class ScheduleCreateInputSchema(ScheduleTriggerSchema):
     repository_id = fields.Integer(required=True)
-    retention_id = fields.Integer(allow_none=True, load_default=None)
     recovery_key = fields.String(load_default=None, allow_none=True)
     config = fields.Nested(ScheduleConfigSchema, load_default=lambda: ScheduleConfigSchema().load({}))
 

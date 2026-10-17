@@ -84,6 +84,7 @@ class _ConfiguredRetentions:
 class _SuccessfulReport:
     state = AgentReportState.success
     log_list = ["retention ok"]
+    data = {"cleanup_pending": False}
 
 
 class _CheckingResticApi:
@@ -118,6 +119,10 @@ class _CheckingAgent:
     @staticmethod
     def execute_actions(report, actions):
         return None
+
+    @staticmethod
+    def cmd_run_retention(**kwargs):
+        return _SuccessfulReport()
 
 
 class BackupJobHandlerTests(unittest.TestCase):
@@ -192,7 +197,8 @@ def test_job_registry_forwards_server_operation_uuid():
     assert handler.operation_uuid == "server-operation-uuid"
 
 
-def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
+@pytest.mark.parametrize("own_retention", [False, True])
+def test_post_backup_check_runs_before_retention_and_stats(monkeypatch, own_retention):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     monkeypatch.setattr(base_module, "actions", _FakeActions())
@@ -203,13 +209,13 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
         {
             "id": 1,
             "uuid": "job-uuid-1",
+            "retention_id": 3 if own_retention else None,
         },
         repository_id=2,
-        retention_id=3,
         run_options={"repository_check": {"enabled": True, "read_data": "1/10"}},
     )
 
-    phases = []
+    phases, targets = [], []
 
     def record_phase(expected):
         assert handler.report.state == AgentReportState.running
@@ -224,6 +230,7 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
 
     def retention(**kwargs):
         record_phase("retention")
+        targets.append((kwargs["job_id"], kwargs["repository_id"]))
         return _SuccessfulReport()
 
     def stats(**kwargs):
@@ -236,6 +243,7 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
     report = handler.run()
 
     assert phases == ["check", "retention", "statistics"]
+    assert targets == [(1, 2)]
     assert report.final_state == AgentReportState.success
     assert resticapi.check_calls == [{"read_data": False, "read_data_subset": "1/10"}]
     assert report.data["check"] == {"message_type": "summary", "errors": 0}
@@ -244,7 +252,8 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch):
     assert list(AgentReport.finished_reports) == [report]
 
 
-def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
+@pytest.mark.parametrize("locked", [False, True])
+def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch, locked):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     hook_calls = []
@@ -268,20 +277,21 @@ def test_post_backup_check_failure_warns_after_successful_backup(monkeypatch):
 
     monkeypatch.setattr(base_module, "actions", HookActions())
     monkeypatch.setattr(base_module, "retentions", _ConfiguredRetentions())
-    resticapi = _CheckingResticApi(check_error=ResticError("check failed"))
+    resticapi = _CheckingResticApi(check_error=ResticFailedError("check failed", return_code=11 if locked else 1))
 
     handler = _Handler(
         CheckFailingAgent(resticapi),
-        {"id": 1, "uuid": "job-uuid-1"},
+        {"id": 1, "uuid": "job-uuid-1", "retention_id": 3},
         repository_id=2,
-        retention_id=3,
         run_options={"repository_check": {"enabled": True, "read_data": None}},
     )
 
     report = handler.run()
 
     assert report.final_state == AgentReportState.warning
-    assert CheckFailingAgent.retention_calls == 0
+    assert CheckFailingAgent.retention_calls == int(locked)
+    assert report.data.get("retention_check_failed", False) is (not locked)
+    assert report.data.get("repository_locked", False) is locked
     assert resticapi.stats_calls == 1
     assert hook_calls == ["start", "success", "end"]
     assert any("Repository check failed after backup" in line for line in report.log_list)
@@ -304,13 +314,13 @@ def test_backup_failure_skips_retention(monkeypatch, source):
         options["chain_run_id" if source == "chain" else "schedule_id"] = 1
     handler = _FailingBackupHandler(
         RetentionShouldNotRunAgent(_CheckingResticApi()),
-        {"id": 1, "uuid": "job-uuid-1"},
+        {"id": 1, "uuid": "job-uuid-1", "retention_id": 3},
         repository_id=2,
-        retention_id=3,
         run_options=options,
     )
     handler.error = ResticFailedError("connection reset by peer")
     handler.cancel = source == "cancel"
+    monkeypatch.setattr(handler, "_run_post_backup", lambda *args: pytest.fail("Failed backups must not run success work"))
 
     report = handler.run()
 
@@ -492,9 +502,8 @@ def test_cancelled_backup_only_runs_end_hook(monkeypatch):
     resticapi = _CheckingResticApi()
     handler = CancelledHandler(
         CancelledAgent(resticapi),
-        {"id": 1, "uuid": "job-uuid-1"},
+        {"id": 1, "uuid": "job-uuid-1", "retention_id": 3},
         repository_id=2,
-        retention_id=3,
         run_options={"repository_check": {"enabled": True}},
     )
 

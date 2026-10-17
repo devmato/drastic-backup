@@ -45,6 +45,7 @@
       <tr><th>Email</th><td>{{ export.user.email or "Not set" }}</td></tr>
     </table>
     <p class="note">The account password, password hash, encrypted user recovery key, sessions, and tokens are not included.</p>
+    <p>Back up the application database to preserve backup reports. Retention needs those reports to manage whole backup runs, including after their jobs or agents have been deleted.</p>
   </section>
 
   <section>
@@ -110,6 +111,7 @@
 
   <section>
     <h2>Retention policies</h2>
+    <p>Default policy ID: {{ export.user.default_retention_id or "None" }}. The default also applies to backups of deleted jobs.</p>
     {% for retention in export.retentions %}
       <div class="item">
         <h3>{{ retention.name }} <small>(ID {{ retention.id }})</small></h3>
@@ -132,6 +134,7 @@
         <table>
           <tr><th>Agent</th><td>{{ job.agent.display_name }} (ID {{ job.agent.id }})</td></tr>
           <tr><th>Type</th><td>{{ job.type }}</td></tr>
+          <tr><th>Retention</th><td>{{ job.retention.mode }} — {{ job.retention.name or "None" }}{% if job.retention.effective_id %} (ID {{ job.retention.effective_id }}){% endif %}</td></tr>
           <tr><th>Configuration</th><td><pre>{{ job.config | tojson(indent=2) }}</pre></td></tr>
         </table>
         <h4>Actions</h4>
@@ -149,7 +152,6 @@
             <tr><th>Enabled / advanced</th><td>{{ schedule.enabled }} / {{ schedule.advanced }}</td></tr>
             <tr><th>Cron</th><td><code>{{ schedule.cron_string }}</code></td></tr>
             <tr><th>Repository</th><td>{{ schedule.repository.name or "Unknown" }} (ID {{ schedule.repository.id }})</td></tr>
-            <tr><th>Retention</th><td>{% if schedule.retention %}{{ schedule.retention.name or "Unknown" }} (ID {{ schedule.retention.id }}){% else %}None{% endif %}</td></tr>
             <tr><th>Configuration</th><td><pre>{{ schedule.config | tojson(indent=2) }}</pre></td></tr>
           </table>
         {% else %}<p>No schedules.</p>{% endfor %}
@@ -169,7 +171,7 @@
           <tr><th>Schedules</th><td><pre>{{ chain.schedules | tojson(indent=2) }}</pre></td></tr>
           <tr><th>Steps in execution order</th><td><pre>{{ chain.steps | tojson(indent=2) }}</pre></td></tr>
         </table>
-        <p>Job, repository and retention IDs refer to the entries above.</p>
+        <p>Job and repository IDs refer to the entries above. Each job's retention policy applies.</p>
       </div>
     {% else %}<p>No backup chains.</p>{% endfor %}
   </section>

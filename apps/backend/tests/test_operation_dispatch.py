@@ -8,7 +8,6 @@ from drastic_server.extensions import db
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
-    AgentOperationSource,
     AgentOperationState,
     AgentOperationType,
     AgentSession,
@@ -25,6 +24,7 @@ from drastic_server.services.restore import RESTORE_MODE_PLAIN_FILE, RestoreServ
 
 
 def _build_app(monkeypatch):
+    monkeypatch.setattr(AgentService, "sync", lambda *args, **kwargs: {"state": AgentOperationState.success})
     monkeypatch.setenv("DRASTIC_ENV", "test")
     monkeypatch.setenv("DRASTIC_APP_MASTER_SECRET", "test-master-secret")
     monkeypatch.setenv("DRASTIC_SQLALCHEMY_DATABASE_URI", "sqlite:///:memory:")
@@ -168,7 +168,8 @@ def test_agent_update_uses_existing_operation_history_and_logs(monkeypatch, stat
             db.drop_all()
 
 
-def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypatch):
+@pytest.mark.parametrize("sync_state", ["success", "warning", "failed", "running"])
+def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypatch, sync_state):
     app = _build_app(monkeypatch)
     with app.app_context():
         db.create_all()
@@ -193,8 +194,15 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
                 lambda *_args, **_kwargs: (repository, False),
             )
 
+            dispatched = []
+            monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: {
+                "state": AgentOperationState[sync_state], "log": "Synchronization result",
+                "data": {"timeout": sync_state == "running"},
+            })
+
             def run_job(target_agent, **_kwargs):
                 assert target_agent.id == agent.id
+                dispatched.append(target_agent.id)
                 return AgentService.failed_command_report("Agent request timed out", timeout=True)
 
             monkeypatch.setattr(AgentService, "run_job", run_job)
@@ -206,6 +214,11 @@ def test_backup_admission_timeout_returns_202_and_later_report_succeeds(monkeypa
                 json={"repository_id": repository.id},
             )
 
+            if sync_state in {"failed", "running"}:
+                assert response.status_code == (504 if sync_state == "running" else 400)
+                assert not dispatched and AgentOperation.query.count() == 0
+                return
+            assert dispatched == [agent.id]
             assert response.status_code == 202
             assert response.json["state"] == "running"
             assert response.json["dispatch_status"] == "unknown"
@@ -350,7 +363,7 @@ def test_cross_agent_restore_timeout_uses_target_key_and_later_report_succeeds(m
             monkeypatch.setattr(
                 RestoreService,
                 "_ensure_snapshot_belongs_to_job",
-                lambda *_args, **_kwargs: None,
+                lambda *_args, **_kwargs: {"id": "snapshot-1", "tags": [f"job_uuid:{job.uuid}"]},
             )
             dispatched = {}
 
@@ -398,7 +411,9 @@ def test_cross_agent_restore_timeout_uses_target_key_and_later_report_succeeds(m
             db.drop_all()
 
 
-def test_startup_maintenance_only_reconciles_stale_unknown_dispatches(monkeypatch):
+@pytest.mark.parametrize("kind,state,minutes", [("backup", "running", 16), ("restore", "running", 14),
+    ("retention", "running", 120), ("repository_check", "running", None), ("repository_unlock", "success", 30)])
+def test_startup_preserves_unconfirmed_dispatches_until_the_agent_reports(monkeypatch, kind, state, minutes):
     app = _build_app(monkeypatch)
     monkeypatch.setattr(
         "drastic_server.cli.reconcile_native_repository_quarantine", lambda: (0, 0)
@@ -411,81 +426,21 @@ def test_startup_maintenance_only_reconciles_stale_unknown_dispatches(monkeypatc
             user = User(name="admin")
             user.set_initial_password("account-password", recovery_key="user-recovery-key")
             agent = Agent(user=user, secret="agent-secret")
-            stale_unknown = AgentOperation(
-                uuid="stale-unknown",
-                agent=agent,
-                type=AgentOperationType.backup,
-                state=AgentOperationState.running,
-                source=AgentOperationSource.manual,
-                started=now - timedelta(hours=1),
-                data={
-                    "dispatch_status": "unknown",
-                    DISPATCH_STATUS_UPDATED_AT_KEY: (now - timedelta(minutes=16)).isoformat(),
-                },
-            )
-            recent_unknown = AgentOperation(
-                uuid="recent-unknown",
-                agent=agent,
-                type=AgentOperationType.restore,
-                state=AgentOperationState.running,
-                source=AgentOperationSource.manual,
-                started=now - timedelta(hours=1),
-                data={
-                    "dispatch_status": "unknown",
-                    DISPATCH_STATUS_UPDATED_AT_KEY: (now - timedelta(minutes=14)).isoformat(),
-                },
-            )
-            confirmed_long_running = AgentOperation(
-                uuid="confirmed-long-running",
-                agent=agent,
-                type=AgentOperationType.repository_check,
-                state=AgentOperationState.running,
-                source=AgentOperationSource.manual,
-                started=now - timedelta(days=1),
-                data={"progress": 1},
-            )
-            terminal_unknown = AgentOperation(
-                uuid="terminal-unknown",
-                agent=agent,
-                type=AgentOperationType.repository_unlock,
-                state=AgentOperationState.success,
-                source=AgentOperationSource.manual,
-                started=now - timedelta(hours=1),
-                ended=now - timedelta(minutes=30),
-                data={
-                    "dispatch_status": "unknown",
-                    DISPATCH_STATUS_UPDATED_AT_KEY: (now - timedelta(minutes=30)).isoformat(),
-                },
-            )
-            db.session.add_all(
-                [
-                    user,
-                    agent,
-                    stale_unknown,
-                    recent_unknown,
-                    confirmed_long_running,
-                    terminal_unknown,
-                ]
-            )
+            data = {"progress": 1} if minutes is None else {
+                "dispatch_status": "unknown", DISPATCH_STATUS_UPDATED_AT_KEY: (now - timedelta(minutes=minutes)).isoformat()}
+            operation = AgentOperation(agent=agent, type=AgentOperationType[kind], state=AgentOperationState[state],
+                started=now - timedelta(days=1), ended=now if state == "success" else None, data=data)
+            AgentSession(agent=agent, request_sid="previous-session")
+            db.session.add_all([user, agent, operation])
             db.session.commit()
 
             result = app.test_cli_runner().invoke(args=["maintenance", "startup"])
 
             assert result.exit_code == 0
-            db.session.refresh(stale_unknown)
-            db.session.refresh(recent_unknown)
-            db.session.refresh(confirmed_long_running)
-            db.session.refresh(terminal_unknown)
-            assert stale_unknown.state == AgentOperationState.failed
-            assert stale_unknown.ended is not None
-            assert stale_unknown.logs[-1].level.name == "error"
-            assert "did not confirm operation dispatch" in stale_unknown.logs[-1].message
-            assert recent_unknown.state == AgentOperationState.running
-            assert recent_unknown.ended is None
-            assert confirmed_long_running.state == AgentOperationState.running
-            assert confirmed_long_running.ended is None
-            assert terminal_unknown.state == AgentOperationState.success
-            assert "1 unknown dispatches reconciled" in result.output
+            db.session.refresh(operation)
+            assert operation.state == AgentOperationState[state] and operation.data == data
+            assert (operation.ended is None) is (state == "running")
+            assert not operation.logs and AgentSession.query.count() == 0
         finally:
             db.session.remove()
             db.drop_all()

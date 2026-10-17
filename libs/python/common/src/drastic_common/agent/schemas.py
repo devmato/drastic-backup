@@ -181,6 +181,7 @@ class AgentRetentionSchema(Schema):
 class AgentJobSchema(Schema):
     id = fields.Integer(required=True)
     uuid = fields.String(required=True)
+    retention_id = fields.Integer(attribute="effective_retention_id", allow_none=True)
     type = fields.Method("get_type")
     config = fields.Method("get_config")
 
@@ -209,7 +210,6 @@ class AgentJobScheduleSchema(Schema):
     job_id = fields.Integer(required=True)
     enabled = fields.Boolean(required=True)
     repository_id = fields.Integer(required=True)
-    retention_id = fields.Integer(allow_none=True)
     cron_string = fields.String(required=True)
     config = fields.Method("get_config")
 

@@ -16,6 +16,7 @@ def operation_type(command):
     return {
         AgentCommandName.run_job.value: AgentReportType.backup,
         AgentCommandName.run_restore.value: AgentReportType.restore,
+        AgentCommandName.delete_restore_point.value: AgentReportType.retention,
         AgentCommandName.check_repository.value: AgentReportType.repository_check,
         AgentCommandName.unlock_repository.value: AgentReportType.repository_unlock,
     }[command]
@@ -25,12 +26,14 @@ def operation_report(command, args):
     uuid = args.get("operation_uuid") or args.get("report_uuid")
     if command == AgentCommandName.run_job.value:
         return AgentReport.backup_operation(job_id=args.get("job_id"), repository_id=args.get("repository_id"),
-                                            retention_id=args.get("retention_id"), operation_uuid=uuid)
+                                            operation_uuid=uuid)
     if command == AgentCommandName.run_restore.value:
         return AgentReport.restore_operation(operation_uuid=uuid, job_id=args.get("job_id"),
                                              repository_id=args.get("repository_id"))
     if command == AgentCommandName.check_repository.value:
         return AgentReport.check_operation(repository_id=args.get("repository_id"), operation_uuid=uuid)
+    if command == AgentCommandName.delete_restore_point.value:
+        return AgentReport(type=AgentReportType.retention, repository_id=args.get("repository_id"), operation_uuid=uuid)
     return AgentReport(type=AgentReportType.repository_unlock, repository_id=args.get("repository_id"), operation_uuid=uuid)
 
 
@@ -57,7 +60,7 @@ def submit(command, args, *, execute, manager, operations):
     if uuid:
         reservation, created = AgentReport.reserve_history_operation(
             type=operation_type(command), operation_uuid=uuid, job_id=args.get("job_id"),
-            repository_id=args.get("repository_id"), retention_id=args.get("retention_id"),
+            repository_id=args.get("repository_id"),
         )
 
     def runner():
@@ -99,9 +102,6 @@ def validate_job(args, *, jobs, repositories, retentions):
                 return "Chain step start deadline expired"
         except (KeyError, TypeError, ValueError):
             return "Invalid chain step start deadline"
-        retention_id = args.get("retention_id")
-        if retention_id is not None and not retentions.find_one(id=retention_id):
-            return f"Retention policy {retention_id} is not available in local sync data"
     try:
         job = jobs.find_one(id=args.get("job_id"))
         repository = repositories.find_one(id=args.get("repository_id"))
@@ -109,6 +109,9 @@ def validate_job(args, *, jobs, repositories, retentions):
         return f"Local synced job data could not be validated: {exc}"
     if not job:
         return f"Job with id {args.get('job_id')} is not available in local sync data"
+    retention_id = job.get("retention_id")
+    if retention_id is not None and not retentions.find_one(id=retention_id):
+        return f"Retention policy {retention_id} is not available in local sync data"
     if not repository:
         return f"Repository with id {args.get('repository_id')} is not available in local sync data"
     return None
@@ -122,7 +125,7 @@ def execute(request, *, find_handler, submit_async, validate_job, operations):
     diagnostics.record("command.received", {
         "command": name,
         "arguments": {key: value for key, value in args.items() if key in {
-            "job_id", "repository_id", "retention_id", "operation_uuid", "snapshot_id", "paths",
+            "job_id", "repository_id", "operation_uuid", "snapshot_id", "paths",
             "target", "target_vmid", "target_storage", "run_options", "action", "read_data_subset",
         }},
     }, operation_uuid=args.get("operation_uuid"))
@@ -167,6 +170,8 @@ def execute(request, *, find_handler, submit_async, validate_job, operations):
         report.log_message(f"Started restore operation {uuid}")
     elif command == AgentCommandName.unlock_repository:
         report.log_message(f"Started repository unlock on repository {args.get('repository_id')}")
+    elif command == AgentCommandName.delete_restore_point:
+        report.log_message(f"Started restore point deletion on repository {args.get('repository_id')}")
     else:
         report.log_message(f"Started repository check on repository {args.get('repository_id')}")
     return report.finish()

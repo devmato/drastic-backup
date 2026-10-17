@@ -40,7 +40,7 @@
           <q-item-section side>{{ index + 1 }}.</q-item-section>
           <q-item-section>
             <q-item-label>{{ step.job_name }} · {{ step.agent_name }}</q-item-label>
-            <q-item-label caption>{{ step.repository_name }} · Retention: {{ step.retention_name || 'None' }}</q-item-label>
+            <q-item-label caption>{{ step.repository_name }}</q-item-label>
           </q-item-section>
         </q-item>
       </q-list>
@@ -68,8 +68,7 @@
                   </div>
                   <div class="row q-col-gutter-md">
                     <div class="col-12"><q-select v-model="step.job_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="jobOptions" label="Backup Job / Agent" emit-value map-options :rules="[value => !!value || 'Required']" @update:model-value="selectJob(step)" /></div>
-                    <div class="col-12 col-sm-6"><q-select v-model="step.repository_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="repositoryOptions" label="Repository" emit-value map-options :rules="[value => !!value || 'Required', value => !form.steps.some(other => other.key !== step.key && other.job_id === step.job_id && other.repository_id === value) || 'This job already has a step for this repository']" /></div>
-                    <div class="col-12 col-sm-6"><q-select v-model="step.retention_id" outlined :dense="!$q.platform.has.touch" :options="retentionOptions" label="Retention Policy" emit-value map-options /></div>
+                    <div class="col-12"><q-select v-model="step.repository_id" outlined hide-bottom-space :dense="!$q.platform.has.touch" :options="repositoryOptions" label="Repository" emit-value map-options :rules="[value => !!value || 'Required', value => !form.steps.some(other => other.key !== step.key && other.job_id === step.job_id && other.repository_id === value) || 'This job already has a step for this repository']" /></div>
                     <div class="col-12"><q-toggle v-model="step.config.repository_check.enabled" label="Check repository after successful backup" /></div>
                     <div v-if="step.config.repository_check.enabled" class="col-12"><q-input v-model="step.config.repository_check.read_data" outlined :dense="!$q.platform.has.touch" label="Read data" hint="Leave empty for a basic check; e.g. 1/10, 5% or 100%." /></div>
                     <div v-if="selectedJob(step)?.schedules?.length" class="col-12 text-caption">This job also has independent schedules. Adding it to this chain keeps those schedules active.</div>
@@ -77,7 +76,7 @@
                 </q-card-section>
               </q-card>
               <q-btn outline no-caps icon="add" color="primary" label="Add Job" :disable="!jobs.length || form.steps.length >= 100" @click="form.steps.push(newStep())" />
-              <div class="text-caption">Jobs require agent protocol 11 or newer. Retention applies to this job's backups in the selected repository, including backups made outside this chain.</div>
+              <div class="text-caption">Jobs require agent protocol 21 or newer. Each job's retention policy applies.</div>
               <q-separator class="q-my-md" />
               <div class="text-subtitle1">Schedules</div>
               <SchedulesPanel v-model="form.schedules" time-only timezone="UTC" />
@@ -109,7 +108,7 @@
                 <q-item-section side>{{ index + 1 }}.</q-item-section>
                 <q-item-section>
                   <q-item-label>{{ step.job_name }} · {{ step.agent_name }}</q-item-label>
-                  <q-item-label caption>{{ step.repository_name }} · Retention: {{ step.retention_name || 'None' }}</q-item-label>
+                  <q-item-label caption>{{ step.repository_name }}</q-item-label>
                   <q-item-label v-if="step.reason" caption>{{ step.reason }}</q-item-label>
                   <q-item-label v-if="step.cleanup_pending" caption>Retention / cleanup pending retry</q-item-label>
                   <q-item-label v-if="step.start_deadline && ['waiting', 'dispatching'].includes(step.state)" caption>Start deadline: {{ formatDate(step.start_deadline) }}</q-item-label>
@@ -138,7 +137,6 @@ import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
 import SchedulesPanel from 'components/SchedulesPanel.vue'
 import { useChainStore } from 'stores/chain'
-import { useRetentionStore } from 'stores/retention'
 import { useUserStore } from 'stores/user'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { scheduleTiming, retrySettings } from 'src/utils/schedule'
@@ -154,11 +152,9 @@ const $q = useQuasar()
 const route = useRoute()
 const router = useRouter()
 const store = useChainStore()
-const retentionStore = useRetentionStore()
 const userStore = useUserStore()
 const jobs = computed(() => props.agentJobs.flatMap(agent => agent.jobs.map(job => ({ ...job, agent_name: agent.display_name }))))
 const repositoryOptions = computed(() => props.repositories.map(repo => ({ label: repo.name, value: repo.id })))
-const retentionOptions = computed(() => [{ label: 'None', value: null }, ...retentionStore.retentions.map(item => ({ label: item.name, value: item.id }))])
 const loading = ref(true)
 const loadError = ref('')
 const busyId = ref(null)
@@ -176,7 +172,7 @@ let stopped = false
 let stepKey = 0
 
 function newStep(step = {}) {
-  return { key: ++stepKey, job_id: step.job_id || null, repository_id: step.repository_id || null, retention_id: step.retention_id || null,
+  return { key: ++stepKey, job_id: step.job_id || null, repository_id: step.repository_id || null,
     config: { repository_check: { enabled: Boolean(step.config?.repository_check?.enabled), read_data: step.config?.repository_check?.read_data || null } } }
 }
 function selectedJob(step) { return jobs.value.find(job => job.id === step.job_id) }
@@ -186,7 +182,7 @@ function selectJob(step) {
 }
 const jobOptions = computed(() => jobs.value.map(job => {
   const protocol = props.agents.find(agent => agent.id === job.agent_id)?.protocol_version || 0
-  return { label: `${job.name} · ${job.agent_name}${protocol < 11 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 11 }
+  return { label: `${job.name} · ${job.agent_name}${protocol < 21 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 21 }
 }))
 function moveStep(index, offset) {
   const [step] = form.steps.splice(index, 1)
@@ -209,7 +205,7 @@ async function save() {
     await userStore.withRecoveryKey(recoveryKey => store.saveChain(editingId.value, {
       ...form, recovery_key: recoveryKey,
       schedules: form.schedules.map(({ timing, enabled }) => ({ timing, enabled })),
-      steps: form.steps.map(({ job_id, repository_id, retention_id, config }) => ({ job_id, repository_id, retention_id, config })),
+      steps: form.steps.map(({ job_id, repository_id, config }) => ({ job_id, repository_id, config })),
     }))
     editing.value = false
     emit('changed')
@@ -294,7 +290,6 @@ watch(editing, async value => {
   if (!value && route.query.chain_id) await router.replace({ query: { ...route.query, chain_id: undefined } })
 })
 onMounted(async () => {
-  await retentionStore.loadRetentions()
   await refresh()
   openLinkedChain()
 })

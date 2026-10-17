@@ -66,7 +66,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         old_columns = list(db.query("PRAGMA table_info(retentions)"))
 
     database_module.initialize_schema()
-    assert db["agent_schema"].find_one(name="agent")["version"] == 6
+    assert db["agent_schema"].find_one(name="agent")["version"] == 7
     assert {"vmid", "snapshot_name", "owner", "host_id", "confirmed", "created_at"}.issubset(db["proxmox_snapshots"].columns)
     if existing:
         old_job = db["jobs"].find_one(id=7)
@@ -78,6 +78,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
     schema = list(db.query("SELECT name, sql FROM sqlite_master ORDER BY name"))
     database_module.initialize_schema()
     assert list(db.query("SELECT name, sql FROM sqlite_master ORDER BY name")) == schema
+    db["agent"].upsert({"name": "retention_check_failed:1", "settings": "100%"}, ["name"])
 
     private_key, public_key = generate_agent_keypair()
     agent = Agent.__new__(Agent)
@@ -120,12 +121,15 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
             }],
         }
     )
-    monkeypatch.setattr(
-        agent, "_Agent__send_request", lambda action: {"success": True, "result": payload}
-    )
+    requests = []
+    monkeypatch.setattr(agent, "_Agent__send_request", lambda action, **kwargs:
+                        requests.append(kwargs) or {"success": True, "result": payload})
 
     def write_from_worker():
         assert agent.cmd_sync().final_state.name == "success"
+        assert requests[-1] == {}
+        assert agent.cmd_sync().final_state.name == "success"
+        assert requests[-1] == {}
         assert db["jobs"].find_one(id=1)["config"] == {"paths": ["/data"]}
         assert db["job_actions"].find_one(id=1)["data"] == {}
         assert agent._Agent__repository_passwords == {1: "password"}

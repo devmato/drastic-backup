@@ -62,7 +62,7 @@ def ingest_report(agent, report):
 
 
 def capture_operation(operation, sampled_at):
-    record(operation.agent.user_id, "operation.received", {
+    record(operation.user_id, "operation.received", {
         "state": operation.state.name,
         "data": operation.data, "job_id": operation.job_id,
         "repository_id": operation.repository_id,

@@ -161,7 +161,9 @@ def test_configuration_schemas_keep_debug_fields_and_exclude_credentials(context
     repository = Repository(user=users[0], name="Repo", kind="custom", location="sftp:user:hidden@host:/backup")
     job = Job(agent=agents[0], name="Files", type="file")
     policy = Retention(user=users[0], name="Keep three", keep_last=3)
-    schedule = JobSchedule(job=job, repository=repository, retention=policy, enabled=True, cron_string="* * * * *")
+    job.retention = policy
+    job.retention_mode = "custom"
+    schedule = JobSchedule(job=job, repository=repository, enabled=True, cron_string="* * * * *")
     action = JobAction(job=job, hook="start", module="command", data={"command": "must-not-export"})
     db.session.add_all([repository, job, policy, schedule, action])
     db.session.commit()

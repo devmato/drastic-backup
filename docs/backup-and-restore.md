@@ -45,7 +45,8 @@ Common job properties:
 - `type` -- Backup implementation. Current values are `file` and `proxmox`.
 - `config` -- Type-specific settings described below.
 - `actions` -- Optional commands or Docker actions attached to lifecycle hooks.
-- `schedules` -- Optional recurring runs with repository and retention settings.
+- `schedules` -- Optional recurring runs with repository and check settings.
+- `retention_mode` -- `default`, `disabled`, or `custom`; `retention_id` selects a custom policy.
 
 ### File Backup
 
@@ -264,7 +265,7 @@ Example paths:
 
 ## Create a Schedule
 
-Schedules connect a job, repository, and optional retention policy.
+Schedules connect a job and repository. Retention is configured on the job.
 
 Use schedules for recurring backups. Run jobs manually for one-off validation after creating or changing a job.
 
@@ -284,15 +285,15 @@ Job schedules and backup chains can enable **Retry temporary backup failures** (
 
 Only explicitly recognized temporary Restic transport failures are retried. Cancelled jobs, permanent or unknown failures, pending snapshot cleanup, and warnings after a complete backup are not retried. Retries start the entire job again, including its configured commands; they do not resume a VM stream at its previous byte offset. Already stored blocks may be reused by Restic deduplication.
 
-The agent keeps pending retries only in memory, without occupying a worker during the wait. An agent restart discards them; the next regular schedule runs normally. Removing or disabling the job schedule, or changing its repository or retention target, discards waiting retries after synchronization. Busy executors postpone a retry without consuming an attempt. A new occurrence of the same schedule is skipped while its previous run is still active or waiting to retry.
+The agent keeps pending retries only in memory, without occupying a worker during the wait. An agent restart discards them; the next regular schedule runs normally. Removing or disabling the job schedule, or changing its repository, discards waiting retries after synchronization. Retries use the current job retention setting. Busy executors postpone a retry without consuming an attempt. A new occurrence of the same schedule is skipped while its previous run is still active or waiting to retry.
 
 Attempts appear as ordinary operations, with the attempt number in their logs. Chain policy applies **per step**: the chain waits for that step's attempts before advancing, and never repeats already completed steps. Chains keep their existing persisted execution state; **Cancel Chain** also stops waiting retries. Each retry gets a new start deadline measured from its due time. A chain remains active during waits, so another scheduled occurrence may be skipped. Final step failures still allow subsequent steps to run.
 
 ### Backup Chains
 
-Use **Jobs > Backup Chains > Add Backup Chain** to execute existing backup jobs in a fixed order, on one or multiple agents. Set a name and the maximum wait for each step to start. Add jobs and move them up or down to set the order. Each step has its own repository, retention policy, and optional repository check. Agents require **protocol 11 or newer**; update the backend first, then the participating agents.
+Use **Jobs > Backup Chains > Add Backup Chain** to execute existing backup jobs in a fixed order, on one or multiple agents. Set a name and the maximum wait for each step to start. Add jobs and move them up or down to set the order. Each step has its own repository and optional repository check, and uses the job's retention policy. Agents require **protocol 21 or newer**; update the backend first, then the participating agents.
 
-In the chain's **Schedules** section, use **Add Schedule** to select a schedule type, its timing and activation, just like a job schedule. Add, edit or delete multiple independent schedules for the same chain, for example weekdays at 02:00 and weekends at 04:00. **Chain schedules use UTC**, as shown in the shared schedule editor and list. Each enabled schedule starts the entire chain with the same steps and backup settings; repository, retention and check options remain configured per step. Chains without enabled schedules can still be started manually. Existing chains' single start times and activation are migrated to their first schedule entry.
+In the chain's **Schedules** section, use **Add Schedule** to select a schedule type, its timing and activation, just like a job schedule. Add, edit or delete multiple independent schedules for the same chain, for example weekdays at 02:00 and weekends at 04:00. **Chain schedules use UTC**, as shown in the shared schedule editor and list. Each enabled schedule starts the entire chain with the same steps and backup settings; repository and check options remain configured per step. Chains without enabled schedules can still be started manually. Existing chains' single start times and activation are migrated to their first schedule entry.
 
 Chains organize execution order: failed or cancelled individual jobs do not prevent the remaining jobs from being backed up. The next step starts after the preceding job has completed its backup, configured check, retention/prune, and completion actions. The overall result retains warnings, failures and skipped steps. A chain is not a single application-consistent recovery point across machines.
 
@@ -304,13 +305,13 @@ Offline or busy agents wait up to the configured start timeout, measured from wh
 
 **Cancel Chain** prevents remaining steps from starting and requests cancellation of the active job. If admission is uncertain or the active agent is offline, cancellation waits for confirmation. Disabling a schedule prevents future starts from that schedule; other enabled schedules continue to apply. Schedule changes do not cancel an existing run.
 
-The backend coordinates every chain, including chains on one agent. During a backend outage, an already started backup and its local retention can finish if its repository remains directly reachable, but the next step waits. Native repositories still need the backend restic proxy. Independent job schedules retain their existing autonomous behavior and remain active when a job is added to a chain. When editing a job, its **Schedule > Backup Chains** section shows chain membership and links to the centrally edited chain.
+The backend coordinates every chain, including chains on one agent. During a backend outage, an already started backup can finish if its repository remains directly reachable, but cleanup requiring a fresh job comparison and the next chain step wait. Native repositories still need the backend restic proxy. Independent job schedules retain their existing autonomous behavior and remain active when a job is added to a chain. When editing a job, its **Schedule > Backup Chains** section shows chain membership and links to the centrally edited chain.
 
 A chain serializes its own steps, not all access to a repository. Independent schedules, other chains or external Restic processes can still use that repository. Restic locks protect exclusive maintenance, and failed cleanup remains pending rather than forcibly unlocking a repository.
 
 Due chain slots are recorded independently of network dispatch. Up to four background dispatch tasks per backend process contact agents, so a slow or unreachable agent does not block admission of other scheduled chains. The existing database claims still prevent duplicate execution across workers.
 
-If a retention policy is removed from the agent's synchronized configuration, pending policy-based retries are retired. Already pending prune is retained as a prune-only retry, including across restarts; it does not select or forget additional snapshots. A temporary failure to read the policy database leaves the retry pending.
+Pending retention work fetches the current job UUIDs and default from the backend on each retry, after scanning the repository. The executing job uses its synchronized retention setting. Each attempt keeps the policies obtained at its start; the next attempt selects runs again using current policies and removes only remaining expired snapshots. Policy changes can therefore preserve remaining snapshots, but cannot restore ones already removed. Backend or repository failures leave cleanup pending.
 
 Schedules can optionally run a repository check after a successful backup. A basic check reads repository metadata only. Set `read_data` to values such as `1/10`, `5%`, or `100%` when restic should also verify stored data.
 
@@ -324,17 +325,35 @@ Use manual checks from the repository page when validating a new repository, aft
 
 ## Retention
 
-Retention policies define how successful job runs are kept after backups. Keep policies conservative until restores have been validated for the repository.
+Retention policies define how completed job runs with stored snapshots are kept after backups. Keep policies conservative until restores have been validated for the repository.
 
-The agent tracks job runs and their backup artifacts. Retention considers `success` and `warning` runs for `keep_last`, `keep_hourly`, `keep_weekly`, `keep_monthly`, and `keep_yearly`. Successful artifacts from a marked partial failed backup can also be removed, but the failed run itself is not treated as a retained successful run.
+Select an optional **Default retention policy** on the Retention Policies page. Each job has one **Retention** dropdown under General: **Use default**, **Disabled**, or a specific policy. This applies to manual, scheduled and chain backups, separately in each repository. Changes to the default affect all inheriting jobs. Removing a custom policy disables retention on those jobs instead of switching them to the default.
 
-Before forgetting a snapshot, the agent reconciles the local artifact with the repository and requires matching `operation_uuid` and `artifact_uuid` tags. A missing snapshot is recorded as already absent. A snapshot with missing or mismatched tags is skipped and makes the retention report a warning rather than risking deletion of an unrelated snapshot.
+After a backup, including a failed non-cancelled attempt that produced snapshots, the agent scans repository snapshots and asks the backend for current job UUIDs, the default policy and the relevant retained backup reports. Failed attempts retain their failure status and do not run success hooks. Jobs absent from the complete job list use the default; jobs on offline agents or without enabled schedules still count as existing. Other existing jobs are untouched. The executing job uses its own synchronized policy. Without a default, backups of deleted jobs are preserved. There is no deletion catalog, daily discovery or automatic cleanup on job deletion.
 
-Retention runs snapshot `forget` without prune, records the forgotten artifacts, and then runs `prune` separately. If prune fails, a retry runs prune without forgetting the same snapshots again. Prune can take longer and may hold repository locks while it runs.
+Existing reports are the single source for run membership. `job_uuid`, `operation_uuid`, `artifact_uuid` and `artifact_key` tags reconcile those reports with real snapshots. Retention counts whole completed runs with snapshots, including failed or partial runs; attempts without snapshots do not count. Running backups remain protected. A newer partial run can therefore expire an older complete run, including the last backup of a VM that failed in the newer run. The executing backup result must be acknowledged by the backend before it is used in selection. Unknown snapshots and unreported backups are left untouched. No internal snapshots, tag rewrites or additional metadata files are created in the repository. The backend only supplies runs of the executing job and deleted jobs in the requested repository.
+
+Deleting a job or agent preserves its reports and artifacts. Agent deletion is refused while it has running operations. Reports retain their owning user and remain accessible in the global operation history, with the deleted agent's recorded name. Reports can be deleted manually after a confirmation explaining that their snapshots remain restorable but cease to be managed by automatic retention. Active chain references still prevent report deletion. Back up the application database: the human-readable Recovery Export does not contain backup history. Snapshots without reports can still be restored or manually deleted through the repository restore dialog.
+
+Backend failures defer cleanup and leave it queued for retry. An unavailable response is never treated as an empty job list. The orphan set is fixed from the initial repository scan, so a job first seen during a later refresh cannot be mistaken for a deleted job. Directly reachable custom repositories can still back up during a backend outage; native repositories require their backend proxy.
+
+Restic locks protect individual maintenance commands; there is no additional backend cleanup lock or stored deletion plan. Retention first selects the runs to keep from the reports, then verifies that their snapshots are present. Missing snapshots in expired runs are skipped rather than treated as a failed backup. An interrupted cleanup is simply recalculated at the next attempt, including by another assigned agent. Prune also runs when the expired snapshots are already all gone. Only successful prune is followed by the `forgotten_at` acknowledgment; until then, the reports still supply their original IDs. Local retry/outbox mechanisms provide normal report replay and retry scheduling. If a changed policy would retain a partly removed run, cleanup stops rather than treating that run as complete.
+
+Before automatic cleanup, a basic repository check is performed; no initial full data read is forced. Reported check failures set a repository check token; local failures also remain recorded on the agent. Restic lock conflicts defer the command without creating an integrity block or requiring a full read. Cleanup requires a full read while a real check failure is unresolved. A successful full check clears only the token it observed, never a newer reported failure. This status is shared through the backend, not between independent Drastic installations using the same physical storage. Full-data checks can be run manually or through the existing backup-check options. Restic forget/prune does not substitute for verifying all stored backup contents.
+
+Count rules keep the last N completed runs with snapshots, irrespective of success. Time rules use UTC hourly, weekly, monthly and yearly buckets; they are not expiry deadlines. A final retained set can remain indefinitely without new backups.
+
+**Upgrade to job retention (protocol 21):** pause schedules, upgrade the backend/database and all agents, then synchronize before resuming. Policies and backup data are preserved, but old schedule/chain assignments are deliberately discarded. Jobs start with **Use default**, and no default is selected automatically. Existing operation owners are backfilled; agent deletion now detaches reports instead of deleting them. Downgrading this migration is refused while reports of deleted agents exist, rather than deleting their history silently.
 
 ## Restores
 
 Restore operations run through the agent. The agent needs access to the selected repository and enough filesystem permissions for the restore target.
+
+Open **Agents > target agent > Actions > Restore backup**. The target agent is preselected and can be changed. Choose an assigned repository and restore point. All its snapshots are visible, including deleted jobs, missing reports and non-Drastic backups. The Restore button on a job opens the same dialog filtered to that job. Drastic snapshots with unambiguous job/run UUID tags are grouped as one point, even without a report. For a multi-component point, select the VM or dataset to restore; single-component points need no additional selection. Unsupported or untagged backups use Plain file restore; recognized Proxmox TAR/Native/CBT backups retain their specialized modes. Snapshot grouping needs no data migration or tag changes.
+
+The trash icon inside the restore-point field deletes the entire selected point after confirming its label and snapshot count. Foreign snapshots without a Drastic run identity are deleted individually. Backend and agent both recheck group membership and repository access; changed groups must be reloaded and confirmed again. A current database read after snapshot listing rejects newly reported running backups too. Deletion uses the existing running-report delivery, repository admission and Restic locks. Confirmed removals are checkpointed in local operation history after each batch and before prune; interrupted-operation recovery replays those IDs after restart. The dialog opens the existing operation page for progress and errors; reopening it reloads the snapshot list. Confirmed snapshot removals update matching retained reports even if subsequent prune fails. A prune failure does not restore deleted snapshots. Manual deletion and plain-file restore without Drastic job tags require agent protocol 22; update the backend before agents.
+
+An uncertain dispatch remains uncertain across backend restarts until the agent reports admission or completion; elapsed time alone does not prove non-execution. A late timeout/error callback reads current operation data and cannot overwrite already confirmed results.
 
 The default `fail_if_exists` policy refuses to start when a selected destination already exists. `overwrite` must be requested explicitly, the web UI requires confirmation, and existing files may be replaced. Restore targets and include paths are normalized; the filesystem root, traversal segments, and symlink components in the target path are rejected.
 
@@ -644,8 +663,9 @@ export RESTIC_REPOSITORY=/recovery/native-repositories/<repository-directory>
 export RESTIC_PASSWORD_FILE=/recovery/secrets/repository-password
 restic snapshots
 restic check --read-data-subset=5%
+restic ls "<data-snapshot-id>"
 mkdir -p /recovery/restore-target
-restic restore latest --target /recovery/restore-target
+restic restore "<data-snapshot-id>" --target /recovery/restore-target
 ```
 
-Use `restic ls <snapshot-id>` and an explicit snapshot ID when `latest` is ambiguous. Never restore directly over production data until the recovered files have been inspected. If only the rest-server endpoint is available rather than a filesystem copy, use the repository's original REST URL with `RESTIC_REPOSITORY=rest:http://...`, but prefer an isolated copy so emergency investigation cannot mutate the sole backup.
+Replace `<data-snapshot-id>` with the ID of the intended snapshot from the listing. In a shared repository, an unfiltered `latest` may belong to another job or VM. Use the job/run tags and an explicit ID to select the intended backup. Jobs with multiple VMs/datasets have multiple data snapshots; select the required artifacts of the intended run. Never restore directly over production data until the recovered files have been inspected. If only the rest-server endpoint is available rather than a filesystem copy, use the repository's original REST URL with `RESTIC_REPOSITORY=rest:http://...`, but prefer an isolated copy so emergency investigation cannot mutate the sole backup.

@@ -87,6 +87,17 @@ def validate_retention(user_id, retention_id):
     ))
 
 
+def configure_job_retention(user_id, job, data):
+    mode = data.get("retention_mode", job.retention_mode or "default")
+    retention_id = data.get("retention_id", job.retention_id)
+    if mode == "custom":
+        if retention_id is None:
+            raise ValueError("Select a retention policy")
+        validate_retention(user_id, retention_id)
+    job.retention_mode = mode
+    job.retention_id = retention_id if mode == "custom" else None
+
+
 def build_schedule_cron_string(minute, hour, day_of_week):
     dow_str = "*" if len(day_of_week) == 7 else ",".join(str(d) for d in day_of_week)
     cron_string = f"{minute} {hour} * * {dow_str}"
@@ -117,9 +128,7 @@ def job_schedule_config(agent, data):
 def create_job_schedule(user_id, job, data):
     config = job_schedule_config(job.agent, data)
     repository_id = data["repository_id"]
-    retention_id = data["retention_id"]
     assign_agent_repository(user_id, job.agent, repository_id, data.get("recovery_key"))
-    retention = validate_retention(user_id, retention_id)
     cron_string = schedule_trigger(data)["cron_string"]
 
     schedule = JobSchedule(
@@ -128,7 +137,6 @@ def create_job_schedule(user_id, job, data):
         enabled=data["enabled"],
         advanced=False,
         repository_id=repository_id,
-        retention_id=retention.id if retention else None,
         config=config,
     )
     db.session.add(schedule)
@@ -138,15 +146,12 @@ def create_job_schedule(user_id, job, data):
 def update_job_schedule(user_id, schedule, data):
     config = job_schedule_config(schedule.job.agent, data)
     repository_id = data["repository_id"]
-    retention_id = data["retention_id"]
     assign_agent_repository(user_id, schedule.job.agent, repository_id, data.get("recovery_key"))
-    retention = validate_retention(user_id, retention_id)
     cron_string = schedule_trigger(data)["cron_string"]
 
     schedule.cron_string = cron_string
     schedule.enabled = data["enabled"]
     schedule.repository_id = repository_id
-    schedule.retention_id = retention.id if retention else None
     schedule.config = config
     return schedule
 

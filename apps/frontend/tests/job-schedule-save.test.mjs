@@ -74,13 +74,12 @@ test('renaming a job on protocol 11 does not resubmit unchanged legacy schedules
 
 test('changed and new typed schedules are rejected before any writes on protocol 11', async () => {
   const { page, payload, writes, notices } = setup(11)
-  for (const kind of ['time', 'new', 'repository', 'retention', 'check', 'enabled']) {
+  for (const kind of ['time', 'new', 'repository', 'check', 'enabled']) {
     const changed = payload()
     const schedule = changed.schedules[0]
     if (kind === 'time') schedule.timing.hour = 3
     if (kind === 'new') schedule.id = 'draft-1'
     if (kind === 'repository') schedule.repository_id = 5
-    if (kind === 'retention') schedule.retention_id = 5
     if (kind === 'check') schedule.config.repository_check.read_data = '5%'
     if (kind === 'enabled') schedule.enabled = false
     await page.onJobSubmit(changed)

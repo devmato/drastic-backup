@@ -257,7 +257,7 @@ function showRestore(job) {
 
 function onRestoreStarted(result) {
   $q.notify({ message: result.msg || 'Restore started', color: 'green', position: 'top' })
-  router.push({ path: '/agents/operations', query: { agent_id: String(result.agent_id), type: 'restore', job_id: String(result.job_id) } })
+  router.push({ path: `/agents/operations/${result.operation_id}` })
 }
 
 function openJobReports(job) {
@@ -304,7 +304,7 @@ function confirmCancel(job) {
 function confirmDeleteJob(job) {
   $q.dialog({
     title: 'Delete Job',
-    message: `Delete backup job "${job.name}"?`,
+    message: `Delete backup job "${job.name}"? Its backups remain restorable through Agent Actions. The default retention policy will apply to them; without a default, they are retained.`,
     cancel: true,
   }).onOk(async () => {
     try {

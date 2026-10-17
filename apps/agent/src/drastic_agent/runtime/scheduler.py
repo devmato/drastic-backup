@@ -40,13 +40,12 @@ def advance_run(task, now, runs, schedules, submit, run_job):
         if task["next_at"] is not None:
             schedule = schedules.find_one(id=options["schedule_id"])
             if (not schedule or schedule.get("enabled") is False
-                    or schedule["repository_id"] != task["repository_id"]
-                    or schedule.get("retention_id") != task["retention_id"]):
+                    or schedule["repository_id"] != task["repository_id"]):
                 return False
             if now < task["next_at"]:
                 return True
         try:
-            task["future"] = submit(run_job, task["job_id"], task["repository_id"], task["retention_id"],
+            task["future"] = submit(run_job, task["job_id"], task["repository_id"],
                                     run_options=dict(options), resources={
                                         ("job", task["job_id"]), ("repository", task["repository_id"])})
         except Exception as exc:
@@ -102,7 +101,7 @@ def run_due(now, *, jobs, schedules, runs, slots, pending, submit, run_job):
                 update_run(runs, run_id, "skipped", "Previous scheduled run still active")
                 continue
             task = {"run_id": run_id, "job_id": job["id"], "repository_id": schedule["repository_id"],
-                    "retention_id": schedule.get("retention_id"), "future": None, "next_at": None,
+                    "future": None, "next_at": None,
                     "options": {**config, "schedule_id": schedule_id, "attempt": 1,
                                 "retry": BackupRetrySchema().load(config.get("retry") or {})}}
             if advance_run(task, utc_now, runs, schedules, submit, run_job):

@@ -4,6 +4,11 @@ _RETENTION_TYPES = ("count", "date")
 
 
 class RetentionResponseSchema(Schema):
+    is_default = fields.Method("get_is_default")
+
+    def get_is_default(self, obj):
+        return obj.user.default_retention_id == obj.id
+
     id = fields.Integer(required=True)
     name = fields.String(required=True)
     rtype = fields.String(attribute="rtype", required=True)
@@ -67,6 +72,7 @@ class RetentionUpdateInputSchema(Schema):
     class Meta:
         unknown = EXCLUDE
 
+    is_default = fields.Boolean()
     name = fields.String(validate=validate.Length(min=1))
     rtype = fields.String(validate=validate.OneOf(_RETENTION_TYPES))
     keep_last = fields.Integer(validate=validate.Range(min=0))

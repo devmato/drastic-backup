@@ -12,7 +12,7 @@ from drastic_server.integrations.agent import (
     is_agent_conflict_response,
     is_agent_timeout_response,
 )
-from drastic_server.models.agent import Agent, AgentOperationState
+from drastic_server.models.agent import Agent, AgentOperation, AgentOperationState
 from drastic_server.models.job import Job
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
@@ -71,14 +71,20 @@ def update_agent(user_id, agent_id, data):
 
 
 def delete_agent(user_id, agent_id):
-    agent = get_agent(user_id, agent_id)
+    # Lock the parent before checking children. New operation inserts also need this
+    # parent through their foreign key, and report ingestion takes the same lock.
+    agent = require_result(Agent.query.filter_by(id=agent_id, user_id=user_id).populate_existing().with_for_update())
+    if AgentOperation.query.filter_by(agent_id=agent.id, state=AgentOperationState.running).with_for_update().first():
+        raise ResourceConflict("Agent has running operations; wait for them to finish before deleting it")
     try:
         for job in agent.jobs:
             require_unused_chain_reference(user_id, "job_id", job.id)
     except ValueError as exc:
         raise ResourceConflict(str(exc)) from exc
-    for operation in agent.operations:
-        db.session.delete(operation)
+    for operation in AgentOperation.query.filter_by(agent_id=agent.id).populate_existing().with_for_update().all():
+        operation.data = {**operation.data, "source_agent_name": agent.display_name,
+                          **({"job_uuid": operation.job.uuid} if operation.job else {})}
+        operation.agent = None
     for job in Job.query.filter_by(agent_id=agent.id):
         for action in job.actions:
             db.session.delete(action)

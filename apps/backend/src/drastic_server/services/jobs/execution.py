@@ -40,7 +40,10 @@ def start_backup(user_id, job_id, data):
     )
     if newly_assigned:
         db.session.commit()
-        require_success(AgentService.sync(job.agent, await_response=True))
+    sync = AgentService.sync(job.agent, await_response=True)
+    # A credential warning for another repository does not invalidate the synced configuration.
+    if sync.get("state") not in {AgentOperationState.success, AgentOperationState.warning}:
+        raise AgentCommandFailed(sync)
 
     options = normalize_schedule_config(data.get("options") or {})
     options.pop("retry", None)  # Direct manual starts do not inherit a schedule's retry policy.

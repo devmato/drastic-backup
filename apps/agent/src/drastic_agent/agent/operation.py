@@ -148,6 +148,18 @@ class AgentOperation:
     def history_operation(self):
         return self._history_operation
 
+    def checkpoint(self):
+        """Persist confirmed side effects before further work, without completing the report."""
+        with self._lock:
+            if self._history_operation is not None:
+                agent_operations.update({"id": self._history_operation["id"], "data": self.data}, ["id"])
+
+    def start_reporting(self):
+        with self._registry_lock:
+            self.pending_reports.append(self)
+            self.running_operations[self.uuid] = self
+        return self
+
     def _finish_history_operation(self):
         if not self._history_operation:
             return
@@ -193,10 +205,7 @@ class AgentOperation:
             retention_id=retention_id,
             source=source,
         )
-        cls.pending_reports.append(operation)
-        with cls._registry_lock:
-            cls.running_operations[operation.uuid] = operation
-        return operation
+        return operation.start_reporting()
 
     @classmethod
     def job_report(cls, job_id, repository_id, operation_uuid=None):
@@ -224,10 +233,7 @@ class AgentOperation:
             source=AgentOperationSource.triggered if parent_operation_uuid else AgentOperationSource.manual,
             data=data,
         )
-        cls.pending_reports.append(operation)
-        with cls._registry_lock:
-            cls.running_operations[operation.uuid] = operation
-        return operation
+        return operation.start_reporting()
 
     check_report = check_operation
 
@@ -240,10 +246,7 @@ class AgentOperation:
             repository_id=repository_id,
             data=data,
         )
-        cls.pending_reports.append(operation)
-        with cls._registry_lock:
-            cls.running_operations[operation.uuid] = operation
-        return operation
+        return operation.start_reporting()
 
     @classmethod
     def restore_report(cls, report_uuid, job_id, repository_id, data=None):

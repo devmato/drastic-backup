@@ -5,11 +5,12 @@ import posixpath
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from drastic_agent.agent.enums import AgentReportState
+from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.report import AgentReport
 from drastic_common.process import ProcessCancelledError
 from drastic_common.restic import ResticApi
 from drastic_common.restic.exceptions import ResticCancelledError
+from drastic_common.restic.snapshots import restore_point_key
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,34 @@ class RestoreContext:
 
 
 class RestoreService:
+    @staticmethod
+    def delete_point(agent, repository_id, snapshot_ids, point_key, operation_uuid):
+        report = AgentReport(type=AgentReportType.retention, repository_id=repository_id, operation_uuid=operation_uuid,
+                             data={"scope": "repository", "manual_delete": True, "deleted_snapshot_ids": []}).start_reporting()
+        report.log_message("Starting restore point deletion")
+        try:
+            agent.configure_repository(repository_id)
+            with agent.resticapi.operation_cancellation(report.cancel_event):
+                snapshots = agent.resticapi.snapshots() or []
+                members = {item["id"] for item in snapshots if restore_point_key(item) == point_key}
+                requested = set(snapshot_ids)
+                if not requested or members - requested or any(
+                        item["id"] in requested and restore_point_key(item) != point_key for item in snapshots):
+                    raise ValueError("Restore point changed; reload the list before deleting")
+                # Report each confirmed batch even if a later batch or prune fails.
+                ids = sorted(members)
+                report.set_data("deleted_snapshot_ids", sorted(requested - members))
+                report.checkpoint()
+                for start in range(0, len(ids), 1000):
+                    agent.resticapi.forget_snapshots(ids[start:start + 1000], prune=False)
+                    report.set_data("deleted_snapshot_ids", report.data["deleted_snapshot_ids"] + ids[start:start + 1000])
+                    report.checkpoint()
+                report.log_message(f"Restore point snapshots removed ({len(ids)}); pruning unreferenced data")
+                report.data["prune"] = agent.resticapi.prune()
+        except Exception as exc:
+            report.log_message(f"Deleting restore point failed: {exc}", final_state=AgentReportState.failed)
+        return report.finish()
+
     @staticmethod
     def _reject_symlink_components(path):
         current = "/"
@@ -160,16 +189,18 @@ class RestoreService:
                 include_paths = RestoreService._normalize_include_paths(include_paths)
             if overwrite_policy not in ("fail_if_exists", "overwrite"):
                 raise ValueError("Unsupported overwrite policy")
-            if expected_job_tag != f"job_uuid:{job_uuid}":
+            if expected_job_tag is not None and expected_job_tag != f"job_uuid:{job_uuid}":
                 raise ValueError("Restore job tag does not match the job")
+            if expected_job_tag is None and (job_id is not None or job_uuid is not None or mode != "plain_file"):
+                raise ValueError("Unscoped restore supports only plain files without a job")
 
             with agent.resticapi.operation_cancellation(report.cancel_event):
                 agent.configure_repository(repository)
-                snapshots = agent.resticapi.snapshots(tags=[expected_job_tag]) or []
+                snapshots = agent.resticapi.snapshots(tags=[expected_job_tag] if expected_job_tag else []) or []
                 if isinstance(snapshots, dict):
                     snapshots = [snapshots]
                 snapshot = next((s for s in snapshots if s.get("id") == snapshot_id
-                                 and expected_job_tag in (s.get("tags") or [])), None)
+                                  and (expected_job_tag is None or expected_job_tag in (s.get("tags") or []))), None)
                 if snapshot is None:
                     raise ValueError("Snapshot does not belong to this job")
                 if mode == "plain_file":

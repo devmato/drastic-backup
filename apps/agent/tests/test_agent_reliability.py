@@ -5,17 +5,25 @@ import shutil
 import subprocess
 import sys
 from concurrent.futures import Future, ThreadPoolExecutor
+from contextlib import nullcontext
 from datetime import datetime, timezone
 from threading import Event
+from uuid import uuid4
 
 import dataset
 import pytest
+from test_agent_retention import Backend, Repo
 
+import drastic_agent.jobs.base as backup_base
+import drastic_agent.runtime.agent as runtime_module
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.jobs.file_backup import FileBackupJobHandler
+from drastic_agent.runtime import reporting
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services import secrets as repository_secrets_service
+from drastic_agent.services.restore import RestoreContext, RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.storage.database import (
     actions,
@@ -31,6 +39,7 @@ from drastic_agent.storage.database import (
 )
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
+from drastic_common.restic.snapshots import restore_point_key
 
 
 @pytest.fixture
@@ -80,6 +89,71 @@ class _OfflineAgent:
     @staticmethod
     def execute_actions(report, actions):
         assert list(actions) == []
+
+    @staticmethod
+    def cmd_run_retention(**kwargs):
+        return AgentReport.command_report(data={"cleanup_pending": False}).finish()
+
+
+@pytest.mark.parametrize("stage", ["next_batch", "prune"])
+def test_manual_deletion_replays_confirmed_removals_after_agent_restart(clean_agent_state, stage):
+    repo, backend = Repo(), Backend()
+    repo.operation_cancellation = lambda _: nullcontext()
+    artifacts = repo.add_run(backend, count=1100)
+    ids = [item["snapshot_id"] for item in artifacts]
+    key = restore_point_key(repo.items[ids[0]])
+    operation_uuid = str(uuid4())
+    sent = []
+
+    def interrupt():
+        report = AgentReport.get_report(uuid=operation_uuid)
+        assert report in AgentReport.pending_reports
+        stored = agent_operations.find_one(uuid=operation_uuid)
+        assert stored["state"] == "running"
+        assert set(stored["data"]["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
+        reporting.flush(lambda running: sent.append(AgentReportSchema().dump(running)) or True)
+        assert sent[-1]["state"] == "running" and sent[-1]["data"]["manual_delete"]
+        raise SystemExit("Simulated process restart")
+
+    forget = repo.forget_snapshots
+
+    def remove(batch, prune=False):
+        if stage == "next_batch" and repo.removed:
+            interrupt()
+        forget(batch, prune=prune)
+
+    repo.forget_snapshots = remove
+    repo.prune = interrupt
+    with pytest.raises(SystemExit):
+        RestoreService.delete_point(RestoreContext(repo, lambda _: None), repository_id=1,
+            snapshot_ids=ids, point_key=key, operation_uuid=operation_uuid)
+    AgentReport.load_queue()
+    AgentReport.recover_interrupted()
+    recovered = next(report for report in AgentReport.finished_reports if report.uuid == operation_uuid)
+    assert recovered.state == AgentOperationState.failed
+    assert set(recovered.data["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
+    assert len(recovered.data["deleted_snapshot_ids"]) == (1000 if stage == "next_batch" else 1100)
+    assert json.loads(agent_operation_queue.find_one(uuid=operation_uuid)["payload"])["data"] == recovered.data
+
+
+class _RetentionAgent(_OfflineAgent):
+    def __init__(self, resticapi, repository, settings, monkeypatch, backend):
+        super().__init__(resticapi, repository)
+        runtime = Agent.__new__(Agent)
+        runtime._Agent__resticapi = resticapi
+        runtime._Agent__set_repository = self.set_repository
+        def request(action, **kwargs):
+            assert action == "retention_context" and kwargs["repository_id"] == repository["id"]
+            return {"success": True, "result": backend(kwargs["operation_json"])}
+
+        runtime._Agent__send_request = request
+        monkeypatch.setattr(runtime_module, "agent_settings", settings)
+        def retain(**kwargs):
+            report = runtime.cmd_run_retention(**kwargs)
+            backend.accept(report)
+            return report
+
+        self.cmd_run_retention = retain
 
 
 def test_real_file_backup_finishes_in_durable_outbox(
@@ -132,7 +206,7 @@ def test_real_file_backup_finishes_in_durable_outbox(
     assert restored.data["stats"] == report.data["stats"]
 
 
-def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(tmp_path, restic_binary, clean_agent_state):
+def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(tmp_path, restic_binary, clean_agent_state, monkeypatch):
     source = tmp_path / "source"
     source.mkdir()
     repository = ResticRepository(location=str(tmp_path / "repository"), password="test-password")
@@ -141,21 +215,17 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
     (selected_folder / "keep.txt").write_text("unchanged content", encoding="utf-8")
     resticapi = ResticApi(binary_path=restic_binary, repository=repository, timeout=10)
     resticapi.init()
-    retentions.insert({"id": 73, "name": "Latest only", "keep_last": 1})
     settings_db = dataset.connect(f"sqlite:///{tmp_path}/settings.db")
     settings = settings_db["agent"]
     settings.create_column("name", settings_db.types.text)
     settings.create_column("settings", settings_db.types.text)
 
-    class RetentionAgent(_OfflineAgent):
-        def cmd_run_retention(self, **kwargs):
-            return RetentionService.run(**kwargs, set_repository=self.set_repository,
-                                        resticapi=self.resticapi, retentions_table=retentions,
-                                        operations_table=agent_operations,
-                                        operation_artifacts_table=agent_operation_artifacts,
-                                        settings_table=settings)
-
-    agent = RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location})
+    job_uuids = {job_id: str(uuid4()) for job_id in (83, 84)}
+    backend = Backend(job_uuids=list(job_uuids.values()), default={"keep_last": 3})
+    agent = _RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location}, settings, monkeypatch, backend)
+    retentions.insert({"id": 73, "keep_last": 1})
+    for job_id, job_uuid in job_uuids.items():
+        jobs.insert({"id": job_id, "uuid": job_uuid, "retention_id": 73})
     latest = []
     parents = {}
     try:
@@ -166,10 +236,11 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
             for job_id in (83, 84):
                 (source / "payload.txt").write_text(f"job {job_id}, cycle {cycle}", encoding="utf-8")
                 selection = selected_folder if cycle == 1 and job_id == 83 else source
-                report = FileBackupJobHandler(agent=agent, job={"id": job_id, "uuid": f"job-{job_id}",
-                    "type": "file", "config": {"paths": [{"path": str(selection)}], "exclude_patterns": []}},
-                    repository_id=73, retention_id=73, operation_uuid=f"chain-{cycle}-{job_id}").run()
+                report = FileBackupJobHandler(agent=agent, job={"id": job_id, "uuid": job_uuids[job_id],
+                    "type": "file", "retention_id": 73, "config": {"paths": [{"path": str(selection)}], "exclude_patterns": []}},
+                    repository_id=73, operation_uuid=str(uuid4())).run()
                 assert report.final_state == AgentOperationState.success
+                backend.accept(report)  # Normal outbox delivery of the terminal backup result.
                 snapshot_id = report.artifacts[0]["snapshot_id"]
                 snapshot = next(item for item in resticapi.snapshots() if item["id"] == snapshot_id)
                 assert snapshot.get("parent") == parents.get(job_id)
@@ -183,8 +254,66 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
         restored_source = target.joinpath(*source.parts[1:])
         assert (restored_source / "selected/keep.txt").read_text() == "unchanged content"
         assert not (restored_source / "payload.txt").exists()
-        assert not list(settings.all())
+        assert RetentionService.pending_tasks(settings) == []
+        snapshot = next(item for item in resticapi.snapshots() if item["id"] == parents[83])
+        deletion = RestoreService.delete_point(RestoreContext(resticapi, agent.set_repository),
+            repository_id=73, snapshot_ids=[snapshot["id"]], point_key=restore_point_key(snapshot), operation_uuid=str(uuid4()))
+        assert deletion.state == AgentOperationState.success
+        assert {item["id"] for item in resticapi.snapshots()} == {parents[84]}
         resticapi.check()
+    finally:
+        settings_db.engine.dispose()
+
+
+def test_real_backup_on_another_agent_cleans_deleted_job_without_its_local_history(
+    tmp_path, restic_binary, clean_agent_state, monkeypatch,
+):
+    source = tmp_path / "source"
+    source.mkdir()
+    payload = source / "payload.txt"
+    repository = ResticRepository(str(tmp_path / "repository"), "test-password")
+    restic = ResticApi(restic_binary, repository, timeout=10)
+    restic.init()
+    settings_db = dataset.connect(f"sqlite:///{tmp_path}/settings.db")
+    settings = settings_db["agent"]
+    settings.create_column("name", settings_db.types.text)
+    settings.create_column("settings", settings_db.types.text)
+    monkeypatch.setattr(backup_base, "agent_settings", settings)
+    original_uuid = str(uuid4())
+    other_uuid = str(uuid4())
+    backend = Backend(job_uuids=[original_uuid, other_uuid])
+    original = _RetentionAgent(restic, {"id": 1, "location": repository.location}, settings, monkeypatch, backend)
+    history = []
+    try:
+        for version in (1, 2):
+            payload.write_text(f"version {version}")
+            report = FileBackupJobHandler(original,
+                {"id": 7, "uuid": original_uuid, "config": {"paths": [{"path": str(source)}]}}, 1).run()
+            assert report.state == AgentOperationState.success
+            backend.accept(report)
+            history.append({"job_uuid": original_uuid, "operation_uuid": report.uuid, "artifact": report.artifacts[0]})
+        foreign_data = restic.backup_stdin("foreign backup", "payload.txt", tags=[f"job_uuid:{uuid4()}"])["snapshot_id"]
+        foreign_snapshots = {item["id"]: item for item in restic.snapshots()
+                             if item["id"] == foreign_data}
+        # Agent B has no source-agent history; the retained backend reports supply run membership.
+        agent_operation_artifacts.delete()
+        agent_operations.delete()
+        agent_operation_queue.delete()
+        AgentReport.finished_reports.clear()
+        backend.job_uuids = [other_uuid]
+        other_api = ResticApi(restic_binary, ResticRepository(repository.location, "test-password", backup_host="other-agent"), timeout=10)
+        other = _RetentionAgent(other_api, {"id": 1, "location": repository.location}, settings, monkeypatch, backend)
+        payload.write_text("other agent")
+        current = FileBackupJobHandler(other,
+            {"id": 8, "uuid": other_uuid, "retention_id": None, "config": {"paths": [{"path": str(source)}]}}, 1).run()
+        assert current.state == AgentOperationState.success
+        assert {snapshot["id"] for snapshot in restic.snapshots()} == {
+            history[1]["artifact"]["snapshot_id"], current.artifacts[0]["snapshot_id"], foreign_data}
+        assert {item["id"]: item for item in restic.snapshots() if item["id"] in foreign_snapshots} == foreign_snapshots
+        target = tmp_path / "restore"
+        restic.restore(history[1]["artifact"]["snapshot_id"], str(target), ["/"])
+        assert target.joinpath(*payload.parts[1:]).read_text() == "version 2"
+        assert RetentionService.pending_tasks(settings) == []
     finally:
         settings_db.engine.dispose()
 

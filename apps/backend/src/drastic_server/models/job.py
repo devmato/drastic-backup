@@ -20,6 +20,9 @@ class Job(IdMixin, TimeMixin, db.Model):
     __tablename__ = "jobs"
     uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     name = db.Column(db.String(255), nullable=False)
+    retention_mode = db.Column(db.String(16), nullable=False, default="default")
+    retention_id = db.Column(db.Integer, db.ForeignKey("retentions.id", ondelete="SET NULL"), nullable=True)
+    retention = db.relationship("Retention", foreign_keys=[retention_id])
     agent_id = db.Column(
         db.Integer,
         db.ForeignKey("agents.id", ondelete="CASCADE"),
@@ -40,6 +43,14 @@ class Job(IdMixin, TimeMixin, db.Model):
                 backup_operations,
                 key=lambda operation: (operation.started or datetime.min, operation.id or 0),
             )
+
+    @property
+    def effective_retention_id(self):
+        if self.retention_mode == "custom":
+            return self.retention_id
+        if self.retention_mode == "disabled":
+            return None
+        return self.agent.user.default_retention_id
 
     @property
     def type_text(self):
@@ -99,13 +110,6 @@ class JobSchedule(IdMixin, TimeMixin, db.Model):
 
     repository_id = db.Column(db.Integer, db.ForeignKey("repositories.id"), nullable=False)
     repository = db.relationship("Repository", foreign_keys=[repository_id], backref="schedules")
-
-    retention_id = db.Column(
-        db.Integer,
-        db.ForeignKey("retentions.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    retention = db.relationship("Retention", backref="job_schedules")
 
     enabled = db.Column(db.Boolean, nullable=False, default=False)
     advanced = db.Column(db.Boolean, nullable=False, default=False)

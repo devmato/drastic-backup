@@ -37,7 +37,7 @@
             <q-item-label caption>Step {{ chain.position }} of {{ chain.step_count }}{{ chain.previous_job_name ? ` · after ${chain.previous_job_name}` : '' }}</q-item-label>
             <q-item-label v-for="(schedule, index) in chain.schedules" :key="index" caption>Chain starts: {{ schedule.cron_description }} UTC{{ schedule.enabled ? '' : ' · Disabled' }}</q-item-label>
             <q-item-label caption>This job starts when its turn arrives.</q-item-label>
-            <q-item-label caption>{{ getRepositoryName(chain.repository_id) }} · Retention: {{ getRetentionName(chain.retention_id) }}</q-item-label>
+            <q-item-label caption>{{ getRepositoryName(chain.repository_id) }}</q-item-label>
           </q-item-section>
           <q-item-section side><q-btn flat no-caps color="primary" label="Open Chain" @click="emit('open-chain', chain.id)" /></q-item-section>
         </q-item>
@@ -49,7 +49,6 @@
       :schedule="editingSchedule"
       :repositories="repositories"
       :all-repositories="allRepositories"
-      :retentions="retentionStore.retentions"
       :time-only="timeOnly"
       :timezone="timezone"
       :agent-id="agentId"
@@ -60,9 +59,8 @@
 
 <script setup>
 import TableActionButton from 'components/TableActionButton.vue'
-import { computed, onMounted, ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useQuasar } from 'quasar'
-import { useRetentionStore } from 'stores/retention'
 import ScheduleManageDialog from 'components/ScheduleManageDialog.vue'
 import { describeTiming, scheduleTiming, retrySettings } from 'src/utils/schedule'
 
@@ -80,7 +78,6 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'open-chain'])
 
 const $q = useQuasar()
-const retentionStore = useRetentionStore()
 
 const scheduleDialogVisible = ref(false)
 const editingSchedule = ref(null)
@@ -92,7 +89,6 @@ const scheduleColumns = computed(() => [
   { name: 'cron_description', label: props.timezone ? `Description (${props.timezone})` : 'Description', field: row => row.cron_description || getCronDescription(row), align: 'left' },
   ...(!props.timeOnly ? [
     { name: 'repository_name', label: 'Repository', field: row => row.repository_name || getRepositoryName(row.repository_id), align: 'left' },
-    { name: 'retention_name', label: 'Retention', field: row => row.retention_name || getRetentionName(row.retention_id), align: 'left' },
     { name: 'repository_check', label: 'Check', field: getRepositoryCheckLabel, align: 'left' },
   ] : []),
   { name: 'actions', label: '', field: 'id', align: 'right' },
@@ -101,11 +97,6 @@ const scheduleColumns = computed(() => [
 function getRepositoryName(repositoryId) {
   const repository = props.allRepositories.find(item => item.id === repositoryId) || props.repositories.find(item => item.id === repositoryId)
   return repository?.repository_name || repository?.name || '-'
-}
-
-function getRetentionName(retentionId) {
-  if (!retentionId) return 'None'
-  return retentionStore.retentions.find(retention => retention.id === retentionId)?.name || '-'
 }
 
 function getRepositoryCheckLabel(schedule) {
@@ -123,7 +114,6 @@ function cloneSchedule(schedule) {
     ...schedule,
     timing: scheduleTiming(schedule),
     repository_id: schedule.repository_id,
-    retention_id: schedule.retention_id || null,
     config: cloneScheduleConfig(schedule.config),
   }
 }
@@ -164,10 +154,6 @@ function confirmDeleteSchedule(schedule) {
     emit('update:modelValue', props.modelValue.filter(item => item.id !== schedule.id).map(cloneSchedule))
   })
 }
-
-onMounted(() => {
-  if (!props.timeOnly) retentionStore.loadRetentions()
-})
 
 defineOptions({ name: 'SchedulesPanel' })
 </script>

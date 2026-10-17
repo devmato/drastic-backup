@@ -6,6 +6,7 @@ import os
 import platform
 import re
 import secrets
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -23,6 +24,7 @@ from drastic_agent.agent.action import AgentAction
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.config import DefaultConfig, env_flag, env_int, env_value
 from drastic_agent.integrations.restic_binary import ensure_binary
 from drastic_agent.jobs.context import BackupContext
@@ -36,7 +38,6 @@ from drastic_agent.services.restore import RestoreContext, RestoreService
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.storage.database import (
     actions,
-    agent_operation_artifacts,
     agent_operations,
     db,
     jobs,
@@ -61,7 +62,7 @@ from drastic_common.agent.commands import (
 )
 from drastic_common.agent.enums import AgentJobActionModule
 from drastic_common.restic import RESTIC_VERSION, ResticApi
-from drastic_common.restic.exceptions import ResticError
+from drastic_common.restic.exceptions import ResticError, is_repository_locked
 from drastic_common.restic.repository import ResticRepository
 from drastic_common.scheduling import TimingSchema, preview
 from drastic_common.secret_envelope import generate_agent_keypair
@@ -1122,13 +1123,20 @@ class Agent:
         elif read_data_subset:
             report.log_message(f"Reading data subset: {read_data_subset}")
 
+        configured = False
         try:
             self.__set_repository(repository_id)
-            report.data["check"] = self.__resticapi.check(
-                read_data=read_data_full,
-                read_data_subset=read_data_subset,
-            )
-        except (ResticError, AgentExeption) as e:
+            configured = True
+            report.data["check"] = self.__resticapi.check(read_data=read_data_full, read_data_subset=read_data_subset)
+            if read_data_full:
+                agent_settings.delete(name=f"retention_check_failed:{repository_id}")
+        except (ResticError, AgentExeption, ValueError) as e:
+            if configured:
+                if is_repository_locked(e):
+                    report.data["repository_locked"] = True
+                else:
+                    RetentionService.record_check_failure(agent_settings, repository_id)
+                    report.data["retention_check_failed"] = True
             report.log_message(f"Repository check failed: {e}", final_state=AgentReportState.failed)
             return report.finish()
 
@@ -1234,16 +1242,15 @@ class Agent:
         self,
         job_id,
         repository_id,
-        retention_id=None,
         operation_uuid=None,
         run_options=None,
     ):
         if (run_options or {}).get("chain_run_id"):
             reason = self.__validate_run_job_admission({"job_id": job_id, "repository_id": repository_id,
-                                                       "retention_id": retention_id, "run_options": run_options})
+                                                       "run_options": run_options})
             if reason:
                 report = AgentReport.backup_operation(job_id=job_id, repository_id=repository_id,
-                                                      retention_id=retention_id, operation_uuid=operation_uuid)
+                                                      operation_uuid=operation_uuid)
                 report.set_data("chain_run_id", run_options["chain_run_id"])
                 report.set_data("start_skipped", True)
                 report.set_data("start_skip_reason", reason)
@@ -1282,7 +1289,6 @@ class Agent:
                 ),
                 job=job,
                 repository_id=repository_id,
-                retention_id=retention_id,
                 operation_uuid=operation_uuid,
                 run_options=run_options or {},
             )
@@ -1313,7 +1319,7 @@ class Agent:
             for task in RetentionService.pending_tasks(agent_settings):
                 self.__execution_manager().submit(
                     self.cmd_run_retention, **task, retry=True,
-                    resources={("job", task["job_id"]), ("repository", task["repository_id"])},
+                    resources={("repository", task["repository_id"])} | ({("job", task["job_id"])} if task["job_id"] is not None else set()),
                 )
         except Exception:
             logging.exception("Could not retry pending retention")
@@ -1369,20 +1375,39 @@ class Agent:
 
     """ Run restore point retention """
 
-    def cmd_run_retention(self, repository_id, retention_id, job_id, current_operation_uuid=None, retry=False):
-        return RetentionService.run(
-            repository_id=repository_id,
-            retention_id=retention_id,
-            job_id=job_id,
-            current_operation_uuid=current_operation_uuid,
-            set_repository=self.__set_repository,
-            resticapi=self.__resticapi,
-            retentions_table=retentions,
-            operations_table=agent_operations,
-            operation_artifacts_table=agent_operation_artifacts,
-            settings_table=agent_settings,
-            retry=retry,
+    def cmd_run_retention(self, repository_id, job_id, current_operation_uuid=None, retry=False, job_uuid=None):
+        old_key = f"retention_task:{repository_id}:{job_uuid or job_id}"
+        job = jobs.find_one(id=job_id)
+        if job and job_uuid and job.get("uuid") != job_uuid:
+            job = None
+        job_uuid = job_uuid or (job.get("uuid") if job else None)
+        source = AgentReport.get_report(uuid=current_operation_uuid) if current_operation_uuid and not retry else None
+        # Sync already resolves the executing job's default/custom selection to its effective policy ID.
+        policy = None
+        if job and job.get("retention_id"):
+            selected = retentions.find_one(id=job.get("retention_id"))
+            if selected:
+                policy = {key: selected.get(key) for key in ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
+
+        def request_context(operation=None):
+            payload = None
+            if operation is not None:
+                with operation._lock:
+                    payload = deepcopy(AgentReportSchema().dump(operation))
+            # Normal outbox delivery can replay this same report; do not advance its acknowledgment here.
+            response = self.__send_request("retention_context", repository_id=repository_id, operation_json=payload, job_uuid=job_uuid)
+            if not response.get("success"):
+                raise AgentExeption("Backend retention context unavailable; cleanup deferred")
+            return response["result"]
+
+        report = RetentionService.run(
+            repository_id=repository_id, job_id=job_id if job else None, job_uuid=job_uuid, current_operation_uuid=current_operation_uuid,
+            current_policy=policy, request_context=request_context, set_repository=self.__set_repository,
+            resticapi=self.__resticapi, settings=agent_settings, source=source,
         )
+        if old_key != f"retention_task:{repository_id}:{job_uuid or (job_id if job else None) or 'repository'}":
+            agent_settings.delete(name=old_key)
+        return report
 
     """ Unlock repository """
 
@@ -1432,6 +1457,9 @@ class Agent:
 
     def cmd_run_restore(self, **kwargs):
         return RestoreService.run_restore(agent=self.__restore_context(), **kwargs)
+
+    def cmd_delete_restore_point(self, **kwargs):
+        return RestoreService.delete_point(agent=RestoreContext(self.resticapi, self.__set_repository), **kwargs)
 
     def cmd_proxmox_restore(self, action, **kwargs):
         from drastic_agent.services.proxmox_restore import (

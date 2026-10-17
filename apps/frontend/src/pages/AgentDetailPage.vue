@@ -209,6 +209,7 @@
       :kind="editingConnection"
       @updated="loadAgent"
     />
+    <RestoreDialog v-model="restoreDialogOpen" :agent-id="agent?.id" :agents="agentStore.agents" @started="restoreStarted" />
   </q-page>
 </template>
 
@@ -222,6 +223,7 @@ import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useUserStore } from 'stores/user'
 import AgentConnectionDialog from 'components/agents/AgentConnectionDialog.vue'
+import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getAgentConnections, getAvailableConnectionTypes } from 'src/utils/agent-connections'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { supportsAgentUpdate } from 'src/utils/agent-updates'
@@ -240,6 +242,11 @@ watch([() => agent.value?.id, () => agent.value?.alias], () => {
 const loading = ref(false)
 const loadError = ref('')
 const connectionDialogOpen = ref(false)
+const restoreDialogOpen = ref(false)
+
+function restoreStarted(result) {
+  router.push({ path: `/agents/${result.agent_id}/operations/${result.operation_id}`, query: { agent_id: String(result.agent_id) } })
+}
 const editingConnection = ref(null)
 const removingConnection = ref(null)
 const connections = computed(() => getAgentConnections(agent.value))
@@ -261,6 +268,11 @@ const supportsConnections = computed(() => (agent.value?.protocol_version || 0) 
 const supportsUpdate = computed(() => supportsAgentUpdate(agent.value))
 
 const agentActions = computed(() => [
+  {
+    name: 'restore', title: 'Restore backup', icon: 'restore', color: 'primary',
+    description: 'Restore from an accessible repository, including backups of deleted jobs.',
+    run: () => { restoreDialogOpen.value = true },
+  },
   ...(supportsUpdate.value ? [{
     name: 'update', title: 'Update Agent', icon: 'system_update', color: 'primary',
     description: 'Update from the saved Git repository and ref; tags and commits stay pinned.',

@@ -168,7 +168,7 @@ function formatDate(isoStr) {
 
 function showOperation(operation) {
   router.push({
-    path: `/agents/${operation.agent_id}/operations/${operation.id}`,
+    path: `/agents/operations/${operation.id}`,
     query: operationFilters(route.query),
   })
 }
@@ -236,7 +236,9 @@ async function syncJobSocketListener() {
 function confirmDeleteOperation(operation) {
   $q.dialog({
     title: 'Delete Operation',
-    message: 'Delete this operation?',
+    message: operation.type === 'backup'
+      ? 'Delete this report and its logs? Backup snapshots remain available for restore, but snapshots belonging to this report will no longer be managed by automatic retention.'
+      : 'Delete this report and its logs?',
     cancel: true,
   }).onOk(async () => {
     try {

@@ -74,6 +74,159 @@ def test_vm_restore_dispatch_and_protocol_gate(restore_api):
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("mode", ["plain_file", "proxmox_vm", "proxmox_prepare", "proxmox_files"])
+def test_restore_after_hard_job_deletion(restore_api, monkeypatch, mode):
+    client, source, agent, foreign, job, calls = restore_api
+    job_uuid = job.uuid
+    monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
+    assert client.delete(f"/api/jobs/{job.id}").status_code == 200
+    assert db.session.get(Job, source["job_id"]) is None
+    source.pop("job_id")
+    query = {key: value for key, value in source.items() if key != "snapshot_id"}
+    response = client.get("/api/restores/snapshots", query_string=query)
+    assert response.status_code == 200
+    assert response.json["snapshots"][0]["proxmox_archive"] is True
+    payload = {**source, "mode": mode, "restore_location": "/restore", "include_paths": ["/etc"],
+               "vmid": 101, "storage": "local-lvm", "session_id": str(uuid4()), "volume": "/dev/sda1"}
+    assert client.post("/api/restores/", json={**payload, "agent_id": foreign.id}).status_code == 404
+    response = client.post("/api/restores/", json=payload)
+    assert response.status_code == 202
+    assert calls[-1]["job_id"] is None
+    assert calls[-1]["job_uuid"] == job_uuid
+    operation = db.session.get(AgentOperation, response.json["operation_id"])
+    assert operation.job_id is None and operation.data["job_uuid"] == job_uuid
+
+
+def test_job_retention_defaults_ownership_and_sync(restore_api, monkeypatch):
+    from drastic_server.models.retention import Retention
+    from drastic_server.services.agent.request import AgentRequestService
+    from drastic_server.services.exceptions import ResourceNotFound
+    from drastic_server.services.jobs.configuration import configure_job_retention
+
+    client, _, agent, foreign, job, _ = restore_api
+    agent.protocol_version = 21
+    policy = Retention(user_id=agent.user_id, name="Default", keep_last=3)
+    second = Retention(user_id=agent.user_id, name="Other", keep_last=2)
+    other = Retention(user_id=foreign.user_id, name="Foreign", keep_last=1)
+    db.session.add_all([policy, second, other])
+    db.session.commit()
+    monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
+    assert job.effective_retention_id is None
+    assert client.put(f"/api/retentions/{other.id}", json={"is_default": True}).status_code == 404
+    for target, selected, expected in [(policy.id, True, policy.id), (second.id, False, policy.id),
+                                       (second.id, True, second.id), (policy.id, False, second.id),
+                                       (second.id, False, None), (policy.id, True, policy.id)]:
+        assert client.put(f"/api/retentions/{target}", json={"is_default": selected}).status_code == 200
+        assert job.effective_retention_id == expected
+    assert client.put(f"/api/retentions/{policy.id}", json={"keep_last": 4}).status_code == 200
+    assert client.get("/api/retentions/").json[0]["is_default"] is True
+    configure_job_retention(agent.user_id, job, {"retention_mode": "disabled"})
+    assert job.effective_retention_id is None
+    with pytest.raises(ResourceNotFound):
+        configure_job_retention(agent.user_id, job, {"retention_mode": "custom", "retention_id": other.id})
+    configure_job_retention(agent.user_id, job, {"retention_mode": "custom", "retention_id": policy.id})
+    db.session.commit()
+    request = AgentRequestService(agent)
+    monkeypatch.setattr(request, "_repositories_payload", lambda: [])
+    monkeypatch.setattr(request, "_secret_envelopes_payload", lambda: [])
+    synced = request.sync()
+    assert synced["jobs"][0]["retention_id"] == policy.id
+    assert client.delete(f"/api/retentions/{policy.id}").status_code == 200
+    db.session.refresh(job)
+    assert job.retention_mode == "disabled" and job.retention_id is None
+    assert agent.user.default_retention_id is None
+
+
+def test_deleted_job_restore_session_can_close_without_source_snapshot(restore_api, monkeypatch):
+    client, source, agent, _, job, _ = restore_api
+    identity = {"job_uuid": job.uuid, "repository_id": source["repository_id"], "snapshot_id": source["snapshot_id"]}
+    db.session.delete(job)
+    db.session.commit()
+    commands = []
+    monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: pytest.fail("Closing must not read a removed snapshot"))
+    monkeypatch.setattr(AgentService, "send_command", lambda *a, **kw: commands.append(kw) or {"state": AgentOperationState.success})
+    response = client.post("/api/restores/proxmox", json={**identity, "agent_id": agent.id,
+                           "session_id": str(uuid4()), "action": "close"})
+    assert response.status_code == 200
+    assert commands[0]["identity"] == identity
+
+
+def test_all_repository_snapshots_are_listed_and_foreign_backups_restore_as_files(restore_api, monkeypatch):
+    client, source, agent, _, _, calls = restore_api
+    agent.protocol_version = 22
+    monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: {
+        "state": AgentOperationState.success, "data": {"snapshots": [{"id": "foreign", "tags": [], "paths": ["/data"]}]}})
+    query = {"agent_id": agent.id, "repository_id": source["repository_id"]}
+    snapshots = client.get("/api/restores/snapshots", query_string=query).json["snapshots"]
+    assert snapshots[0]["id"] == "foreign" and not snapshots[0]["proxmox_archive"]
+    payload = {**query, "snapshot_id": "foreign", "mode": "plain_file", "restore_location": "/restore", "include_paths": ["/"]}
+    assert client.post("/api/restores/", json=payload).status_code == 202
+    assert calls[-1]["job_uuid"] is None and calls[-1]["expected_job_tag"] is None
+    assert client.post("/api/restores/", json={**payload, "mode": "proxmox_vm", "vmid": 101, "storage": "local"}).status_code == 400
+
+
+@pytest.mark.parametrize("case", ["success", "foreign_agent", "stale_members", "running", "old_protocol"])
+def test_restore_point_deletion_groups_by_run_and_checks_access(restore_api, monkeypatch, case):
+    client, source, agent, foreign, job, _ = restore_api
+    agent.protocol_version = 22 if case != "old_protocol" else 21
+    run = AgentOperation(agent=agent, job=job, repository_id=source["repository_id"], type=AgentOperationType.backup,
+                         state=AgentOperationState.running if case == "running" else AgentOperationState.success)
+    db.session.add(run)
+    db.session.commit()
+    tags = [f"job_uuid:{job.uuid}", f"operation_uuid:{run.uuid}"]
+    snapshots = [{"id": "a", "tags": tags}, {"id": "b", "tags": tags}, {"id": "other", "tags": []}]
+    artifact = AgentOperationArtifact(operation=run, artifact_key="default", snapshot_id="a", state="success")
+    db.session.add(artifact)
+    db.session.commit()
+    monkeypatch.setattr(AgentService, "list_restore_snapshots", lambda *a, **kw: {
+        "state": AgentOperationState.success, "data": {"snapshots": snapshots}})
+    dispatched = []
+
+    def dispatch(agent, command, **kwargs):
+        dispatched.append(kwargs)
+        return {"state": AgentOperationState.success, "data": {}}
+
+    monkeypatch.setattr(AgentService, "send_command", dispatch)
+    payload = {"agent_id": foreign.id if case == "foreign_agent" else agent.id, "repository_id": source["repository_id"],
+               "snapshot_id": "a", "snapshot_ids": ["a"] if case == "stale_members" else ["a", "b"]}
+    response = client.post("/api/restores/snapshots/delete", json=payload)
+    assert response.status_code == (202 if case == "success" else 404 if case == "foreign_agent" else 400)
+    if case == "success":
+        assert set(dispatched[0]["snapshot_ids"]) == {"a", "b"}
+        from drastic_server.services.operations.reports import AgentOperationService
+
+        AgentOperationService(agent).ingest({"uuid": dispatched[0]["operation_uuid"], "type": "retention", "state": "failed",
+            "repository_id": source["repository_id"], "data": {"scope": "repository", "manual_delete": True,
+            "deleted_snapshot_ids": ["a", "b"], "error": "prune failed"}})
+        assert artifact.forgotten_at is not None
+    else:
+        assert not dispatched
+
+
+def test_deleted_job_cleanup_reports_do_not_affect_other_jobs(restore_api):
+    from datetime import datetime
+
+    from drastic_server.services.operations.reports import AgentOperationService
+
+    _, source, agent, _, replacement_job, _ = restore_api
+    old_uuid, other_uuid = str(uuid4()), str(uuid4())
+    backups = [AgentOperation(agent=agent, repository_id=source["repository_id"],
+               type=AgentOperationType.backup, state=AgentOperationState.warning,
+               started=datetime(2026, 1, 1), ended=datetime(2026, 1, 2),
+               data={"job_uuid": job_uuid, "cleanup_pending": True}) for job_uuid in (old_uuid, other_uuid)]
+    db.session.add_all(backups)
+    db.session.commit()
+    operation_id = AgentOperationService(agent).ingest({
+        "uuid": str(uuid4()), "type": "retention", "state": "success",
+        "job_id": replacement_job.id, "repository_id": source["repository_id"],
+        "started": "2026-01-03T00:00:00Z", "ended": "2026-01-03T00:01:00Z",
+        "data": {"job_uuid": old_uuid, "cleanup_pending": False},
+    })
+    assert db.session.get(AgentOperation, operation_id).job_id is None
+    assert backups[0].data["cleanup_pending"] is False
+    assert backups[1].data["cleanup_pending"] is True
+
+
 @pytest.mark.parametrize("options", [
     {"ownership_by_name": True}, {"skip_xattrs": True}, {"ownership_by_name": True, "skip_xattrs": True},
 ])

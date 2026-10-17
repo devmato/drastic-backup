@@ -33,6 +33,8 @@ class Repository(IdMixin, TimeMixin, db.Model):
     )
     password_secret = db.relationship("UserSecret", foreign_keys=[password_secret_id])
     restic_id = db.Column(db.String(255), nullable=True)
+    # Reported failures require verification; new repositories have no automatic full-read requirement.
+    retention_check_token = db.Column(db.String(36), nullable=True)
     _environment = db.Column("encrypted_environment", db.JSON, nullable=True)
 
     @property

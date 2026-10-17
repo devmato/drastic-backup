@@ -5,7 +5,9 @@ from datetime import datetime, timezone
 from apprise import Apprise
 from flask import current_app, render_template
 from jinja2 import TemplateNotFound
+from sqlalchemy import or_
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import joinedload
 
 from drastic_server.extensions import db
 from drastic_server.models.agent import (
@@ -37,25 +39,40 @@ class AgentOperationService:
         if operation_data["type"] == AgentOperationType.command and operation_data["data"].get("diagnostic"):
             from drastic_server.services.diagnostics import ingest_report
             return ingest_report(self.agent, operation_data)
+        if not Agent.query.filter_by(id=self.agent.id, user_id=self.agent.user_id).with_for_update().first():
+            raise PermissionError("Agent no longer exists")
+        if operation_data.get("repository_id"):
+            # Serialize artifact arrival and deletion acknowledgments in this repository,
+            # not the remote cleanup itself. Always lock agent -> repository -> operation.
+            Repository.query.filter_by(id=operation_data["repository_id"], user_id=self.agent.user_id).populate_existing().with_for_update().first()
         operation = AgentOperation.query.filter(
             AgentOperation.uuid == operation_data["uuid"]
-        ).first()
+        ).populate_existing().with_for_update().first()
 
         new_operation = False
         if operation:
             if operation.agent_id != self.agent.id:
                 raise PermissionError("Operation does not belong to this agent")
+            if ((operation_data.get("data", {}).get("scope") == "repository" or (operation.data or {}).get("scope") == "repository")
+                    and operation.repository_id != operation_data.get("repository_id")):
+                raise PermissionError("Retention repository changed during report replay")
+            if (operation.data or {}).get("manual_delete"):
+                data = operation_data["data"]
+                data.update(manual_delete=True, scope="repository", deleted_snapshot_ids=sorted(
+                    set(operation.data.get("deleted_snapshot_ids", [])) | set(data.get("deleted_snapshot_ids", []))))
         else:
             self._resolve_new_operation_references(operation_data)
 
         self._validate_artifact_references(operation_data)
+        self._apply_retention_artifacts(operation_data)
 
         if not operation:
-            operation = AgentOperation(uuid=operation_data["uuid"], agent_id=self.agent.id)
+            operation = AgentOperation(uuid=operation_data["uuid"], agent=self.agent)
             new_operation = True
             db.session.add(operation)
 
         previous_state = operation.state
+        previous_data = dict(operation.data or {})
         if new_operation:
             operation.type = operation_data["type"]
             operation.source = operation_data["source"]
@@ -68,6 +85,19 @@ class AgentOperationService:
         pending_parent_uuid = (operation.data or {}).get(_PENDING_PARENT_UUID_KEY)
         operation_data_payload = dict(operation_data.get("data") or {})
         operation_data_payload.pop(_PENDING_PARENT_UUID_KEY, None)
+        if (operation_data["type"] == AgentOperationType.repository_check and operation_data["state"] == AgentOperationState.failed
+                and not operation_data_payload.get("repository_locked")):
+            operation_data_payload["retention_check_failed"] = True
+        if previous_data.get("job_uuid"):
+            operation_data_payload["job_uuid"] = previous_data["job_uuid"]
+        if previous_data.get("backup_data_complete"):
+            # A delayed progress report cannot retract an acknowledged complete backup.
+            operation_data_payload["backup_data_complete"] = True
+            if "backup_items_total" in previous_data:
+                operation_data_payload["backup_items_total"] = previous_data["backup_items_total"]
+        for key in ("retention_check_failed", "retention_check_token"):
+            if previous_data.get(key):
+                operation_data_payload[key] = previous_data[key]
         operation.data = operation_data_payload
         if new_operation:
             self._set_parent_operation(operation, operation_data.get("parent_operation_uuid"))
@@ -80,10 +110,9 @@ class AgentOperationService:
 
         self._upsert_logs(operation, operation_data.get("logs") or [])
         self._upsert_artifacts(operation, operation_data.get("artifacts") or [])
-        self._mark_forgotten_artifacts(operation_data)
         self._link_waiting_children(operation)
         self._apply_retention_results(operation)
-        self._update_repository_from_operation(operation)
+        self._update_repository_from_operation(operation, previous_data)
         new_delivery_ids = self._queue_notification_deliveries(
             operation,
             new_operation=new_operation,
@@ -104,17 +133,26 @@ class AgentOperationService:
 
     @staticmethod
     def _apply_retention_results(operation):
-        parent = operation.parent_operation if operation.type == AgentOperationType.retention else operation
         if operation.type not in {AgentOperationType.backup, AgentOperationType.retention}:
             return
-        latest = AgentOperation.query.filter(
+        parent = (AgentOperation.query.filter_by(id=operation.parent_operation_id).populate_existing().with_for_update().first()
+                  if operation.type == AgentOperationType.retention else operation)
+        job_uuid = (operation.data or {}).get("job_uuid")
+        if operation.job_id is None and not job_uuid:
+            return  # Historical deleted jobs without identity must not share cleanup status.
+        scope = [
             AgentOperation.agent_id == operation.agent_id,
             AgentOperation.job_id == operation.job_id,
             AgentOperation.repository_id == operation.repository_id,
+        ]
+        if job_uuid:
+            scope.append(AgentOperation.data["job_uuid"].as_string() == job_uuid)
+        latest = AgentOperation.query.filter(
+            *scope,
             AgentOperation.type == AgentOperationType.retention,
             AgentOperation.state != AgentOperationState.running,
             AgentOperation.ended.is_not(None),
-        ).order_by(AgentOperation.ended.desc(), AgentOperation.id.desc()).first()
+        ).order_by(AgentOperation.ended.desc(), AgentOperation.id.desc()).populate_existing().with_for_update().first()
         if latest:
             cleanup_pending = bool((latest.data or {}).get("cleanup_pending", latest.state != AgentOperationState.success))
             if (parent is not None and parent.type == AgentOperationType.backup
@@ -123,8 +161,7 @@ class AgentOperationService:
                                "cleanup_pending": cleanup_pending}
             if not cleanup_pending:
                 # New retention work supersedes older pending work for the same job/repo.
-                for backup in AgentOperation.query.filter_by(agent_id=operation.agent_id, job_id=operation.job_id,
-                                                            repository_id=operation.repository_id, type=AgentOperationType.backup):
+                for backup in AgentOperation.query.filter(*scope, AgentOperation.type == AgentOperationType.backup).populate_existing().with_for_update().all():
                     if (backup.data or {}).get("cleanup_pending") and backup.started and backup.started <= latest.ended:
                         backup.data = {**backup.data, "retention_state": latest.state.name, "cleanup_pending": False}
 
@@ -134,7 +171,7 @@ class AgentOperationService:
         parent = AgentOperation.query.filter(
             AgentOperation.uuid == parent_uuid,
             AgentOperation.agent_id == self.agent.id,
-        ).first()
+        ).populate_existing().with_for_update().first()
         if parent is not None:
             operation.parent_operation = parent
             return
@@ -150,7 +187,7 @@ class AgentOperationService:
             AgentOperation.parent_operation_id.is_(None),
             AgentOperation.id != parent.id,
             AgentOperation.data[_PENDING_PARENT_UUID_KEY].as_string() == parent.uuid,
-        ).all()
+        ).populate_existing().with_for_update().all()
         for child in waiting_children:
             child.parent_operation = parent
             child_data = dict(child.data or {})
@@ -160,32 +197,34 @@ class AgentOperationService:
     def _resolve_new_operation_references(self, operation_data):
         job_id = operation_data.get("job_id")
         if job_id:
-            job = db.session.get(Job, job_id)
+            job = Job.query.filter_by(id=job_id).populate_existing().with_for_update().first()
             if job is None:
                 operation_data["job_id"] = None
             elif job.agent_id != self.agent.id:
                 raise PermissionError("Job does not belong to this agent")
+            elif (operation_data.get("data") or {}).get("job_uuid") not in (None, job.uuid):
+                operation_data["job_id"] = None  # Numeric IDs can be reused after hard deletion.
 
         repository_id = operation_data.get("repository_id")
         if repository_id:
-            repository = db.session.get(Repository, repository_id)
+            repository = Repository.query.filter_by(id=repository_id).populate_existing().with_for_update().first()
             if repository is None:
                 operation_data["repository_id"] = None
-            elif not Repository.query.filter(
+            elif not Repository.query.join(Repository.agents).filter(
                 Repository.id == repository_id,
-                Repository.agents.any(Agent.id == self.agent.id),
-            ).first():
+                Agent.id == self.agent.id,
+            ).populate_existing().with_for_update().first():
                 raise PermissionError("Repository is not assigned to this agent")
 
         parent_uuid = operation_data.get("parent_operation_uuid")
         if parent_uuid:
-            parent = AgentOperation.query.filter(AgentOperation.uuid == parent_uuid).first()
+            parent = AgentOperation.query.filter(AgentOperation.uuid == parent_uuid).populate_existing().with_for_update().first()
             if parent is not None and parent.agent_id != self.agent.id:
                 raise PermissionError("Parent operation does not belong to this agent")
 
         schedule_id = operation_data.get("schedule_id")
         if schedule_id:
-            schedule = db.session.get(JobSchedule, schedule_id)
+            schedule = JobSchedule.query.filter_by(id=schedule_id).populate_existing().with_for_update().first()
             if schedule is None:
                 operation_data["schedule_id"] = None
             elif schedule.job.agent_id != self.agent.id:
@@ -200,7 +239,7 @@ class AgentOperationService:
 
         retention_id = operation_data.get("retention_id")
         if retention_id:
-            retention = db.session.get(Retention, retention_id)
+            retention = Retention.query.filter_by(id=retention_id).populate_existing().with_for_update().first()
             if retention is None:
                 operation_data["retention_id"] = None
             elif retention.user_id != self.agent.user_id:
@@ -212,11 +251,6 @@ class AgentOperationService:
             for artifact_data in operation_data.get("artifacts") or []
             if artifact_data.get("uuid")
         }
-        artifact_uuids.update(
-            artifact_data.get("uuid")
-            for artifact_data in (operation_data.get("data") or {}).get("forgotten_artifacts") or []
-            if artifact_data.get("uuid")
-        )
         if not artifact_uuids:
             return
 
@@ -224,7 +258,7 @@ class AgentOperationService:
             AgentOperationArtifact.query.join(AgentOperation)
             .filter(
                 AgentOperationArtifact.uuid.in_(artifact_uuids),
-                AgentOperation.agent_id != self.agent.id,
+                or_(AgentOperation.agent_id.is_(None), AgentOperation.agent_id != self.agent.id),
             )
             .first()
         )
@@ -240,7 +274,7 @@ class AgentOperationService:
             log = AgentOperationLog.query.filter(
                 AgentOperationLog.operation_id == operation.id,
                 AgentOperationLog.sequence == sequence,
-            ).first()
+            ).populate_existing().with_for_update().first()
             if log is None:
                 log = AgentOperationLog(operation_id=operation.id, sequence=sequence)
                 db.session.add(log)
@@ -251,6 +285,8 @@ class AgentOperationService:
 
     @staticmethod
     def _upsert_artifacts(operation, artifacts):
+        """Caller holds the repository lock; locking reads see receipts committed while it waited."""
+        deleted_ids = None
         for artifact_data in artifacts:
             artifact_key = str(artifact_data.get("artifact_key") or "").strip()
             if not artifact_key:
@@ -258,48 +294,85 @@ class AgentOperationService:
             artifact = AgentOperationArtifact.query.filter(
                 AgentOperationArtifact.operation_id == operation.id,
                 AgentOperationArtifact.artifact_key == artifact_key,
-            ).first()
+            ).populate_existing().with_for_update().first()
             if artifact is None:
                 artifact = AgentOperationArtifact(
                     operation_id=operation.id, artifact_key=artifact_key
                 )
                 db.session.add(artifact)
 
+            previous_snapshot_id = artifact.snapshot_id
             if artifact_data.get("uuid"):
                 artifact.uuid = artifact_data["uuid"]
-            artifact.snapshot_id = artifact_data.get("snapshot_id")
-            artifact.state = artifact_data.get("state") or "running"
+            if artifact.state != "success" or not artifact.snapshot_id:
+                artifact.snapshot_id = artifact_data.get("snapshot_id")
+                artifact.state = artifact_data.get("state") or "running"
             artifact.data = artifact_data.get("data") or {}
-            artifact.forgotten_at = _parse_datetime(artifact_data.get("forgotten_at"))
+            # Late/replayed backup reports must not resurrect snapshots removed by another agent.
+            artifact.forgotten_at = artifact.forgotten_at or _parse_datetime(artifact_data.get("forgotten_at"))
+            if operation.repository_id and artifact.snapshot_id and artifact.snapshot_id != previous_snapshot_id:
+                if deleted_ids is None:
+                    acknowledgments = AgentOperation.query.with_entities(AgentOperation.data).filter_by(
+                        user_id=operation.user_id, repository_id=operation.repository_id, type=AgentOperationType.retention
+                    ).filter(AgentOperation.data["manual_delete"].as_boolean().is_(True)).with_for_update().all()
+                    deleted_ids = {identity for (data,) in acknowledgments for identity in data.get("deleted_snapshot_ids", [])}
+                if artifact.snapshot_id in deleted_ids:
+                    artifact.forgotten_at = artifact.forgotten_at or datetime.now(timezone.utc).replace(tzinfo=None)
 
-    def _mark_forgotten_artifacts(self, operation_data):
-        for artifact_data in (operation_data.get("data") or {}).get("forgotten_artifacts") or []:
-            artifact_uuid = artifact_data.get("uuid")
-            if not artifact_uuid:
-                continue
-            artifact = (
-                AgentOperationArtifact.query.join(AgentOperation)
-                .filter(
-                    AgentOperationArtifact.uuid == artifact_uuid,
-                    AgentOperation.agent_id == self.agent.id,
-                )
-                .first()
-            )
-            if artifact is None:
-                continue
-            artifact.forgotten_at = _parse_datetime(artifact_data.get("forgotten_at"))
+    def _apply_retention_artifacts(self, operation_data):
+        data = operation_data.get("data") or {}
+        deleted_ids = data.get("deleted_snapshot_ids") or []
+        if deleted_ids:
+            if operation_data["type"] != AgentOperationType.retention or not data.get("manual_delete"):
+                raise PermissionError("Only restore point deletion may report removed snapshots")
+            repository = Repository.query.filter(Repository.id == operation_data.get("repository_id"),
+                Repository.user_id == self.agent.user_id, Repository.agents.any(Agent.id == self.agent.id)).first()
+            if not repository:
+                raise PermissionError("Repository is not assigned to this agent")
+            artifacts = AgentOperationArtifact.query.join(AgentOperation).filter(
+                AgentOperation.user_id == self.agent.user_id, AgentOperation.repository_id == repository.id,
+                AgentOperationArtifact.snapshot_id.in_(deleted_ids)).populate_existing().with_for_update().all()
+            for artifact in artifacts:
+                artifact.forgotten_at = artifact.forgotten_at or datetime.now(timezone.utc).replace(tzinfo=None)
+        reported = {item["uuid"]: item for item in data.get("forgotten_artifacts", []) if item.get("uuid")}
+        if not reported:
+            return
+        repository_scope = operation_data["type"] == AgentOperationType.retention and data.get("scope") == "repository"
+        if repository_scope:
+            repository = Repository.query.filter(Repository.id == operation_data.get("repository_id"),
+                Repository.user_id == self.agent.user_id, Repository.agents.any(Agent.id == self.agent.id)).first()
+            if not repository:
+                raise PermissionError("Repository is not assigned to this agent")
+        artifacts = AgentOperationArtifact.query.options(joinedload(AgentOperationArtifact.operation)).filter(
+            AgentOperationArtifact.uuid.in_(reported)).populate_existing().with_for_update().all()
+        for artifact in artifacts:
+            source = artifact.operation
+            item = reported[artifact.uuid]
+            if repository_scope:
+                if (source.user_id != self.agent.user_id or source.repository_id != repository.id
+                        or source.uuid != item.get("operation_uuid") or artifact.snapshot_id != item.get("snapshot_id")):
+                    raise PermissionError("Artifact does not belong to this repository")
+            elif source.agent_id != self.agent.id:
+                raise PermissionError("Artifact does not belong to this agent")
+            artifact.forgotten_at = artifact.forgotten_at or _parse_datetime(item.get("forgotten_at"))
 
     @staticmethod
-    def _update_repository_from_operation(operation):
-        if operation.type != AgentOperationType.backup or not operation.repository_id:
+    def _update_repository_from_operation(operation, previous_data):
+        if not operation.repository_id:
             return
-
-        repository = Repository.query.filter(
-            Repository.id == operation.repository_id,
-            Repository.restic_id.is_(None),
-        ).first()
-        if repository and operation.data and "config" in operation.data:
+        repository = db.session.get(Repository, operation.repository_id)
+        if operation.type == AgentOperationType.backup and not repository.restic_id and "config" in operation.data:
             repository.restic_id = operation.data["config"]["id"][0:8]
+        if operation.data.get("retention_check_failed") and not previous_data.get("retention_check_failed"):
+            repository.retention_check_token = operation.uuid
+        elif not operation.data.get("retention_check_failed") and (operation.data.get("retention_check_full") or (
+                operation.type == AgentOperationType.repository_check and operation.state == AgentOperationState.success
+                and operation.data.get("read_data") == "100%" and "check" in operation.data)):
+            token = operation.data.get("retention_check_verified") or previous_data.get("retention_check_token")
+            if token:
+                # A passing check must not clear a failure reported after that check began.
+                Repository.query.filter_by(id=repository.id, retention_check_token=token).update(
+                    {"retention_check_token": None}, synchronize_session="fetch")
 
     @staticmethod
     def _send_notifications(delivery_ids):
@@ -321,7 +394,7 @@ class AgentOperationService:
             return []
 
         configs = NotificationConfig.query.filter(
-            NotificationConfig.user_id == operation.agent.user_id
+            NotificationConfig.user_id == operation.user_id
         ).all()
         matching_configs = [
             config
