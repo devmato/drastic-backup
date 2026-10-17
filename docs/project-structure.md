@@ -49,6 +49,7 @@ Important paths:
 - `apps/frontend/src/pages` -- Route pages.
 - `apps/frontend/src/components` -- Reusable UI components.
 - `apps/frontend/src/components/agents/AgentInstallCard.vue` -- Shared platform installation card with local method selection; `AgentInstallPage.vue` prepares commands and handles copying.
+- `apps/frontend/src/components/jobs/RunBackupDialog.vue` -- Shared manual backup start dialog for agent actions and individual jobs.
 - `apps/frontend/src/stores` -- Pinia stores.
 - `apps/frontend/src/api` -- HTTP endpoint calls without UI or store dependencies.
 - `apps/frontend/src/composables` -- Reactive workflows such as job editing.

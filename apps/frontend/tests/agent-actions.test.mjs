@@ -67,7 +67,7 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   const agent = reactive({ id: 1, online: true, protocol_version: 3, install_type: 'git', os: 'Linux' })
   const calls = []
   let finish, confirm
-  const page = runInNewContext(`${source}\n;({ agentActions, pendingActions })`, {
+  const page = runInNewContext(`${source}\n;({ agentActions, pendingActions, backupDialogOpen })`, {
     computed, ref, getAgentConnections, getAvailableConnectionTypes, supportsAgentUpdate,
     useAgentStore: () => ({ agents: [agent], runAction: (id, action) => {
       calls.push({ id, action })
@@ -76,12 +76,20 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
       calls.push({ id, action: 'sync', recoveryKey })
     } }),
     useUserStore: () => ({ withRecoveryKey: operation => operation('recovery-key') }),
+    useJobStore: () => ({ loadJobs: async () => { calls.push('load-jobs') } }),
+    useRepositoryStore: () => ({ loadRepositories: async () => { calls.push('load-repositories') } }),
     useRoute: () => ({ params: { agentId: '1' }, query: {} }), useRouter: () => ({}),
     useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }), notify: () => {} }),
     watch: () => {}, defineOptions: () => {},
     getApiErrorMessage: error => error.message, shouldIgnoreApiError: () => false,
   })
   const action = name => page.agentActions.value.find(item => item.name === name)
+  assert.deepEqual(Array.from(page.agentActions.value.slice(0, 2), item => item.name), ['backup', 'restore'])
+  const openBackup = action('backup').run()
+  await action('backup').run()
+  await openBackup
+  assert.equal(page.backupDialogOpen.value, true)
+  assert.deepEqual(calls.splice(0), ['load-jobs', 'load-repositories'])
   const update = action('update').run()
   assert.equal(page.pendingActions.value.update, true)
   await action('update').run()
@@ -104,6 +112,7 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   }
   agent.online = false
   const before = calls.length
+  await action('backup').run()
   await action('update').run()
   assert.equal(calls.length, before)
   agent.install_type = 'docker'

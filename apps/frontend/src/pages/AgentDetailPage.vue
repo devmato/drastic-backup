@@ -209,7 +209,8 @@
       :kind="editingConnection"
       @updated="loadAgent"
     />
-    <RestoreDialog v-model="restoreDialogOpen" :agent-id="agent?.id" :agents="agentStore.agents" @started="restoreStarted" />
+    <RunBackupDialog v-if="agent" :key="agent.id" v-model="backupDialogOpen" :agent="agent" @started="operationStarted" />
+    <RestoreDialog v-model="restoreDialogOpen" :agent-id="agent?.id" :agents="agentStore.agents" @started="operationStarted" />
   </q-page>
 </template>
 
@@ -222,7 +223,10 @@ import { useRoute, useRouter } from 'vue-router'
 import { copyToClipboard, useQuasar } from 'quasar'
 import { useAgentStore } from 'stores/agent'
 import { useUserStore } from 'stores/user'
+import { useJobStore } from 'stores/job'
+import { useRepositoryStore } from 'stores/repository'
 import AgentConnectionDialog from 'components/agents/AgentConnectionDialog.vue'
+import RunBackupDialog from 'components/jobs/RunBackupDialog.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getAgentConnections, getAvailableConnectionTypes } from 'src/utils/agent-connections'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -231,6 +235,8 @@ import { supportsAgentUpdate } from 'src/utils/agent-updates'
 const $q = useQuasar()
 const agentStore = useAgentStore()
 const userStore = useUserStore()
+const jobStore = useJobStore()
+const repositoryStore = useRepositoryStore()
 const route = useRoute()
 const router = useRouter()
 const agent = computed(() => agentStore.agents.find(item => String(item.id) === String(route.params.agentId)))
@@ -243,8 +249,9 @@ const loading = ref(false)
 const loadError = ref('')
 const connectionDialogOpen = ref(false)
 const restoreDialogOpen = ref(false)
+const backupDialogOpen = ref(false)
 
-function restoreStarted(result) {
+function operationStarted(result) {
   router.push({ path: `/agents/${result.agent_id}/operations/${result.operation_id}`, query: { agent_id: String(result.agent_id) } })
 }
 const editingConnection = ref(null)
@@ -268,6 +275,11 @@ const supportsConnections = computed(() => (agent.value?.protocol_version || 0) 
 const supportsUpdate = computed(() => supportsAgentUpdate(agent.value))
 
 const agentActions = computed(() => [
+  {
+    name: 'backup', title: 'Perform backup', icon: 'backup', color: 'primary',
+    description: 'Run an existing backup job on this agent to a selected repository.',
+    run: openBackup,
+  },
   {
     name: 'restore', title: 'Restore backup', icon: 'restore', color: 'primary',
     description: 'Restore from an accessible repository, including backups of deleted jobs.',
@@ -294,6 +306,20 @@ const agentActions = computed(() => [
     run: confirmRotateSshKey,
   },
 ])
+
+async function openBackup() {
+  if (!agent.value?.online || pendingActions.value.backup) return
+  const agentId = agent.value.id
+  pendingActions.value.backup = true
+  try {
+    await Promise.all([jobStore.loadJobs(), repositoryStore.loadRepositories()])
+    if (agent.value?.id === agentId && agent.value.online) backupDialogOpen.value = true
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+  } finally {
+    pendingActions.value.backup = false
+  }
+}
 
 async function loadAgent() {
   loading.value = true
@@ -353,7 +379,10 @@ async function removeConnection(agentId, kind) {
 }
 
 watch(() => route.params.agentId, loadAgent, { immediate: true })
-watch(() => route.params.agentId, () => { connectionDialogOpen.value = false })
+watch(() => route.params.agentId, () => {
+  connectionDialogOpen.value = false
+  backupDialogOpen.value = false
+})
 
 const agentRepositories = computed(() => agent.value?.repositories || [])
 

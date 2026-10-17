@@ -106,22 +106,12 @@
       @started="onRestoreStarted"
     />
 
-    <!-- Run Job Dialog -->
-    <q-dialog v-model="showRunJobDialog">
-      <q-card class="db-dialog-card-sm">
-        <q-card-section><div class="text-h6">Run Backup Job</div></q-card-section>
-        <q-form @submit="onRunSubmit">
-          <q-card-section class="q-gutter-sm">
-            <q-checkbox v-model="runShowAllRepositories" dense label="Show all repositories" />
-            <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="runJobRepoId" :options="runRepoOptions" label="Target Repository" emit-value map-options :rules="[val => !!val || 'Required']" />
-          </q-card-section>
-          <q-card-actions align="right" class="q-pa-md">
-            <q-btn flat no-caps label="Cancel" v-close-popup />
-            <q-btn unelevated no-caps label="Start Backup" type="submit" color="primary" />
-          </q-card-actions>
-        </q-form>
-      </q-card>
-    </q-dialog>
+    <RunBackupDialog
+      v-model="showRunJobDialog"
+      :agent="agentStore.agents.find(agent => agent.id === runningJob?.agent_id)"
+      :job-id="runningJob?.id"
+      @started="onBackupStarted"
+    />
 
   </q-page>
 </template>
@@ -130,15 +120,15 @@
 import PageHeader from 'components/PageHeader.vue'
 import EmptyState from 'components/EmptyState.vue'
 import TableActionButton from 'components/TableActionButton.vue'
-import { ref, onMounted, computed, watch } from 'vue'
+import { ref, onMounted, computed } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useQuasar } from 'quasar'
 import { useJobStore } from 'stores/job'
 import { useAgentStore } from 'stores/agent'
 import { useRepositoryStore } from 'stores/repository'
 import { useUserStore } from 'stores/user'
-import { useOperationStore } from 'stores/operation'
 import JobManageDialog from 'components/jobs/JobManageDialog.vue'
+import RunBackupDialog from 'components/jobs/RunBackupDialog.vue'
 import BackupChainsPanel from 'components/jobs/BackupChainsPanel.vue'
 import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
@@ -152,7 +142,6 @@ const jobStore = useJobStore()
 const agentStore = useAgentStore()
 const repositoryStore = useRepositoryStore()
 const userStore = useUserStore()
-const operationStore = useOperationStore()
 const activeTab = computed({
   get: () => route.query.tab === 'chains' ? 'chains' : 'jobs',
   set: tab => router.push({ query: { ...route.query, tab: tab === 'chains' ? 'chains' : undefined, chain_id: undefined } }),
@@ -172,17 +161,9 @@ const { submitting: jobDialogSubmitting, saveJob } = useJobEditor(jobStore, agen
 
 const showRunJobDialog = ref(false)
 const showRestoreDialog = ref(false)
-const runJobId = ref(null)
-const runJobRepoId = ref(null)
-const runShowAllRepositories = ref(false)
-const runDefaultRepositories = ref([])
+const runningJob = ref(null)
 const restoringJob = ref(null)
 const restoringRepositories = ref([])
-
-const runRepoOptions = computed(() => (runShowAllRepositories.value ? repositoryStore.repositories : runDefaultRepositories.value).map(repository => ({
-  label: `${repository.name} (${repository.location})`,
-  value: repository.id,
-})))
 
 const jobColumns = [
   { name: 'name', label: 'Name', field: 'name', align: 'left', sortable: true, style: 'width: 14%', headerStyle: 'width: 14%' },
@@ -240,11 +221,7 @@ async function onJobSubmit(data) {
 }
 
 function showRunDialog(job) {
-  const agentData = getAgentForJob(job)
-  runJobId.value = job.id
-  runShowAllRepositories.value = false
-  runDefaultRepositories.value = getAgentRepositories(agentData)
-  runJobRepoId.value = runDefaultRepositories.value[0]?.id || null
+  runningJob.value = job
   showRunJobDialog.value = true
 }
 
@@ -264,15 +241,8 @@ function openJobReports(job) {
   router.push({ path: '/agents/operations', query: { agent_id: String(job.agent_id), type: 'backup', job_id: String(job.id) } })
 }
 
-async function onRunSubmit() {
+async function onBackupStarted() {
   try {
-    await userStore.withRecoveryKey(recoveryKey => operationStore.startBackupJob({
-        jobId: runJobId.value,
-        repositoryId: runJobRepoId.value,
-        recoveryKey,
-      }))
-    showRunJobDialog.value = false
-    $q.notify({ message: 'Backup job started', color: 'green', position: 'top' })
     await jobStore.loadJobs()
     await agentStore.loadAgents()
   } catch (e) {
@@ -327,12 +297,6 @@ onMounted(async () => {
     if (agent) showAddJob(agent)
     await router.replace({ query: { ...route.query, add_for_agent: undefined } })
   }
-})
-
-watch(runRepoOptions, (options) => {
-  if (!showRunJobDialog.value) return
-  if (options.some(option => option.value === runJobRepoId.value)) return
-  runJobRepoId.value = options[0]?.value || null
 })
 
 defineOptions({ name: 'JobsPage' })

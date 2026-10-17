@@ -57,6 +57,8 @@ test('connection removal waits for confirmation, preserves rows on failure and r
     computed, ref, getAgentConnections, getAvailableConnectionTypes, supportsAgentUpdate,
     useAgentStore: () => store,
     useUserStore: () => ({}),
+    useJobStore: () => ({}),
+    useRepositoryStore: () => ({}),
     useRoute: () => route,
     useRouter: () => ({}),
     useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }), notify: () => {} }),

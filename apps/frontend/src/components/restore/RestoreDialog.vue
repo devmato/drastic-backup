@@ -3,7 +3,7 @@
     <q-card class="app-dialog-wide db-job-form-dialog column no-wrap overflow-hidden">
       <q-card-section class="col-auto row items-start q-col-gutter-sm q-pa-md">
         <div class="col">
-          <div class="text-h6">Restore {{ job?.name }}</div>
+          <div class="text-h6">Restore {{ showAllRestorePoints ? '' : job?.name }}</div>
           <div class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">Browse, restore or delete backup points in an assigned repository, including backups without a Drastic job.</div>
         </div>
       </q-card-section>
@@ -35,6 +35,11 @@
                 <div class="q-gutter-sm">
                   <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedAgentId" :options="agentOptions" label="Restore agent" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
                   <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space lazy-rules="ondemand" v-model="selectedRepositoryId" :options="repositoryOptions" label="Source repository" emit-value map-options :rules="[val => !!val || 'Required']" :disable="submitting || activeSection !== 'source'" />
+                  <q-checkbox v-model="showAllRestorePoints" label="Show all restore points"
+                    :disable="submitting || activeSection !== 'source'" aria-describedby="restore-points-help" />
+                  <div id="restore-points-help" class="text-caption" :class="$q.dark.isActive ? 'text-grey-5' : 'text-grey-7'">
+                    {{ showAllRestorePoints ? 'Showing all restore points in this repository, including other agents and jobs.' : 'Showing restore points backed up by the selected agent. Enable this option for other agents, jobs or older backups without an agent UUID.' }}
+                  </div>
                   <q-select
                     :dense="!$q.platform.has.touch" hide-bottom-space
                     outlined
@@ -171,6 +176,7 @@ const selectedRepositoryId = ref(null)
 const selectedMode = ref('plain_file')
 const selectedSnapshotId = ref(null)
 const snapshots = ref([])
+const showAllRestorePoints = ref(false)
 const includePaths = ref([])
 const restoreLocation = ref('/tmp/drastic-restore')
 const loadingSnapshots = ref(false)
@@ -196,7 +202,7 @@ const modeOptions = computed(() => [
   ...(selectedSnapshot.value?.proxmox_archive && !selectedSnapshot.value?.restore_error ? [{ label: 'Whole VM', value: 'proxmox_vm' }, { label: 'Files from VM', value: 'proxmox_files' }] : []),
   { label: selectedSnapshot.value?.proxmox_archive ? 'Archive files' : 'Plain file restore', value: 'plain_file' },
 ])
-const selectedSnapshot = computed(() => snapshots.value.find(snapshot => snapshot.id === selectedSnapshotId.value))
+const selectedSnapshot = computed(() => selectedPoint.value?.snapshots.find(snapshot => snapshot.id === selectedSnapshotId.value))
 const isProxmoxMode = computed(() => selectedMode.value !== 'plain_file')
 const isFileMode = computed(() => selectedMode.value !== 'proxmox_vm')
 const supportsRestoreMetadataOptions = computed(() => (props.agents.find(agent => agent.id === selectedAgentId.value)?.protocol_version || 0) >= 17)
@@ -210,7 +216,8 @@ const sections = computed(() => [
 const activeSectionIndex = computed(() => sections.value.findIndex(section => section.name === activeSection.value))
 const previousSection = computed(() => sections.value[activeSectionIndex.value - 1])
 const nextSection = computed(() => sections.value[activeSectionIndex.value + 1])
-const restoreSource = computed(() => ({ job_id: props.job?.id,
+const sourceJobId = computed(() => showAllRestorePoints.value ? undefined : props.job?.id)
+const restoreSource = computed(() => ({ job_id: sourceJobId.value,
   job_uuid: selectedSnapshot.value?.tags?.find(tag => tag.startsWith('job_uuid:'))?.slice(9),
   agent_id: selectedAgentId.value, repository_id: selectedRepositoryId.value, snapshot_id: selectedSnapshotId.value }))
 const sourceKey = computed(() => `${JSON.stringify(restoreSource.value)}:${selectedMode.value}`)
@@ -222,7 +229,10 @@ const restorePoints = computed(() => {
     if (!groups.has(id)) groups.set(id, { id, snapshots: [] })
     groups.get(id).snapshots.push(snapshot)
   }
-  return [...groups.values()]
+  const agentUuid = props.agents.find(agent => agent.id === selectedAgentId.value)?.uuid
+  // Filter whole points so deletion still confirms every component of the run.
+  return [...groups.values()].filter(point => showAllRestorePoints.value
+    || (agentUuid && point.snapshots.some(snapshot => snapshot.hostname === `drastic-${agentUuid}`)))
 })
 const selectedPoint = computed(() => restorePoints.value.find(point => point.snapshots.some(snapshot => snapshot.id === selectedSnapshotId.value)))
 const selectedPointId = computed({
@@ -294,6 +304,7 @@ function onFormSubmit() {
 
 function resetDialog() {
   activeSection.value = 'source'
+  showAllRestorePoints.value = false
   restoreForm.value?.resetValidation()
   loadingSnapshots.value = false
   selectedAgentId.value = props.agents.find(agent => agent.id === (props.agentId || props.job?.agent_id) && agent.online)?.id || props.agents.find(agent => agent.online)?.id || null
@@ -313,15 +324,17 @@ function resetDialog() {
 
 async function loadSnapshots() {
   const request = ++snapshotsRequest
+  snapshots.value = []
+  selectedSnapshotId.value = null
   if (!canLoadSnapshots.value) { loadingSnapshots.value = false; return }
   activeSection.value = 'source'
   restoreForm.value?.resetValidation()
   loadingSnapshots.value = true
   try {
-    const result = await restoreStore.getSnapshots({ jobId: props.job?.id, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
+    const result = await restoreStore.getSnapshots({ jobId: sourceJobId.value, agentId: selectedAgentId.value, repositoryId: selectedRepositoryId.value })
     if (request !== snapshotsRequest || !dialogVisible.value) return
     snapshots.value = result
-    selectedSnapshotId.value = snapshots.value[0]?.id || null
+    selectedSnapshotId.value = restorePoints.value[0]?.snapshots[0]?.id || null
   } catch (e) {
     if (request !== snapshotsRequest) return
     snapshots.value = []
@@ -357,7 +370,7 @@ async function submitRestore() {
         ? { ownership_by_name: ownershipByName.value, skip_xattrs: skipXattrs.value } : {}),
     })
     proxmoxPanel.value?.handOff()
-    emit('started', { ...result, agent_id: selectedAgentId.value, job_id: props.job?.id || null })
+    emit('started', { ...result, agent_id: selectedAgentId.value, job_id: sourceJobId.value || null })
     dialogVisible.value = false
   } catch (e) {
     if (shouldIgnoreApiError(e)) return
@@ -407,10 +420,8 @@ watch(selectedAgentId, () => {
   }
 })
 
-watch([dialogVisible, selectedAgentId, selectedRepositoryId], async () => {
+watch([dialogVisible, selectedAgentId, selectedRepositoryId, showAllRestorePoints], async () => {
   if (!dialogVisible.value) return
-  snapshots.value = []
-  selectedSnapshotId.value = null
   includePaths.value = []
   await loadSnapshots()
 })

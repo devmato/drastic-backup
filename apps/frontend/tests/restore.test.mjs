@@ -2,44 +2,50 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { runInNewContext } from 'node:vm'
-import { computed, ref } from 'vue'
+import { computed, effectScope, ref, watch } from 'vue'
 
-function createRestoreDialog(type = 'file', protocol = 17) {
+function createRestoreDialog(type = 'file', protocol = 17, watchImpl = () => {}) {
   const source = readFileSync(new URL('../src/components/restore/RestoreDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const repository = { id: 2, name: 'Backups', location: '/backups' }
   const props = { job: { id: 3, agent_id: 1, type }, agents: [
-    { id: 1, display_name: 'Source agent', online: true, protocol_version: protocol, repositories: [repository] },
-    { id: 4, display_name: 'Other agent', online: true, repositories: [repository] },
+    { id: 1, uuid: 'source-agent', display_name: 'Source agent', online: true, protocol_version: protocol, repositories: [repository] },
+    { id: 4, uuid: 'other-agent', display_name: 'Other agent', online: true, repositories: [repository] },
   ], repositories: [repository] }
   const requests = []
+  const restoreStore = {
+    getSnapshots: async () => [],
+    deleteRestorePoint: async data => { requests.push(data); return { operation_id: 6 } },
+  }
   let confirm
   const visible = ref(true)
   const dialog = runInNewContext(`${source}\n;({ resetDialog, snapshots, selectedSnapshotId, activeSection,
     sections, canGoNext, onFormSubmit, submitRestore, selectedAgentId, selectedMode, includePaths,
     overwritePolicy, overwriteConfirmed, proxmoxSelection, proxmoxPanel, advancedOpen,
-    ownershipByName, skipXattrs, supportsRestoreMetadataOptions, selectedPointId, restorePoints, confirmDeletePoint })`, {
-    computed, ref, watch: () => {}, defineProps: () => props,
+    ownershipByName, skipXattrs, supportsRestoreMetadataOptions, selectedPointId, restorePoints, confirmDeletePoint,
+    showAllRestorePoints, loadSnapshots })`, {
+    computed, ref, watch: watchImpl, defineProps: () => props,
     defineModel: () => visible, defineEmits: () => () => {}, defineOptions: () => {},
     useQuasar: () => ({ notify: () => {}, dialog: () => ({ onOk: callback => { confirm = callback } }) }),
-    useRestoreStore: () => ({ deleteRestorePoint: async data => { requests.push(data); return { operation_id: 6 } } }),
+    useRestoreStore: () => restoreStore,
     useOperationStore: () => ({ startRestore: async data => { requests.push(data); return { operation_id: 5 } } }),
     shouldIgnoreApiError: () => false, getApiErrorMessage: error => error.message,
   })
   dialog.resetDialog()
-  dialog.snapshots.value = [{ id: 'snapshot', proxmox_archive: true }]
+  dialog.snapshots.value = [{ id: 'snapshot', hostname: 'drastic-source-agent', proxmox_archive: true }]
   dialog.selectedSnapshotId.value = 'snapshot'
-  return { dialog, requests, confirm: () => confirm(), visible }
+  return { dialog, requests, confirm: () => confirm(), visible, restoreStore }
 }
 
 test('repository restore derives supported modes from each snapshot without a live job', () => {
   const source = readFileSync(new URL('../src/components/restore/RestoreDialog.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const dialog = runInNewContext(`${source}\n;({ snapshots, selectedSnapshotId, modeOptions })`, {
+  const dialog = runInNewContext(`${source}\n;({ snapshots, selectedSnapshotId, modeOptions, showAllRestorePoints })`, {
     computed, ref, defineProps: () => ({ job: null, agents: [], repositories: [] }),
     defineModel: () => ref(false), defineEmits: () => () => {}, defineOptions: () => {},
     useQuasar: () => ({}), useRestoreStore: () => ({}), useOperationStore: () => ({}), watch: () => {},
   })
+  dialog.showAllRestorePoints.value = true
   dialog.snapshots.value = [
     { id: 'tar', proxmox_archive: true }, { id: 'native', proxmox_archive: true },
     { id: 'legacy-vma', proxmox_archive: false }, { id: 'manifest', proxmox_archive: false },
@@ -54,6 +60,7 @@ test('repository restore derives supported modes from each snapshot without a li
 
 test('restore points group run components and deletion confirms exactly that group', async () => {
   const { dialog, requests, confirm, visible } = createRestoreDialog('proxmox', 22)
+  dialog.showAllRestorePoints.value = true
   dialog.snapshots.value = [
     { id: 'a', restore_point_id: 'run:job:operation', proxmox_archive: true },
     { id: 'b', restore_point_id: 'run:job:operation', proxmox_archive: true },
@@ -130,6 +137,7 @@ test('file restores share steps and retain selections and guest sessions when na
 
 test('restore to another agent only requires overwrite confirmation or a ready VM target', async () => {
   const { dialog, requests } = createRestoreDialog()
+  dialog.showAllRestorePoints.value = true
   dialog.selectedAgentId.value = 4
   dialog.onFormSubmit()
   dialog.includePaths.value = ['/documents']
@@ -145,6 +153,7 @@ test('restore to another agent only requires overwrite confirmation or a ready V
   assert.deepEqual([...requests[0].include_paths], ['/documents'])
 
   const vm = createRestoreDialog('proxmox')
+  vm.dialog.showAllRestorePoints.value = true
   vm.dialog.selectedAgentId.value = 4
   assert.deepEqual([...vm.dialog.sections.value].map(section => section.name), ['source', 'target'])
   vm.dialog.onFormSubmit()
@@ -157,6 +166,41 @@ test('restore to another agent only requires overwrite confirmation or a ready V
   assert.equal(vm.requests[0].mode, 'proxmox_vm')
   assert.equal(vm.requests[0].agent_id, 4)
   assert.equal(vm.requests[0].restore_location, null)
+})
+
+test('restore filters by agent and toggling all-points mode reloads without the job binding', async t => {
+  const scope = effectScope()
+  t.after(() => scope.stop())
+  const { dialog, restoreStore, requests } = scope.run(() => createRestoreDialog('file', 17, watch))
+  const listings = []
+  restoreStore.getSnapshots = async query => {
+    listings.push(query)
+    return [
+      { id: 'foreign', hostname: 'drastic-other-agent', tags: ['job_uuid:other-job'] },
+      { id: 'legacy', hostname: 'old-hostname' },
+      { id: 'own', hostname: 'drastic-source-agent' },
+    ]
+  }
+  assert.equal(dialog.showAllRestorePoints.value, false)
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(listings.length, 1)
+  assert.equal(listings[0].jobId, 3)
+  assert.deepEqual(Array.from(dialog.restorePoints.value, point => point.id), ['own'])
+  assert.equal(dialog.selectedSnapshotId.value, 'own')
+  dialog.showAllRestorePoints.value = true
+  await new Promise(resolve => setImmediate(resolve))
+  assert.equal(listings.length, 2)
+  assert.equal(listings.at(-1).jobId, undefined)
+  assert.equal(dialog.restorePoints.value.length, 3)
+  assert.equal(dialog.selectedSnapshotId.value, 'foreign')
+  dialog.activeSection.value = 'target'
+  dialog.includePaths.value = ['/documents']
+  await dialog.submitRestore()
+  assert.equal(requests[0].snapshot_id, 'foreign')
+  assert.equal(requests[0].job_id, undefined)
+  assert.equal(requests[0].job_uuid, 'other-job')
+  dialog.resetDialog()
+  assert.equal(dialog.showAllRestorePoints.value, false)
 })
 
 test('Restic metadata options are opt-in, independent and only sent to supported plain file restores', async () => {
