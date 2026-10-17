@@ -53,6 +53,13 @@ It defines:
 - Markdown extensions.
 - GitHub Release descriptions, which are edited and published directly on GitHub.
 
+`docs/stylesheets/extra.css` matches the web app's blue header and neutral
+light/dark surfaces. Keep its colors aligned with
+`apps/frontend/src/css/quasar.variables.scss` and `apps/frontend/src/css/app.scss`.
+The initial color scheme follows the system preference; the theme toggle saves
+the reader's choice. Navigation, page width, and spacing use the standard
+Material layout.
+
 ## Adding a Page
 
 1. Create a Markdown file in `docs/`.

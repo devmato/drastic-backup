@@ -1,0 +1,46 @@
+/* Match the web app's brand colors and neutral light/dark surfaces. */
+[data-md-color-primary="custom"] {
+  --md-primary-fg-color: #1976d2;
+  --md-primary-fg-color--light: #42a5f5;
+  --md-primary-fg-color--dark: #1565c0;
+  --md-primary-bg-color: #fff;
+  --md-primary-bg-color--light: rgba(255, 255, 255, 0.7);
+}
+
+[data-md-color-accent="custom"] {
+  --md-accent-fg-color: #1565c0;
+  --md-accent-fg-color--transparent: rgba(25, 118, 210, 0.16);
+  --md-accent-bg-color: #fff;
+  --md-accent-bg-color--light: rgba(255, 255, 255, 0.7);
+}
+
+[data-md-color-scheme="default"] {
+  --md-default-bg-color: #fafafa;
+  --md-code-bg-color: #eee;
+  --md-typeset-a-color: #1565c0;
+}
+
+@media screen {
+  [data-md-color-scheme="slate"] {
+    --md-default-fg-color: rgba(255, 255, 255, 0.87);
+    --md-default-fg-color--light: rgba(255, 255, 255, 0.7);
+    --md-default-fg-color--lighter: rgba(255, 255, 255, 0.5);
+    --md-default-fg-color--lightest: rgba(255, 255, 255, 0.1);
+    --md-default-bg-color: #121212;
+    --md-default-bg-color--light: rgba(18, 18, 18, 0.54);
+    --md-default-bg-color--lighter: rgba(18, 18, 18, 0.26);
+    --md-default-bg-color--lightest: rgba(18, 18, 18, 0.07);
+    --md-code-fg-color: rgba(255, 255, 255, 0.87);
+    --md-code-bg-color: #1d1d1d;
+    --md-code-bg-color--light: rgba(29, 29, 29, 0.9);
+    --md-code-bg-color--lighter: rgba(29, 29, 29, 0.54);
+    --md-typeset-a-color: #64b5f6;
+    --md-accent-fg-color: #90caf9;
+    --md-typeset-table-color: rgba(255, 255, 255, 0.1);
+    --md-typeset-table-color--light: rgba(255, 255, 255, 0.04);
+    --md-admonition-bg-color: #1d1d1d;
+    --md-footer-bg-color: #1d1d1d;
+    --md-footer-bg-color--dark: #1d1d1d;
+  }
+
+}
