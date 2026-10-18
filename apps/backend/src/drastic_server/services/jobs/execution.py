@@ -1,7 +1,8 @@
 """Dispatch backups and discovery commands without HTTP request dependencies."""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from drastic_common.agent.commands import AgentCommandName
 from drastic_common.scheduling import preview
@@ -21,6 +22,7 @@ from drastic_server.services.operations.lifecycle import (
     start_agent_operation,
     unknown_agent_operation_dispatch_response,
 )
+from drastic_server.services.users import get_user
 
 
 def require_success(response):
@@ -73,10 +75,10 @@ def cancel_job(user_id, job_id):
 
 def preview_schedule(user_id, data):
     if data["agent_id"] is None:
-        return preview(data["timing"], datetime.now(timezone.utc))
+        return preview(data["timing"], datetime.now(ZoneInfo(get_user(user_id).schedule_timezone)))
     agent = get_agent(user_id, data["agent_id"])
     if not agent.online:
-        raise ResourceConflict("Next execution is available when the agent is online (agent local time)")
+        raise ResourceConflict("Next execution is available when the agent is online")
     return require_success(AgentService.send_command(
         agent, AgentCommandName.preview_schedule, timing=data["timing"], timeout=5,
     ))

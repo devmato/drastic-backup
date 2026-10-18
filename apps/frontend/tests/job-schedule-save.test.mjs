@@ -72,8 +72,8 @@ test('renaming a job on protocol 11 does not resubmit unchanged legacy schedules
   assert.equal(page.showJobDialog.value, false)
 })
 
-test('changed and new typed schedules are rejected before any writes on protocol 11', async () => {
-  const { page, payload, writes, notices } = setup(11)
+test('changed and new schedules are rejected before any writes on protocol 23', async () => {
+  const { page, payload, writes, notices } = setup(23)
   for (const kind of ['time', 'new', 'repository', 'check', 'enabled']) {
     const changed = payload()
     const schedule = changed.schedules[0]
@@ -84,13 +84,13 @@ test('changed and new typed schedules are rejected before any writes on protocol
     if (kind === 'enabled') schedule.enabled = false
     await page.onJobSubmit(changed)
     assert.equal(writes.length, 0, kind)
-    assert.match(notices.at(-1).message, /protocol 12/)
+    assert.match(notices.at(-1).message, /protocol 24/)
     assert.equal(page.showJobDialog.value, true)
   }
 })
 
-test('protocol 12 sends actual schedule changes but ignores presentation and weekday order', async () => {
-  const { page, payload, writes, original } = setup(12)
+test('protocol 24 sends actual schedule changes but ignores presentation and weekday order', async () => {
+  const { page, payload, writes, original } = setup(24)
   const unchanged = payload()
   unchanged.schedules[0].timing.weekdays.reverse()
   unchanged.schedules[0].cron_description = 'A translated description'
@@ -106,7 +106,7 @@ test('protocol 12 sends actual schedule changes but ignores presentation and wee
 })
 
 test('job editing preserves drafts and refreshes once after success or a partially saved failure', async () => {
-  const { page, payload, notices, jobStore, loads } = setup(12)
+  const { page, payload, notices, jobStore, loads } = setup(24)
   const draft = payload()
   const before = JSON.stringify(draft)
   await page.onJobSubmit(draft)
@@ -124,7 +124,7 @@ test('job editing preserves drafts and refreshes once after success or a partial
 })
 
 test('retry-only edits are saved and old agents are rejected before the first write', async () => {
-  for (const protocol of [17, 18]) {
+  for (const protocol of [17, 24]) {
     const { page, payload, writes, notices } = setup(protocol)
     const draft = payload()
     draft.schedules[0].config.retry = { enabled: true, max_attempts: 3, delay_minutes: 10 }

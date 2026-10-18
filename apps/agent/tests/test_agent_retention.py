@@ -13,6 +13,7 @@ from drastic_agent.agent.enums import AgentReportState
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services.retention import RetentionService, keep_operation_ids
 from drastic_common.restic.exceptions import ResticError, ResticFailedError
+from drastic_common.restic.snapshots import RUN_COMPLETE_TAG
 
 A, B, OWNER, FOREIGN = (str(UUID(int=i)) for i in (1, 2, 3, 4))
 
@@ -57,7 +58,7 @@ class Repo:
         self.prune_calls = 0
         self.on_check = None
 
-    def add_run(self, backend, job=A, number=10, count=2):
+    def add_run(self, backend, job=A, number=10, count=2, complete=True):
         operation = str(UUID(int=number))
         artifacts = []
         for index in range(count):
@@ -68,6 +69,8 @@ class Repo:
                 "tags": [f"drastic-owner:{backend.owner_uuid}", f"job_uuid:{job}", f"operation_uuid:{operation}",
                          f"artifact_uuid:{uuid}", f"artifact_key:{index}"]}
             artifacts.append({"uuid": uuid, "snapshot_id": identity, "artifact_key": str(index)})
+        if complete:
+            self.items[identity]["tags"].append(RUN_COMPLETE_TAG)
         return artifacts
 
     def snapshots(self):
@@ -158,6 +161,8 @@ def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(sett
         setattr(repo, "fail_" + failure, True)
     result = execute(repo, backend, settings, send=(lambda _: False) if failure == "verification" else None)
     assert result.state == AgentReportState.warning
+    if failure == "prune":
+        assert set(result.data["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
     assert RetentionService.pending_tasks(settings) == []
     if failure == "prune":
         monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
@@ -184,13 +189,48 @@ def test_ambiguous_or_invalid_snapshot_identity_is_not_deleted(settings, tag):
 
 
 @pytest.mark.parametrize("running", [False, True])
-def test_partial_runs_count_normally_but_known_running_backups_are_preserved(settings, running):
+def test_partial_runs_cannot_expire_the_last_complete_backup(settings, running):
     repo, backend = Repo(), Backend()
     old = repo.add_run(backend, number=10)
-    partial = repo.add_run(backend, number=11, count=1)
+    partial = repo.add_run(backend, number=11, count=1, complete=False)
     backend.running = [str(UUID(int=11))] if running else []
     assert execute(repo, backend, settings).state == AgentReportState.success
-    assert set(repo.items) == {a["snapshot_id"] for a in (old + partial if running else partial)}
+    assert set(repo.items) == {a["snapshot_id"] for a in old + partial}
+
+
+def test_no_confirmed_complete_run_preserves_unknown_history_until_a_full_backup_exists(settings):
+    repo, backend = Repo(), Backend()
+    old = repo.add_run(backend, number=10, complete=False)
+    repo.add_run(backend, number=11, complete=False)
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert not repo.removed
+    complete = repo.add_run(backend, number=12)
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == {item["snapshot_id"] for item in complete}
+    assert {item["snapshot_id"] for item in old}.isdisjoint(repo.items)
+
+
+def test_a_foreign_completion_tag_does_not_confirm_an_owned_run(settings):
+    repo, backend = Repo(), Backend()
+    ours = repo.add_run(backend, number=10, complete=False) + repo.add_run(backend, number=11, complete=False)
+    foreign_backend = Backend(owner_uuid=FOREIGN)
+    foreign = repo.add_run(foreign_backend, number=10) + repo.add_run(foreign_backend, number=11)
+    # Both installations deliberately use the same job/run/artifact UUIDs.
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert not repo.removed and len(repo.items) == len(ours + foreign)
+    complete = repo.add_run(backend, number=12)
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert set(repo.items) == {item["snapshot_id"] for item in complete + foreign}
+
+
+@pytest.mark.parametrize("tag", ["artifact_uuid:invalid", "artifact_key:ambiguous"])
+def test_ambiguous_artifact_identity_cannot_confirm_a_complete_run(settings, tag):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10, complete=False)
+    newer = repo.add_run(backend, number=11)
+    repo.items[newer[-1]["snapshot_id"]]["tags"].append(tag)
+    assert execute(repo, backend, settings).state == AgentReportState.success
+    assert not repo.removed
 
 
 def test_current_run_counts_while_another_running_run_stays_protected(settings):

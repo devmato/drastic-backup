@@ -1,5 +1,8 @@
 """Current retention context is account-scoped and independent of backup history."""
 
+from datetime import datetime, timezone
+from uuid import uuid4
+
 import pytest
 import test_proxmox_restore_api
 
@@ -13,6 +16,7 @@ from drastic_server.models.agent import (
     AgentOperationType,
 )
 from drastic_server.models.job import Job, JobType
+from drastic_server.models.repository import Repository
 from drastic_server.services.agent import AgentService
 from drastic_server.services.agent.management import delete_agent
 from drastic_server.services.agent.request import AgentException, AgentRequestService
@@ -32,6 +36,63 @@ from drastic_server.services.operations.reports import AgentOperationService
 from drastic_server.services.retention import create_retention, update_retention
 
 restore_api = test_proxmox_restore_api.restore_api
+
+
+def test_completion_id_replacement_survives_old_reports_and_rejects_other_owners(restore_api):
+    _, _, agent, foreign, job, _ = restore_api
+    repository = agent.repositories[0]
+    old_id, new_id = "a" * 64, "b" * 64
+    payload = {"uuid": str(uuid4()), "type": "backup", "state": "running", "job_id": job.id,
+               "repository_id": repository.id, "data": {"owner_uuid": agent.user.backup_owner_uuid, "job_uuid": job.uuid},
+               "artifacts": [{"uuid": str(uuid4()), "artifact_key": "default", "snapshot_id": old_id, "state": "success"}]}
+    service = AgentOperationService(agent)
+    operation_id = service.ingest(payload)
+    client = restore_api[0]
+    deletion = client.delete(f"/api/repositories/{repository.id}")
+    assert deletion.status_code == 409 and "running operation" in deletion.json["message"]
+    assert db.session.get(Repository, repository.id) is not None
+    replacement = {**payload, "state": "success", "data": {**payload["data"],
+        "snapshot_replacements": {old_id: new_id}, "backup_run_complete": True},
+        "artifacts": [{**payload["artifacts"][0], "snapshot_id": new_id}]}
+    for invalid in ({**replacement["data"], "owner_uuid": foreign.user.backup_owner_uuid},
+                    {**replacement["data"], "snapshot_replacements": {old_id: old_id}}):
+        with pytest.raises((PermissionError, ValueError)):
+            service.ingest({**replacement, "data": invalid})
+        db.session.rollback()
+    service.ingest(replacement)
+    operation = db.session.get(AgentOperation, operation_id)
+    artifact = AgentOperationArtifact.query.filter_by(operation_id=operation_id).one()
+    artifact.forgotten_at = datetime.now(timezone.utc).replace(tzinfo=None)
+    db.session.commit()
+    forgotten = artifact.forgotten_at
+    service.ingest(payload)
+    db.session.refresh(operation)
+    db.session.refresh(artifact)
+    assert artifact.snapshot_id == new_id and artifact.forgotten_at == forgotten
+    assert operation.data["snapshot_replacements"] == {old_id: new_id}
+    assert operation.data["backup_run_complete"] is True
+    assert operation.state == AgentOperationState.success
+    assert client.delete(f"/api/repositories/{repository.id}").status_code == 200
+    db.session.refresh(operation)
+    assert operation.repository_id is None
+    assert service.ingest(replacement) == operation_id  # Lost final acknowledgements remain replayable.
+    db.session.refresh(artifact)
+    assert artifact.snapshot_id == new_id and artifact.forgotten_at == forgotten
+
+
+@pytest.mark.parametrize("manual", [False, True])
+def test_replayed_cleanup_reports_cannot_erase_confirmed_snapshot_removals(restore_api, manual):
+    _, _, agent, _, _, _ = restore_api
+    operation = start_agent_operation(agent=agent, repository=agent.repositories[0],
+        operation_type=AgentOperationType.retention, msg="Cleanup", data={"scope": "repository"})
+    payload = {"uuid": operation.uuid, "type": "retention", "state": "running", "repository_id": operation.repository_id,
+               "data": {"scope": "repository", "manual_delete": manual, "deleted_snapshot_ids": ["removed"]}}
+    service = AgentOperationService(agent)
+    service.ingest(payload)
+    service.ingest({**payload, "state": "warning", "data": {"scope": "repository", "deleted_snapshot_ids": []}})
+    db.session.refresh(operation)
+    assert operation.data["deleted_snapshot_ids"] == ["removed"]
+    assert bool(operation.data.get("manual_delete")) is manual
 
 
 @pytest.mark.parametrize("state", [AgentOperationState.running, AgentOperationState.success])

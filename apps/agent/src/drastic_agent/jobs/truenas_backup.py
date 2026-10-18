@@ -165,7 +165,8 @@ class TrueNASBackupJobHandler(BackupJobHandler):
                         if not target.exists() and not target.is_symlink():
                             raise TrueNASError(f"Selected path is missing from the snapshot: {relative}")
                     with self.agent.resticapi.operation_cancellation(report.cancel_event):
-                        previous = self.agent.resticapi.snapshots(tags=[f"job_uuid:{self.job['uuid']},dataset:{dataset['id']}"])
+                        previous = self.agent.resticapi.snapshots(tags=[
+                            f"drastic-owner:{self.agent.owner_uuid},job_uuid:{self.job['uuid']},dataset:{dataset['id']}"])
                         parent = max(previous, key=lambda item: datetime.fromisoformat(item["time"]))["id"] if previous else None
                         report.log_message(f"Dataset {dataset['id']}: Restic parent {parent}" if parent else
                                            f"Dataset {dataset['id']}: no matching Restic parent; reading all files")

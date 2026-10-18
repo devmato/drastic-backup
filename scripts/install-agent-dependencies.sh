@@ -7,7 +7,7 @@ if [ "${DRASTIC_AGENT_DEPLOYMENT:-}" = docker ]; then
     export DEBIAN_FRONTEND=noninteractive
     apt-get -o DPkg::Lock::Timeout=60 update &&
         apt-get -o DPkg::Lock::Timeout=60 install -y --no-remove --no-install-recommends \
-            ca-certificates git openssh-client
+            ca-certificates git openssh-client tzdata
     exit $?
 fi
 

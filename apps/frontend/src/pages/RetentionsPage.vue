@@ -5,8 +5,10 @@
         <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Retention Policy" @click="showManageDialog(null)" />
       </template>
     </PageHeader>
-    <q-select class="q-mb-md" outlined :model-value="defaultRetentionId" :options="defaultOptions" label="Default retention policy" emit-value map-options :disable="savingDefault || retentionStore.loading" :loading="savingDefault" @update:model-value="setDefault" />
-    <div class="text-caption q-mb-md">Applies to jobs using the default and to backups of deleted jobs. Without a default, deleted-job backups are retained. Selecting a policy also applies it to existing backups.</div>
+    <q-select class="q-mb-md" outlined :dense="!$q.platform.has.touch" hide-bottom-space
+      :model-value="defaultRetentionId" :options="defaultOptions" label="Default retention policy" emit-value map-options
+      hint="Applies to jobs using the default and to backups of deleted jobs. Without a default, deleted-job backups are retained. Selecting a policy also applies it to existing backups."
+      :disable="savingDefault || retentionStore.loading" :loading="savingDefault" @update:model-value="setDefault" />
     <q-card v-if="retentionStore.retentions.length === 0 && !retentionStore.loading" flat bordered>
       <EmptyState icon="recycling" title="No retention policies configured yet" description="Add a policy to manage snapshot retention for your backup jobs." />
     </q-card>

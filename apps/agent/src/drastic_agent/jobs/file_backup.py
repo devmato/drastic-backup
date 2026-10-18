@@ -29,7 +29,8 @@ class FileBackupJobHandler(BackupJobHandler):
 
         try:
             with self.agent.resticapi.operation_cancellation(report.cancel_event):
-                previous = self.agent.resticapi.snapshots(tags=[f"job_uuid:{self.job['uuid']},artifact_key:default"])
+                previous = self.agent.resticapi.snapshots(tags=[
+                    f"drastic-owner:{self.agent.owner_uuid},job_uuid:{self.job['uuid']},artifact_key:default"])
                 parent = max(previous, key=lambda item: datetime.fromisoformat(item["time"]))["id"] if previous else None
                 report.log_message(f"Restic parent: {parent}" if parent else "No matching Restic parent; reading all files")
                 restic_status = self.agent.resticapi.backup(

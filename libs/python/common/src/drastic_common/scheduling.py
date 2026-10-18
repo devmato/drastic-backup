@@ -2,6 +2,7 @@
 
 from calendar import monthrange
 from datetime import date, datetime, timezone
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import CroniterBadDateError, croniter
 from marshmallow import (
@@ -15,6 +16,16 @@ from marshmallow import (
 )
 
 TYPES = ("hourly", "daily", "weekly", "monthly", "yearly", "once", "periodic", "cron")
+
+
+def validate_timezone(value):
+    try:
+        # These names resolve host-specific files instead of a portable account zone.
+        if value == "localtime" or value.startswith(("posix/", "right/")):
+            raise ValueError("Host-specific time zone")
+        ZoneInfo(value)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise ValidationError("Select a valid time zone") from exc
 
 
 class TimingSchema(Schema):
@@ -122,7 +133,16 @@ def _once_at(timing, now):
     return datetime.fromisoformat(timing["date"]).replace(hour=timing["hour"], minute=timing["minute"], tzinfo=now.tzinfo)
 
 
+def _valid_calendar_time(value):
+    # Round-trip gaps through UTC; only the first occurrence of a repeated hour runs.
+    if value.tzinfo is None:
+        return value.astimezone().replace(tzinfo=None) == value
+    return value.fold == 0 and value.astimezone(timezone.utc).astimezone(value.tzinfo) == value
+
+
 def matches(timing, now):
+    if timing["type"] != "periodic" and not _valid_calendar_time(now):
+        return False
     if timing["type"] == "once":
         return now.replace(second=0, microsecond=0) == _once_at(timing, now)
     expression = as_cron(timing)
@@ -130,16 +150,14 @@ def matches(timing, now):
         now = now.astimezone(timezone.utc)
         if not expression:
             return (int(now.timestamp()) // 60 - timing["offset"]) % timing["interval"] == 0
-    return croniter.match(expression, now)
+    return croniter.match(expression, now.replace(tzinfo=None))
 
 
 def next_run(timing, now):
-    """Calendar times follow `now`'s zone; naive `now` means agent-local time."""
+    """Use wall-clock calendar rules in `now`'s zone and absolute UTC intervals."""
     if timing["type"] == "once":
         candidate = _once_at(timing, now)
-        if candidate.tzinfo is None and candidate.astimezone().replace(tzinfo=None) != candidate:
-            return None
-        return candidate if candidate > now else None
+        return candidate if _valid_calendar_time(candidate) and candidate.timestamp() > now.timestamp() else None
     expression = as_cron(timing)
     if timing["type"] == "periodic":
         now = now.astimezone(timezone.utc)
@@ -148,11 +166,11 @@ def next_run(timing, now):
             interval, offset = timing["interval"], timing["offset"]
             return datetime.fromtimestamp(((minutes - offset) // interval + 1) * interval * 60 + offset * 60, timezone.utc)
     try:
-        iterator = croniter(expression, now, max_years_between_matches=8)
+        # Iterate wall times so croniter cannot shift a missing 02:30 to 03:30 at DST.
+        iterator = croniter(expression, now.replace(tzinfo=None), max_years_between_matches=8)
         for _ in range(180):
-            candidate = iterator.get_next(datetime)
-            # Skip nonexistent local wall times at the spring DST transition.
-            if candidate.tzinfo is not None or candidate.astimezone().replace(tzinfo=None) == candidate:
+            candidate = iterator.get_next(datetime).replace(tzinfo=now.tzinfo)
+            if _valid_calendar_time(candidate) and candidate.timestamp() > now.timestamp():
                 return candidate
     except CroniterBadDateError:
         return None

@@ -12,6 +12,7 @@ from tempfile import NamedTemporaryFile
 from threading import Event, RLock
 from time import monotonic
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import requests
 from docker import DockerClient
@@ -31,6 +32,7 @@ from drastic_agent.runtime import commands, connection, reporting, scheduler, up
 from drastic_agent.runtime.execution import ExecutionManager
 from drastic_agent.services import repository_access
 from drastic_agent.services import secrets as repository_secrets_service
+from drastic_agent.services.backup_completion import recover_repository, task_key
 from drastic_agent.services.connections import ConnectionSettings
 from drastic_agent.services.restore import RestoreContext, RestoreService
 from drastic_agent.services.retention import RetentionService
@@ -62,7 +64,7 @@ from drastic_common.agent.enums import AgentJobActionModule
 from drastic_common.restic import RESTIC_VERSION, ResticApi
 from drastic_common.restic.exceptions import ResticError, is_repository_locked
 from drastic_common.restic.repository import ResticRepository
-from drastic_common.scheduling import TimingSchema, preview
+from drastic_common.scheduling import TimingSchema, preview, validate_timezone
 from drastic_common.secret_envelope import generate_agent_keypair
 from drastic_common.ssh_keys import generate_ssh_keypair
 from drastic_common.version import get_version as agent_version
@@ -306,13 +308,17 @@ class Agent:
         self.__schedule_run_slots = getattr(self, "_Agent__schedule_run_slots", {})
         self.__schedule_attempts = getattr(self, "_Agent__schedule_attempts", {})
         scheduler.run_due(
-            now, jobs=jobs, schedules=schedules, runs=schedule_runs,
+            self.__schedule_time(now), jobs=jobs, schedules=schedules, runs=schedule_runs,
             slots=self.__schedule_run_slots, submit=self.__execution_manager().submit,
             run_job=self.cmd_run_job, pending=self.__schedule_attempts,
         )
 
     def __recover_schedule_runs(self):
         scheduler.recover_runs(schedule_runs)
+
+    def __schedule_time(self, now):
+        setting = agent_settings.find_one(name="schedule_timezone")
+        return now.astimezone(ZoneInfo(setting["settings"] if setting else "UTC"))
 
     def __prune_schedule_runs(self, now=None):
         scheduler.prune_runs(schedule_runs, now)
@@ -389,8 +395,11 @@ class Agent:
     """ Send report to server """
 
     def __send_report(self, report):
+        # Keep the backend's running fence until metadata IDs are reconciled after a crash.
         self._debug_report = dict(getattr(self, "_debug_report", {}))
-        return reporting.send(report, request=self.__send_request, debug=self._debug_report)
+        return reporting.send(report, request=self.__send_request, debug=self._debug_report,
+                              completion_pending=lambda: bool(report.ended and agent_settings.find_one(
+                                  name=task_key(report.repository_id, report.uuid))))
 
     """ Setup repository for use with restic binary """
 
@@ -405,6 +414,9 @@ class Agent:
             )
 
         self.configure_repository(repository)
+        owner = agent_settings.find_one(name="backup_owner_uuid")
+        if owner:
+            recover_repository(self.__resticapi, agent_settings, repository_id, owner["settings"])
         return repository
 
     def configure_repository(self, repository):
@@ -1155,6 +1167,8 @@ class Agent:
         try:
             server_data = request["result"]
             backup_owner_uuid = str(UUID(server_data["backup_owner_uuid"]))
+            schedule_timezone = server_data.get("schedule_timezone", "UTC")
+            validate_timezone(schedule_timezone)
             agent_uuid = str(UUID(server_data["agent_uuid"]))
             previous_uuid = self.__config.get("AGENT", "uuid", fallback=None)
             if previous_uuid != agent_uuid:
@@ -1182,7 +1196,8 @@ class Agent:
                     (jobs, server_data["jobs"]),
                     (schedules, server_data["schedules"]),
                     (actions, server_data["actions"]),
-                ), legacy_secrets=repository_secrets, backup_owner_uuid=backup_owner_uuid)
+                ), legacy_secrets=repository_secrets, backup_owner_uuid=backup_owner_uuid,
+                schedule_timezone=schedule_timezone)
         except Exception as exc:
             logging.exception("Agent sync transaction failed")
             report.log_message(f"Agent sync failed: {exc}", final_state=AgentReportState.failed)
@@ -1312,7 +1327,7 @@ class Agent:
     def cmd_preview_schedule(self, timing):
         report = AgentReport.command_report()
         try:
-            report.data = preview(TimingSchema().load(timing), datetime.now())
+            report.data = preview(TimingSchema().load(timing), self.__schedule_time(datetime.now(timezone.utc)))
         except ValidationError as exc:
             report.log_message(str(exc), final_state=AgentReportState.failed)
         return report.finish()

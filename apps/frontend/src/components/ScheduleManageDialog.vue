@@ -35,7 +35,7 @@
               <div class="col-6"><q-input v-model.number="form.to_hour" type="number" label="Through hour (inclusive)" outlined dense hide-bottom-space :rules="[value => validInt(value, 0, 23) || 'Use 0–23']" /></div>
             </template>
             <div class="col-12 text-caption" role="status">
-              <div>{{ timezone || 'Agent local time' }}</div>
+              <div>{{ previewData?.timezone || timezone }}</div>
               <div>{{ previewLoading ? 'Calculating next execution…' : previewError || `Next execution: ${previewData?.next_run_text || 'None (date passed or no matching date)'}` }}</div>
             </div>
             <template v-if="!timeOnly">

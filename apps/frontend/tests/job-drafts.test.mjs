@@ -32,6 +32,7 @@ for (const [kind, item, changes] of [
       onMounted: () => {},
       useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }) }),
       useRetentionStore: () => ({ retentions: [] }),
+      useUserStore: () => ({ user: { schedule_timezone: 'UTC' } }),
     })
 
     panel.show(null)

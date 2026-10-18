@@ -29,8 +29,9 @@
                   <div class="q-gutter-sm">
                     <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val?.trim() || 'Required']" />
                     <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
-                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.retention" :options="retentionOptions" label="Retention" emit-value map-options :rules="[val => val != null || 'Required']" />
-                    <div class="text-caption">Applies to all backups of this job, separately in each repository. After deleting the job, the default policy applies.</div>
+                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.retention" :options="retentionOptions" label="Retention" emit-value map-options
+                      hint="Applies to all backups of this job, separately in each repository. After deleting the job, the default policy applies."
+                      :rules="[val => val != null || 'Required']" />
                     <q-banner v-if="!supportsJob(selectedAgent, jobForm.type)" class="bg-warning text-black">This job requires a configured connection and its local prerequisites. Existing job settings are retained.</q-banner>
                     <q-btn flat no-caps dense icon="settings" label="Configure connections" :to="`/agents/${agentId}?tab=connections`" target="_blank">
                       <q-tooltip>Opens in a new tab; your job draft stays here.</q-tooltip>

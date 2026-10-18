@@ -1,11 +1,8 @@
 """Account initialization, password changes and recovery-export assembly."""
 
-from io import BytesIO
-from zipfile import ZIP_DEFLATED, ZipFile
-
-from flask import render_template
-
 from drastic_server.extensions import db
+from drastic_server.integrations.agent import AgentService
+from drastic_server.models.agent import Agent
 from drastic_server.models.user import User
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.services.exceptions import AuthenticationFailed, InvalidInput
@@ -13,12 +10,24 @@ from drastic_server.services.queries import require_result
 from drastic_server.services.recovery_export import (
     RecoveryExportError,
     RecoveryExportPasswordError,
+    build_recovery_archive,
     build_recovery_export_payload,
 )
 
 
 def get_user(user_id):
     return require_result(User.query.filter_by(id=int(user_id)))
+
+
+def update_settings(user_id, data):
+    """Commit the account zone before notifying agents; offline agents pick it up on sync."""
+    user = get_user(user_id)
+    user.schedule_timezone = data["schedule_timezone"]
+    db.session.commit()
+    for agent in Agent.query.filter_by(user_id=user.id):
+        if agent.online:
+            AgentService.sync(agent)
+    return user
 
 
 def needs_initialization():
@@ -48,7 +57,8 @@ def change_password(user_id, data):
     db.session.commit()
 
 
-def recovery_archive(user_id, password):
+def recovery_archive(user_id, password, archive_password, restic_targets):
+    """Reauthenticate before assembling an encrypted kit; neither password is persisted."""
     user = get_user(user_id)
     try:
         payload = build_recovery_export_payload(user, password)
@@ -56,9 +66,4 @@ def recovery_archive(user_id, password):
         raise AuthenticationFailed("Wrong password") from exc
     except RecoveryExportError as exc:
         raise InvalidInput("Recovery export could not decrypt all required data") from exc
-    html = render_template("recovery/recovery.html", export=payload)
-    archive = BytesIO()
-    with ZipFile(archive, "w", compression=ZIP_DEFLATED) as recovery_zip:
-        recovery_zip.writestr("recovery.html", html)
-    archive.seek(0)
-    return archive
+    return build_recovery_archive(payload, archive_password, restic_targets)

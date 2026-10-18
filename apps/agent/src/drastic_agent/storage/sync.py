@@ -1,7 +1,7 @@
 """Replace synced tables as one transaction, retaining the last good offline config."""
 
 
-def replace_configuration(database, table_rows, *, legacy_secrets, backup_owner_uuid):
+def replace_configuration(database, table_rows, *, legacy_secrets, backup_owner_uuid, schedule_timezone):
     with database:
         legacy_secrets.delete()
         for table, rows in table_rows:
@@ -10,3 +10,4 @@ def replace_configuration(database, table_rows, *, legacy_secrets, backup_owner_
             for row in rows:
                 table.insert(row)
         database["agent"].upsert({"name": "backup_owner_uuid", "settings": backup_owner_uuid}, ["name"])
+        database["agent"].upsert({"name": "schedule_timezone", "settings": schedule_timezone}, ["name"])

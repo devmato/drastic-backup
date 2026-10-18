@@ -25,7 +25,7 @@ function setup(adapter, { router, disconnectAppSocket = () => {} } = {}) {
   } })
   api.defaults.adapter = adapter
   const userApi = runInNewContext(`${source('api/user.js').replaceAll('export ', '')}
-    ;({ refreshSession, getAuthStatus, logout })`, { api })
+    ;({ login, refreshSession, getAuthStatus, logout, updateSettings })`, { api })
   const useUserStore = runInNewContext(`${source('stores/user.js').replace('export const', 'const')}
     ;useUserStore`, {
     ref, computed, defineStore, userApi, isAuthError, isRecoveryKeyError,
@@ -75,6 +75,48 @@ test('an in-flight keepalive cannot restore the user after logout', async () => 
   pending.resolve({ authenticated: true, user: { id: 1 } })
   await checking
   assert.equal(userStore.loggedIn, false)
+})
+
+test('same-session keepalive cannot discard a successful settings save', async () => {
+  for (const keepaliveFirst of [false, true]) {
+    const status = Promise.withResolvers(), saved = Promise.withResolvers()
+    const store = setup(async config => ({ status: 200, config, headers: {}, data: await (
+      config.url === '/auth/status' ? status.promise : saved.promise),
+    }))
+    store.user = { id: 1, schedule_timezone: 'UTC' }
+    const refresh = store.fetchAuthStatus()
+    const save = store.updateSettings('Europe/Berlin')
+    if (keepaliveFirst) {
+      status.resolve({ authenticated: true, user: { id: 1, schedule_timezone: 'UTC' } })
+      await refresh
+    }
+    saved.resolve({ id: 1, schedule_timezone: 'Europe/Berlin' })
+    await save
+    if (!keepaliveFirst) {
+      status.resolve({ authenticated: true, user: { id: 1, schedule_timezone: 'UTC' } })
+      await refresh
+    }
+    assert.equal(store.user.schedule_timezone, 'Europe/Berlin')
+  }
+})
+
+test('a settings response cannot restore a logged-out or newly logged-in session', async () => {
+  for (const loginAgain of [false, true]) {
+    const saved = Promise.withResolvers()
+    const store = setup(async config => ({ status: 200, config, headers: {},
+      data: config.url === '/user/' ? await saved.promise : {},
+    }))
+    store.user = { id: 1, schedule_timezone: 'UTC' }
+    const save = store.updateSettings('Europe/Berlin')
+    await store.logout()
+    if (loginAgain) {
+      await store.login('same-user', 'password')
+      store.user = { id: 1, schedule_timezone: 'America/New_York' }
+    }
+    saved.resolve({ id: 1, schedule_timezone: 'Europe/Berlin' })
+    await save
+    assert.equal(store.user?.schedule_timezone, loginAgain ? 'America/New_York' : undefined)
+  }
 })
 
 test('unauthenticated keepalive closes the session and redirects only the active protected view', async () => {

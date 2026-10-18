@@ -8,7 +8,7 @@ from uuid import UUID
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_common.restic.exceptions import is_repository_locked
-from drastic_common.restic.snapshots import snapshot_uuid
+from drastic_common.restic.snapshots import run_is_complete, snapshot_uuid
 
 
 def parse_datetime(value):
@@ -73,7 +73,7 @@ class RetentionService:
     def pending_tasks(settings):
         tasks = []
         for row in settings.all():
-            if row["name"].startswith("retention_task:"):
+            if row["name"].startswith(("retention_task:", "backup_completion:")):
                 payload = json.loads(row["settings"])
                 if payload["retry_at"] <= time():
                     tasks.append(payload["args"])
@@ -96,13 +96,19 @@ class RetentionService:
             started = parse_datetime(snapshot.get("time"))
             if started == datetime.min.replace(tzinfo=timezone.utc):
                 raise ValueError("Owned snapshot has an invalid timestamp; cleanup stopped")
-            run = groups.setdefault(job, {}).setdefault(operation, {"id": operation, "started": started, "snapshot_ids": []})
+            run = groups.setdefault(job, {}).setdefault(operation, {
+                "id": operation, "started": started, "snapshot_ids": [], "complete": False})
             run["started"] = min(run["started"], started)
             run["snapshot_ids"].append(snapshot["id"])
+            run["complete"] |= run_is_complete(snapshot)
         selected = []
         for job_uuid, job_runs in groups.items():
             runs = sorted(job_runs.values(), key=lambda run: (run["started"], run["id"]), reverse=True)
+            complete = next((run for run in runs if run["complete"]), None)
+            if complete is None:
+                continue  # Old/unconfirmed runs cannot prove which last full backup is safe to replace.
             kept = keep_operation_ids(runs, policies[job_uuid])
+            kept.add(complete["id"])
             kept.add(current_operation_uuid)
             for run in runs:
                 if run["id"] not in kept:
@@ -120,7 +126,8 @@ class RetentionService:
         report = AgentReport(type=AgentOperationType.retention, repository_id=repository_id, job_id=job_id,
             parent_operation_uuid=current_operation_uuid,
             source=AgentOperationSource.triggered if current_operation_uuid else AgentOperationSource.manual,
-            data={"scope": "repository", "job_uuid": job_uuid, "cleanup_pending": True})
+            data={"scope": "repository", "job_uuid": job_uuid, "cleanup_pending": True,
+                  "deleted_snapshot_ids": []}).start_reporting()
         try:
             validate_policy(current_policy)
             set_repository(repository_id)
@@ -156,9 +163,12 @@ class RetentionService:
                 selected = cls.select_runs(snapshots, context, policies, current_operation_uuid)
                 settings.upsert({"name": prune_key, "settings": "pending"}, ["name"])
                 for start in range(0, len(selected), 1000):
-                    resticapi.forget_snapshots(selected[start:start + 1000], prune=False)
+                    batch = selected[start:start + 1000]
+                    resticapi.forget_snapshots(batch, prune=False)
+                    # Keep confirmed removals replayable if a later batch/prune or the process fails.
+                    report.set_data("deleted_snapshot_ids", report.data["deleted_snapshot_ids"] + batch)
+                    report.checkpoint()
                 report.data["prune"] = resticapi.prune()
-                report.data["deleted_snapshot_ids"] = selected
                 settings.delete(name=prune_key)
             settings.delete(name=task_key)
             report.data["cleanup_pending"] = False

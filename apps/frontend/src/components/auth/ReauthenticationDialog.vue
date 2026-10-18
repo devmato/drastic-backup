@@ -13,6 +13,7 @@
           <q-input
             ref="passwordInput"
             outlined
+            :dense="!$q.platform.has.touch"
             v-model="password"
             :type="showPassword ? 'text' : 'password'"
             label="Account Password"

@@ -46,6 +46,7 @@ export const useUserStore = defineStore('user', () => {
   let reauthResolve = null
   let reauthReject = null
   let reauthPromise = null
+  let sessionRevision = 0
 
   const loggedIn = computed(() => {
     return user.value ? true : false
@@ -54,6 +55,7 @@ export const useUserStore = defineStore('user', () => {
   const hasRecoveryKey = computed(() => Boolean(recoveryKey.value))
 
   async function login(username, password) {
+    sessionRevision++
     const data = await userApi.login(username, password)
     recoveryKey.value = data.recovery_key || null
     return data
@@ -97,6 +99,15 @@ export const useUserStore = defineStore('user', () => {
     return data
   }
 
+  async function updateSettings(scheduleTimezone) {
+    const revision = sessionRevision
+    const userId = user.value?.id
+    const data = await userApi.updateSettings(scheduleTimezone)
+    // A keepalive replaces the user object too; only session/account changes invalidate the save.
+    if (revision === sessionRevision && userId != null && user.value?.id === userId) user.value = data
+    return data
+  }
+
   async function getDebugAccess() {
     const data = await userApi.getDebugAccess()
     if (user.value) user.value.debug_enabled = data.enabled
@@ -111,8 +122,10 @@ export const useUserStore = defineStore('user', () => {
     return data
   }
 
-  async function downloadRecoveryExport(password) {
-    const response = await userApi.recoveryExport(password)
+  async function downloadRecoveryExport(password, archivePassword, resticTargets, signal) {
+    const response = await userApi.recoveryExport(password, archivePassword, resticTargets, signal)
+    // Navigation must not download a kit whose one-time password can no longer be shown.
+    if (signal?.aborted) return
 
     const filename = getRecoveryExportFilename(response.headers?.['content-disposition'])
     const objectUrl = URL.createObjectURL(response.data)
@@ -206,6 +219,7 @@ export const useUserStore = defineStore('user', () => {
   }
 
   function clearSessionState() {
+    sessionRevision++
     setDiagnosticRecording(false)
     if (typeof window !== 'undefined') {
       localStorage.removeItem('access_token')
@@ -258,6 +272,7 @@ export const useUserStore = defineStore('user', () => {
     fetchAuthStatus,
     initializeUser,
     changePassword,
+    updateSettings,
     getDebugAccess,
     setDebugAccess,
     downloadRecoveryExport,

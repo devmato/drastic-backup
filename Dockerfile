@@ -40,7 +40,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends restic \
+    && apt-get install -y --no-install-recommends restic tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

@@ -1,6 +1,7 @@
 import os
 import time
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 
 import pytest
 from marshmallow import ValidationError
@@ -97,3 +98,35 @@ def test_agent_local_preview_skips_nonexistent_dst_time(monkeypatch):
         else:
             os.environ['TZ'] = original
         time.tzset()
+
+
+def test_named_timezone_calendar_rules_skip_gaps_and_second_repeated_hour():
+    berlin = ZoneInfo("Europe/Berlin")
+    timing = {"type": "daily", "hour": 2, "minute": 30}
+    before_gap = datetime(2026, 3, 28, 12, tzinfo=berlin)
+    assert next_run(timing, before_gap) == datetime(2026, 3, 30, 2, 30, tzinfo=berlin)
+    assert next_run({**timing, "type": "once", "date": "2026-03-29"}, before_gap) is None
+    for minute in (29, 30):
+        after_gap = datetime(2026, 3, 29, 3, minute, tzinfo=berlin)
+        assert not matches(timing, after_gap)
+        assert matches({"type": "hourly", "minute": 30}, after_gap) is (minute == 30)
+    first = datetime(2026, 10, 25, 0, 30, tzinfo=timezone.utc).astimezone(berlin)
+    second = datetime(2026, 10, 25, 1, 30, tzinfo=timezone.utc).astimezone(berlin)
+    for kind in ("daily", "once"):
+        rule = {**timing, "type": kind, "date": "2026-10-25"}
+        assert matches(rule, first)
+        assert not matches(rule, second)
+    # The preview after the first occurrence must agree with the scheduler's next match.
+    result = preview(timing, first + timedelta(minutes=1))
+    assert result["timezone"] == "Europe/Berlin"
+    assert result["next_run"] == "2026-10-26T02:30:00+01:00"
+    assert matches(timing, datetime.fromisoformat(result["next_run"]).astimezone(berlin))
+
+
+def test_periodic_intervals_ignore_calendar_timezone_and_dst():
+    rule = {"type": "periodic", "interval": 120, "offset": 70}
+    now = datetime(2026, 10, 25, 0, 0, tzinfo=timezone.utc)
+    expected = next_run(rule, now)
+    for zone in ("UTC", "Europe/Berlin", "America/New_York"):
+        assert next_run(rule, now.astimezone(ZoneInfo(zone))) == expected
+        assert matches(rule, expected.astimezone(ZoneInfo(zone)))

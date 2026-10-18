@@ -57,6 +57,7 @@ test('shared schedule list updates its preview immediately and omits job columns
     defineProps: () => props,
     defineEmits: () => (event, value) => { assert.equal(event, 'update:modelValue'); props.modelValue = value },
     useRetentionStore: () => ({ retentions: [] }), useQuasar: () => ({}),
+    useUserStore: () => ({ user: { schedule_timezone: 'Europe/Berlin' } }),
   })
   assert.deepEqual(Array.from(panel.scheduleColumns.value, column => column.name),
     ['enabled', 'cron_description', 'actions'])
@@ -78,7 +79,7 @@ test('chain edits preserve schedules and allow the same job on another repositor
     ;({ editChain, save, form, newStep, jobOptions })`, {
     computed, reactive, ref, scheduleTiming, retrySettings, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
     defineProps: () => ({ agentJobs: [{ display_name: 'Agent', jobs: [{ id: 1, name: 'Files', agent_id: 1 }] }],
-      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 23 }] }),
+      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 24 }] }),
     defineEmits: () => () => {},
     useRoute: () => ({ query: {} }), useRouter: () => ({}), useQuasar: () => ({ notify: () => {} }),
     useChainStore: () => ({ saveChain: async (id, payload) => { assert.equal(id, 3); saved = payload } }),

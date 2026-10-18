@@ -11,6 +11,7 @@ import drastic_agent.jobs.base as job_module
 import drastic_agent.runtime.agent as agent_module
 import drastic_agent.storage.database as database_module
 import drastic_agent.storage.operation_store as store_module
+import drastic_agent.storage.snapshot_references as references_module
 from drastic_agent.agent.enums import AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
@@ -27,7 +28,7 @@ def local_db(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(database_module, "db", db)
     monkeypatch.setattr(database_module, "agent_schema", db["agent_schema"])
-    for module in (database_module, agent_module, operation_module, store_module, job_module):
+    for module in (database_module, agent_module, operation_module, store_module, job_module, references_module):
         if hasattr(module, "db"):
             monkeypatch.setattr(module, "db", db)
         for name, value in vars(module).copy().items():
@@ -92,6 +93,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         {
             "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
             "backup_owner_uuid": "00000000-0000-0000-0000-000000000003",
+            "schedule_timezone": "Europe/Berlin",
             "repositories": [{
                 "id": 1,
                 "kind": "local",
@@ -133,6 +135,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         assert requests[-1] == {}
         assert db["jobs"].find_one(id=1)["config"] == {"paths": ["/data"]}
         assert db["agent"].find_one(name="backup_owner_uuid")["settings"] == payload["backup_owner_uuid"]
+        assert db["agent"].find_one(name="schedule_timezone")["settings"] == "Europe/Berlin"
         assert db["job_actions"].find_one(id=1)["data"] == {}
         assert agent._Agent__repository_passwords == {1: "password"}
 
@@ -186,6 +189,7 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
         db[name].insert({"id": 1})
     db["repository_secrets"].insert({"repository_id": 1, "password": "legacy"})
     db["agent"].upsert({"name": "backup_owner_uuid", "settings": "previous-owner"}, ["name"])
+    db["agent"].upsert({"name": "schedule_timezone", "settings": "Europe/Berlin"}, ["name"])
     db.query("""
         CREATE TRIGGER reject_new_actions BEFORE INSERT ON job_actions
         WHEN NEW.id = 2 BEGIN SELECT RAISE(ABORT, 'injected sync failure'); END
@@ -199,6 +203,7 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
     }
     payload["agent_uuid"] = "550e8400-e29b-41d4-a716-446655440000"
     payload["backup_owner_uuid"] = "00000000-0000-0000-0000-000000000003"
+    payload["schedule_timezone"] = "America/New_York"
     monkeypatch.setattr(
         agent, "_Agent__send_request", lambda action: {"success": True, "result": payload}
     )
@@ -212,6 +217,20 @@ def test_sync_failure_keeps_previous_data_after_migration(local_db, monkeypatch)
         assert [row["id"] for row in db[name].all()] == [1]
     assert db["repository_secrets"].find_one(repository_id=1)["password"] == "legacy"
     assert db["agent"].find_one(name="backup_owner_uuid")["settings"] == "previous-owner"
+    assert db["agent"].find_one(name="schedule_timezone")["settings"] == "Europe/Berlin"
+
+
+def test_newer_schema_is_rejected_before_modifying_agent_state(local_db):
+    database_module.initialize_schema()
+    future_version = database_module.CURRENT_SCHEMA_VERSION + 1
+    local_db["agent_schema"].update({"name": "agent", "version": future_version}, ["name"])
+    local_db["agent"].insert({"name": "keep-setting", "settings": "keep-value"})
+    schema = list(local_db.query("SELECT name, sql FROM sqlite_master ORDER BY name"))
+    with pytest.raises(RuntimeError, match="newer than supported.*compatible agent"):
+        database_module.initialize_schema()
+    assert local_db["agent_schema"].find_one(name="agent")["version"] == future_version
+    assert local_db["agent"].find_one(name="keep-setting")["settings"] == "keep-value"
+    assert list(local_db.query("SELECT name, sql FROM sqlite_master ORDER BY name")) == schema
 
 
 def test_statistics_migration_preserves_backup_history_and_replay(local_db):

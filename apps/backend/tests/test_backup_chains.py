@@ -57,7 +57,7 @@ def setup(monkeypatch, tmp_path):
         db.create_all()
         user = User(name="admin")
         user.set_initial_password("account-password", recovery_key="user-recovery-key")
-        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=23) for i in range(2)]
+        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=24) for i in range(2)]
         for i, agent in enumerate(agents):
             AgentSession(agent=agent, request_sid=f"sid-{i}")
         repository = Repository(user=user, name="Storage", kind="custom", location="/backup")
@@ -189,14 +189,14 @@ def test_old_agent_is_rejected_when_saving_and_skipped_without_waiting_at_dispat
     _, chain, jobs, calls = setup
     jobs[0].agent.protocol_version = 19
     db.session.commit()
-    with pytest.raises(ValueError, match="protocol 23"):
+    with pytest.raises(ValueError, match="protocol 24"):
         save_chain(chain, chain.user_id, {"steps": chain.steps})
     db.session.rollback()
     synced = []
     monkeypatch.setattr(AgentService, "sync", lambda agent, **kw: synced.append(agent.id) or {"state": AgentOperationState.success})
     run = start_chain(chain, now=NOW)
     advance_run(run.id, now=NOW)
-    assert run.steps[0]["state"] == "skipped" and "protocol 23" in run.steps[0]["reason"]
+    assert run.steps[0]["state"] == "skipped" and "protocol 24" in run.steps[0]["reason"]
     assert not calls and not synced
     advance_run(run.id, now=NOW)
     assert calls[0][1] == jobs[1].id
@@ -455,7 +455,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     from drastic_server.services.agent.request import AgentException, AgentRequestService
 
     app, chain, jobs, _ = setup
-    jobs[0].agent.protocol_version = 23
+    jobs[0].agent.protocol_version = 24
     db.session.commit()
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
@@ -476,6 +476,12 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     detail = client.get(f'/api/jobs/{jobs[0].id}').json['schedules'][0]
     assert detail['timing'] == timing
     assert '2027-02-01' in detail['cron_description']
+    jobs[0].agent.protocol_version = 23
+    db.session.commit()
+    with pytest.raises(AgentException, match="protocol 24"):
+        AgentRequestService(jobs[0].agent).sync()
+    jobs[0].agent.protocol_version = 24
+    db.session.commit()
     invalid = client.post('/api/jobs/schedules/preview', json={'timing': {'type': 'periodic', 'interval': 0, 'offset': 0}})
     assert invalid.status_code == 422
     if retry_enabled:
@@ -484,13 +490,56 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
         with pytest.raises(AgentException, match="protocol 18"):
             AgentRequestService(jobs[0].agent).sync()
         schedule.enabled = False
-        jobs[0].agent.protocol_version = 23
+        jobs[0].agent.protocol_version = 24
         db.session.commit()
         assert AgentRequestService(jobs[0].agent).sync()["schedules"] == []
         schedule.enabled = True
         schedule.config = {**schedule.config, "retry": {"enabled": False}}
         db.session.commit()
         assert not AgentRequestService(jobs[0].agent).sync()["schedules"][0]["config"]["retry"]["enabled"]
+
+
+def test_chain_calendar_uses_its_owners_timezone_and_keeps_utc_claims(setup):
+    _, chain, jobs, _ = setup
+    user = jobs[0].agent.user
+    user.schedule_timezone = "Europe/Berlin"
+    db.session.commit()
+    assert chain_payload(chain)["timezone"] == "Europe/Berlin"
+    tick(now=NOW)  # 04:00 in Berlin, not the configured 02:00.
+    assert BackupChainRun.query.count() == 0
+    tick(now=NOW - timedelta(hours=2))
+    run = BackupChainRun.query.one()
+    assert run.planned_slot == NOW - timedelta(hours=2)
+    tick(now=NOW - timedelta(hours=2) + timedelta(seconds=5))
+    assert BackupChainRun.query.count() == 1
+
+
+@pytest.mark.parametrize("busy", [False, True])
+def test_one_shot_chain_is_consumed_across_timezone_change_and_restart(setup, busy):
+    _, chain, jobs, _ = setup
+    chain_id, user_id = chain.id, chain.user_id
+    chain.schedules = [
+        {"enabled": True, "cron_string": "", "timing": {"type": "once", "date": "2026-10-18", "hour": 2, "minute": 0}},
+        {"enabled": True, "cron_string": "0 12 * * *"},
+    ]
+    jobs[0].agent.user.schedule_timezone = "Europe/Berlin"
+    db.session.commit()
+    if busy:
+        start_chain(chain, now=datetime(2026, 10, 17, 23))
+    tick(now=datetime(2026, 10, 18, 0))
+    occurrence = BackupChainRun.query.filter_by(chain_id=chain_id, planned_slot=datetime(2026, 10, 18, 0)).one()
+    assert occurrence.state == ("skipped" if busy else "running")
+    assert not chain.schedules[0]["enabled"] and chain.schedules[1]["enabled"]
+    for run in BackupChainRun.query.filter_by(chain_id=chain_id):
+        run.state, run.active_chain_id, run.ended = "success", None, datetime(2026, 10, 18, 0, 1)
+    db.session.commit()
+    db.session.remove()  # A fresh dispatcher must observe the consumed trigger too.
+    user = db.session.get(User, user_id)
+    user.schedule_timezone = "America/New_York"
+    db.session.commit()
+    tick(now=datetime(2026, 10, 18, 6))
+    assert BackupChainRun.query.filter_by(chain_id=chain_id).count() == (2 if busy else 1)
+    assert not db.session.get(BackupChain, chain_id).schedules[0]["enabled"]
 
 
 def test_dispatcher_can_start_without_http_visit_and_only_starts_once(setup, monkeypatch):

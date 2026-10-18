@@ -16,6 +16,7 @@ class User(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'users'
     name = db.Column(db.String(120), nullable=False, unique=True)
     email = db.Column(db.String(120), unique=True)
+    schedule_timezone = db.Column(db.String(255), nullable=False, default="UTC", server_default="UTC")
     backup_owner_uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     default_retention_id = db.Column(
         db.Integer,

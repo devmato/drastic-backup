@@ -32,6 +32,7 @@ Important paths:
 - `apps/backend/src/drastic_server/services/jobs` -- Job configuration, queries, management and execution.
 - `apps/backend/src/drastic_server/services/operations` -- Durable operation lifecycle, history and report ingestion.
 - `apps/backend/src/drastic_server/services/agent/installer.py` -- Installer rendering, standalone controller delivery through `/install.py`, and reproducible backend build targets.
+- `apps/backend/src/drastic_server/services/recovery_export.py` -- Account-scoped recovery data, AES ZIP assembly and optional verified Restic archives; offline instructions live in `templates/recovery/`.
 - `apps/backend/src/drastic_server/integrations` -- External transport adapters.
 - `apps/backend/tests` -- Backend test suite.
 - `apps/backend/scripts/run.sh` -- Container startup script.
@@ -80,9 +81,11 @@ Important paths:
 
 `drastic_common/backup_selection.py` translates literal File/TrueNAS path rules into Restic exclusions and identifies configurations requiring include-exception support. The frontend shares browser inheritance and state feedback in `src/utils/path-selection.js`.
 
-Agent `services/retention.py` selects owned snapshot runs directly from repository tags by count or UTC calendar buckets. Backend `services/retention.py` manages policies; `services/agent/request.py` supplies the stable account owner, current job UUIDs, known running operations, default policy and check state without querying backup history. `services/operations/reports.py` records cleanup outcomes and repository check state using the existing report workflow.
+Agent `services/retention.py` selects owned snapshot runs directly from repository tags by count or UTC calendar buckets, with an additional last-complete-run safety floor. `services/backup_completion.py` journals and verifies a single Restic completion-tag rewrite; `storage/snapshot_references.py` atomically updates its artifact, outbox and CBT references. Backend `services/retention.py` manages policies; `services/agent/request.py` supplies the stable account owner, current job UUIDs, known running operations, default policy and check state without querying backup history. `services/operations/reports.py` records cleanup outcomes, canonical snapshot-ID replacements and repository check state using the existing report workflow.
 
 `drastic_common/restic/snapshots.py` identifies restore-point groups from owner/job/run tags, with legacy job/run grouping for unmarked snapshots. Backend and agent restore services use it for listing and whole-point deletion; the frontend displays groups and selects individual components for restore.
+
+`drastic_common/restic/binary.py` downloads checksum-verified official Restic archives for recovery kits and unpacks them for agent installation. Agent `integrations/restic_binary.py` retains local executable/version validation and atomic activation; recovery export bundles archives unchanged.
 
 `drastic_common/version.py` generates product versions and full source revisions. Packages and Docker builds preserve them in generated `build-version.txt` and `build-revision.txt` files, including when Git is unavailable at runtime.
 

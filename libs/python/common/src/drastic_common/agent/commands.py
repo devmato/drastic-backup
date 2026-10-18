@@ -2,7 +2,9 @@ import enum
 
 from marshmallow import EXCLUDE, Schema, fields, validate
 
-AGENT_PROTOCOL_VERSION = 23
+AGENT_PROTOCOL_VERSION = 24
+BACKUP_COMPLETION_PROTOCOL = 24
+SCHEDULE_TIMEZONE_PROTOCOL = 24
 RESTORE_POINTS_PROTOCOL = 22
 JOB_RETENTION_PROTOCOL = 23
 BACKUP_RETRY_PROTOCOL = 18
@@ -45,12 +47,12 @@ class AgentCommandName(str, enum.Enum):
 
 # Protocol 0 is the legacy command set, before web-based Proxmox settings.
 AGENT_COMMAND_MIN_PROTOCOL = {
-    AgentCommandName.run_job: JOB_RETENTION_PROTOCOL,
+    AgentCommandName.run_job: BACKUP_COMPLETION_PROTOCOL,
     AgentCommandName.delete_restore_point: RESTORE_POINTS_PROTOCOL,
     AgentCommandName.list_restore_snapshots: 15,
     AgentCommandName.list_restore_entries: 15,
     AgentCommandName.run_restore: 15,
-    AgentCommandName.preview_schedule: 12,
+    AgentCommandName.preview_schedule: SCHEDULE_TIMEZONE_PROTOCOL,
     AgentCommandName.get_operation_status: 11,
     AgentCommandName.debug_state: 6,
     AgentCommandName.truenas_settings: 3,

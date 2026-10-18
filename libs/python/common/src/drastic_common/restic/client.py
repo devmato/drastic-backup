@@ -673,6 +673,10 @@ class ResticApi:
         cmd = self.__make_command("snapshots", tag=tags, path=paths)
         return self.__execute_command(cmd)
 
+    def tag_snapshot(self, snapshot_id, tag):
+        """Rewrite one explicit snapshot's metadata; callers must reconcile its new ID."""
+        return self.__execute_command(self.__make_command("tag", snapshot_id, add=tag))
+
     def ls(self, snapshot_id="latest", path=None, recursive=False):
         args = ["ls", snapshot_id]
         if path:

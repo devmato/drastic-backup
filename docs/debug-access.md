@@ -1,6 +1,6 @@
 # Settings and Debug MCP
 
-Open **User menu > Settings** for account password, Recovery Export, and **Debug & MCP**.
+Open **User menu > Settings** for the account time zone, password, Recovery Export, and **Debug & MCP**.
 Switch between **Dark mode** and **Light mode** directly in the user menu; the choice is
 saved in this browser.
 

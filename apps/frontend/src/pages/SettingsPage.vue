@@ -1,7 +1,23 @@
 <template>
   <q-page class="q-pa-md">
-    <PageHeader title="Settings" description="Account security and diagnostic access." />
+    <PageHeader title="Settings" description="Account preferences, security and diagnostic access." />
     <div class="column q-gutter-md">
+      <q-card flat bordered>
+        <q-form @submit="saveTimezone">
+          <q-card-section>
+            <h2 class="text-h6 q-mt-none q-mb-md">Preferences</h2>
+            <q-select v-model="scheduleTimezone" outlined :dense="!$q.platform.has.touch" hide-bottom-space use-input hide-selected fill-input :input-debounce="0"
+              :options="filteredTimezones" label="Zeitzone" :disable="timezoneBusy || !timezones.length"
+              hint="Applies to all your job and backup chain schedules. Offline agents receive changes on their next synchronization."
+              :rules="[required]" @filter="filterTimezones" />
+            <q-banner v-if="timezoneError" class="q-mt-md bg-negative text-white">{{ timezoneError }}</q-banner>
+          </q-card-section>
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn unelevated no-caps color="primary" label="Save" type="submit" :loading="timezoneBusy"
+              :disable="!timezones.length || scheduleTimezone === userStore.user?.schedule_timezone" />
+          </q-card-actions>
+        </q-form>
+      </q-card>
       <q-card flat bordered>
         <q-card-section>
           <h2 class="text-h6 q-mt-none q-mb-md">Account &amp; Recovery</h2>
@@ -19,7 +35,7 @@
           <template v-if="debug">
             <q-toggle :model-value="debug.enabled" :disable="debugBusy" label="Enable diagnostic recording and MCP access" @update:model-value="changeDebug" />
             <div class="text-caption">Up to {{ debug.retention_days }} days or {{ debug.max_events.toLocaleString() }} events. Disabling immediately revokes access; agent recording stops within 60 seconds.</div>
-            <q-input outlined readonly :model-value="debug.mcp_url" label="MCP endpoint (Streamable HTTP)">
+            <q-input outlined :dense="!$q.platform.has.touch" readonly :model-value="debug.mcp_url" label="MCP endpoint (Streamable HTTP)">
               <template #append><q-btn flat round icon="content_copy" aria-label="Copy MCP endpoint" @click="copy(debug.mcp_url)" /></template>
             </q-input>
             <div v-if="debug.enabled" class="row items-center q-gutter-sm">
@@ -39,11 +55,11 @@
         </q-card-section>
         <q-form @submit="submitPassword">
           <q-card-section class="q-gutter-sm">
-            <q-input v-model="currentPassword" outlined autofocus :type="showPasswords ? 'text' : 'password'" label="Current Password" autocomplete="current-password" :rules="[required]" :disable="passwordBusy" />
-            <q-input v-model="newPassword" outlined :type="showPasswords ? 'text' : 'password'" label="New Password" autocomplete="new-password" :rules="[required, val => val.length >= 8 || 'Password must be at least 8 characters']" :disable="passwordBusy">
+            <q-input v-model="currentPassword" outlined :dense="!$q.platform.has.touch" autofocus :type="showPasswords ? 'text' : 'password'" label="Current Password" autocomplete="current-password" :rules="[required]" :disable="passwordBusy" />
+            <q-input v-model="newPassword" outlined :dense="!$q.platform.has.touch" :type="showPasswords ? 'text' : 'password'" label="New Password" autocomplete="new-password" :rules="[required, val => val.length >= 8 || 'Password must be at least 8 characters']" :disable="passwordBusy">
               <template #append><q-btn flat round :icon="showPasswords ? 'visibility_off' : 'visibility'" aria-label="Toggle password visibility" @click="showPasswords = !showPasswords" /></template>
             </q-input>
-            <q-input v-model="confirmPassword" outlined :type="showPasswords ? 'text' : 'password'" label="Confirm New Password" autocomplete="new-password" :rules="[required, val => val === newPassword || 'Passwords do not match']" :disable="passwordBusy" />
+            <q-input v-model="confirmPassword" outlined :dense="!$q.platform.has.touch" :type="showPasswords ? 'text' : 'password'" label="Confirm New Password" autocomplete="new-password" :rules="[required, val => val === newPassword || 'Passwords do not match']" :disable="passwordBusy" />
             <q-banner v-if="passwordError" class="bg-negative text-white">{{ passwordError }}</q-banner>
           </q-card-section>
           <q-card-actions align="right" class="q-pa-md">
@@ -57,17 +73,34 @@
       <q-card class="db-dialog-card-sm">
         <q-card-section>
           <div class="text-h6">Download Recovery Export</div>
-          <div class="text-caption">Create an offline recovery package for this installation.</div>
+          <div class="text-caption">Repository access, configuration and offline restore instructions.</div>
         </q-card-section>
-        <q-form @submit="submitRecovery">
+        <template v-if="archivePassword">
+          <q-card-section class="q-gutter-md">
+            <div role="status">The encrypted ZIP download has started.</div>
+            <q-input outlined :dense="!$q.platform.has.touch" readonly type="textarea" autogrow rows="1" :model-value="archivePassword" label="Archive password" autocomplete="off" spellcheck="false">
+              <template #append><q-btn flat round icon="content_copy" aria-label="Copy archive password" @click="copy(archivePassword)" /></template>
+            </q-input>
+            <div class="text-body2">Save this password now; it cannot be retrieved after closing. Your account password does not open the kit.</div>
+            <div class="text-caption">Extract with an AES-ZIP-compatible tool such as 7-Zip, then open recovery.html. Extracted files contain plaintext credentials.</div>
+          </q-card-section>
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps color="primary" label="Done" @click="recoveryOpen = false" />
+          </q-card-actions>
+        </template>
+        <q-form v-else @submit="submitRecovery">
           <q-card-section class="q-gutter-md">
             <q-banner rounded class="bg-orange-1 text-orange-10">
-              <div class="text-weight-bold">This ZIP and its recovery.html file contain plaintext repository passwords and provider credentials.</div>
-              <div class="q-mt-sm">Move the export directly into encrypted storage such as Vaultwarden. Do not leave it in Downloads.</div>
+              Save the random archive password shown after download. It cannot be recovered later.
             </q-banner>
-            <div class="text-body2">External SSH keys, Proxmox storage and configuration, and native storage dependencies are not included. Preserve anything required by those systems separately.</div>
-            <q-input v-model="recoveryPassword" outlined autofocus :type="showRecoveryPassword ? 'text' : 'password'" label="Current Account Password" autocomplete="current-password" :rules="[required]" :disable="recoveryBusy">
-              <template #append><q-btn flat round :icon="showRecoveryPassword ? 'visibility_off' : 'visibility'" aria-label="Toggle password visibility" @click="showRecoveryPassword = !showRecoveryPassword" /></template>
+            <div class="text-body2">Includes repository credentials and restore instructions. Preserve backup data and SSH keys separately.</div>
+            <q-select v-model="resticTargets" outlined :dense="!$q.platform.has.touch" multiple use-chips emit-value map-options hide-bottom-space bottom-slots
+              :options="resticTargetOptions" :disable="recoveryBusy" label="Restic archives (optional)"
+              aria-describedby="recovery-restic-help">
+              <template #hint><span id="recovery-restic-help">Official, checksum-verified archives; unpack the matching one before recovery. Leave empty for a small kit.</span></template>
+            </q-select>
+            <q-input v-model="recoveryPassword" outlined :dense="!$q.platform.has.touch" autofocus :type="showRecoveryPassword ? 'text' : 'password'" label="Current Account Password" autocomplete="current-password" :rules="[required]" :disable="recoveryBusy">
+              <template #append><q-btn flat round :disable="recoveryBusy" :icon="showRecoveryPassword ? 'visibility_off' : 'visibility'" aria-label="Toggle password visibility" @click="showRecoveryPassword = !showRecoveryPassword" /></template>
             </q-input>
             <q-banner v-if="recoveryError" class="bg-negative text-white">{{ recoveryError }}</q-banner>
           </q-card-section>
@@ -83,7 +116,7 @@
         <q-card-section class="q-gutter-md">
           <div class="text-h6">MCP token</div>
           <div>Copy this token now. It will not be shown again. Store it in your MCP client's secret storage.</div>
-          <q-input outlined readonly :model-value="token" label="Bearer token" type="password">
+          <q-input outlined :dense="!$q.platform.has.touch" readonly :model-value="token" label="Bearer token" type="password">
             <template #append><q-btn flat round icon="content_copy" aria-label="Copy MCP token" @click="copy(token)" /></template>
           </q-input>
         </q-card-section>
@@ -100,6 +133,7 @@ import { useQuasar, copyToClipboard } from 'quasar'
 import PageHeader from 'components/PageHeader.vue'
 import { useUserStore } from 'stores/user'
 import { getApiErrorMessage } from 'src/utils/api-error'
+import { getTimezones } from 'src/api/user'
 
 const $q = useQuasar()
 const router = useRouter()
@@ -110,6 +144,33 @@ const debugBusy = ref(false)
 const debugError = ref('')
 const token = ref('')
 let disposed = false
+
+const scheduleTimezone = ref(userStore.user?.schedule_timezone || 'UTC')
+const timezones = ref([])
+const filteredTimezones = ref([])
+const timezoneBusy = ref(false)
+const timezoneError = ref('')
+function filterTimezones(value, update) {
+  update(() => { filteredTimezones.value = timezones.value.filter(zone => zone.toLowerCase().includes(value.toLowerCase())) })
+}
+async function loadTimezones() {
+  try {
+    const zones = await getTimezones()
+    if (!disposed) timezones.value = filteredTimezones.value = zones
+  } catch (error) {
+    if (!disposed) timezoneError.value = getApiErrorMessage(error, 'Could not load time zones')
+  }
+}
+async function saveTimezone() {
+  timezoneBusy.value = true
+  timezoneError.value = ''
+  try {
+    await userStore.updateSettings(scheduleTimezone.value)
+    if (!disposed) $q.notify({ message: 'Time zone saved', color: 'positive' })
+  } catch (error) {
+    if (!disposed) timezoneError.value = getApiErrorMessage(error, 'Could not save time zone')
+  } finally { timezoneBusy.value = false }
+}
 
 async function copy(value) {
   try {
@@ -163,25 +224,46 @@ const recoveryBusy = ref(false)
 const recoveryError = ref('')
 const recoveryPassword = ref('')
 const showRecoveryPassword = ref(false)
+const archivePassword = ref('')
+const resticTargets = ref([])
+let recoveryController = null
+const resticTargetOptions = [
+  { value: 'linux_amd64', label: 'Linux — x64' },
+  { value: 'linux_arm64', label: 'Linux — ARM64' },
+  { value: 'darwin_amd64', label: 'macOS — Intel' },
+  { value: 'darwin_arm64', label: 'macOS — Apple Silicon' },
+  { value: 'windows_amd64', label: 'Windows — x64' },
+]
 function resetRecovery() {
-  recoveryPassword.value = recoveryError.value = ''
+  recoveryPassword.value = recoveryError.value = archivePassword.value = ''
   showRecoveryPassword.value = false
+  resticTargets.value = []
 }
 async function submitRecovery() {
+  if (recoveryBusy.value || archivePassword.value) return
   recoveryBusy.value = true
   recoveryError.value = ''
+  recoveryController = new AbortController()
   try {
-    await userStore.downloadRecoveryExport(recoveryPassword.value)
-    recoveryOpen.value = false
-    resetRecovery()
-    $q.notify({ message: 'Recovery export downloaded', color: 'positive' })
+    // 24 random bytes produce a 32-character base64url password (192 bits).
+    const bytes = crypto.getRandomValues(new Uint8Array(24))
+    const generatedPassword = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_')
+    await userStore.downloadRecoveryExport(recoveryPassword.value, generatedPassword, [...resticTargets.value], recoveryController.signal)
+    if (!disposed) archivePassword.value = generatedPassword
   } catch (error) {
-    recoveryError.value = error?.response?.status === 401 ? 'Current password is wrong' : getApiErrorMessage(error, 'Recovery export failed')
-  } finally { recoveryBusy.value = false }
+    if (!disposed) recoveryError.value = error?.response?.status === 401 ? 'Current password is wrong' : getApiErrorMessage(error, 'Recovery export failed')
+  } finally {
+    recoveryPassword.value = ''
+    showRecoveryPassword.value = false
+    recoveryBusy.value = false
+    recoveryController = null
+  }
 }
 onMounted(loadDebug)
+onMounted(loadTimezones)
 onBeforeUnmount(() => {
   disposed = true
+  recoveryController?.abort()
   token.value = ''
   resetPassword()
   resetRecovery()

@@ -30,12 +30,90 @@
   <header>
     <h1>dRastic recovery export</h1>
     <div class="warning">
-      CRITICAL: This document contains plaintext repository passwords and provider environment
-      values. Anyone who can read it may be able to access your backups. Store it offline,
-      protect printed copies, and destroy copies securely when no longer needed.
+      This document contains plaintext repository passwords and provider credentials.
+      Protect extracted files and printed copies.
     </div>
     <p>Generated: <time>{{ export.generated_at }}</time></p>
+    <p>dRastic version: {{ export.drastic_version }} · Restic version: {{ export.restic_version }}</p>
   </header>
+
+  <nav aria-label="Recovery guide">
+    <p><a href="#quick-start">Start recovery</a> · <a href="#native-storage">Managed storage access</a> ·
+      <a href="#repositories">Repository credentials and commands</a> · <a href="#formats">Backup formats</a> ·
+      <a href="#drastic-restore">Restore with a new dRastic installation</a></p>
+  </nav>
+
+  <section id="quick-start">
+    <h2>Start recovery without dRastic</h2>
+    <p>The kit requires an AES-ZIP-compatible tool such as 7-Zip and the archive password saved at export time,
+      not your account password. Run the commands from the extracted kit directory.</p>
+    <ol>
+      <li>Unpack the matching archive for your operating system/architecture and set
+        <code>RESTIC</code> (shell) or <code>$restic</code> (PowerShell) to the executable's absolute path.</li>
+      <li>Use the repository commands below to list snapshots, inspect files, then replace
+        <code>SNAPSHOT_ID</code> with the chosen ID and restore to a <strong>new, empty directory</strong>.
+        Recover each required VM/dataset component separately.</li>
+    </ol>
+    <p>Shell: <code>export RESTIC='/absolute/path/to/restic'</code><br>
+      PowerShell: <code>$restic = 'C:\path\to\restic.exe'</code></p>
+    <p>Check restored data before production use; failed attempts may leave partial files.</p>
+    {% if export.restic_archives %}
+      <p>Included official archives (verified against the release's SHA256SUMS):</p>
+      <ul>{% for archive in export.restic_archives %}<li><code>bin/{{ archive.filename }}</code></li>{% endfor %}</ul>
+      <p>Archive checksums: <code>bin/SHA256SUMS</code> (paths relative to <code>bin/</code>).
+        License: <code>bin/LICENSE.txt</code>.</p>
+    {% else %}
+      <p>No Restic archives selected; obtain Restic {{ export.restic_version }} from
+        <code>{{ export.restic_release_url }}</code>.</p>
+    {% endif %}
+  </section>
+
+  <section id="native-storage">
+    <h2>Direct access to managed rest-server storage</h2>
+    <p>A native repository is an ordinary Restic directory: <strong>no running dRastic or rest-server is needed</strong>.
+      The Compose host storage root is <code>DRASTIC_REST_SERVER_STORAGE_PATH</code>
+      (default <code>/opt/drastic-server/restic</code>); <code>/data</code> is the container mount.
+      Use your actual storage root plus the exact repository path:</p>
+    <ul>{% for repository in export.repositories if repository.kind == 'native' %}
+      <li>{{ repository.name }}: <code>&lt;storage-root&gt;/{{ repository.native_repository_path }}</code></li>
+    {% else %}<li>No native repositories in this export.</li>{% endfor %}</ul>
+    <p>Point Restic at the directory containing <code>config</code>, <code>data</code>, <code>index</code>,
+      <code>keys</code> and <code>snapshots</code>, using the exported repository password.
+      Take a consistent copy with writers/maintenance stopped. Do not run <code>init</code>,
+      <code>forget</code>, <code>prune</code> or remove active locks during recovery.</p>
+  </section>
+
+  <section id="formats">
+    <h2>What each backup format restores</h2>
+    <table>
+      <thead><tr><th>Backup type</th><th>Restic output and next steps</th></tr></thead>
+      <tbody>
+        <tr><th>File / TrueNAS</th><td>Ordinary files. TrueNAS has one snapshot per dataset and needs no NAS/API
+          for file recovery; ZFS settings/history are not included. Source paths may include <code>mnt/host/</code>.</td></tr>
+        <tr><th>Proxmox Snapshot/TAR</th><td><code>qemu-&lt;vmid&gt;.tar</code> with VM configuration and
+          <code>disks/disk-drive-*.raw</code>.
+          VM import or guest-file access needs additional tools or dRastic.</td></tr>
+        <tr><th>Proxmox Native/CBT</th><td>Manifest, VM configuration and numbered 4-MiB RAW blocks:
+          <strong>not complete disk images or guest files</strong>. Use format-aware tools or dRastic
+          to assemble/import disks or read guest files. The selected snapshot is complete;
+          older snapshots and agent CBT checkpoints are not required.</td></tr>
+      </tbody>
+    </table>
+    <p>VM tools are not bundled; encrypted guest filesystems need their own unlock keys.
+      File ownership, permissions and platform-specific metadata may differ on the recovery computer.</p>
+  </section>
+
+  <section id="drastic-restore">
+    <h2>Restore with a new dRastic installation</h2>
+    <p>Add a <strong>Custom Repository</strong> with the existing location, exported password and provider
+      environment. Local storage must be mounted on the recovery agent, including any container mounts.
+      A new Native Repository would allocate a new path. Assign/synchronize it to the agent, open
+      <strong>Actions → Restore backup</strong> and enable <strong>Show all restore points</strong>.
+      Old jobs/reports are unnecessary; recognized Proxmox backups retain specialized restore modes
+      when the agent has their required tools.</p>
+    <p>A new account's owner UUID does not prevent restores; old owner-tagged backups remain outside
+      its automatic retention. This kit is not an automatic configuration import.</p>
+  </section>
 
   <section>
     <h2>Account metadata</h2>
@@ -44,6 +122,7 @@
       <tr><th>Name</th><td>{{ export.user.name }}</td></tr>
       <tr><th>Email</th><td>{{ export.user.email or "Not set" }}</td></tr>
       <tr><th>Backup owner UUID</th><td>{{ export.user.backup_owner_uuid }}</td></tr>
+      <tr><th>Time zone</th><td>{{ export.user.schedule_timezone }}</td></tr>
     </table>
     <p class="note">The account password, password hash, encrypted user recovery key, sessions, and tokens are not included.</p>
     <p>Preserve the backup owner UUID when reconstructing this account. Retention identifies repository snapshots by this namespace, independently of report history.</p>
@@ -54,6 +133,8 @@
     <ul>
       <li>SSH/SFTP target access and private agent SSH material are not included.</li>
       <li>Proxmox credentials and host prerequisites are not included.</li>
+      <li>Provider values referring to external files (SSH identities, certificates or credential files)
+        do not include those files. Keep them available separately.</li>
       <li>Native repository storage must be separately backed up.</li>
     </ul>
   </section>
@@ -93,8 +174,11 @@
     </table>
   </section>
 
-  <section>
+  <section id="repositories">
     <h2>Repositories</h2>
+    <p>Use a fresh shell per repository to avoid inherited provider settings. Setup lines may contain
+      credentials; avoid saving them in shell history. Password files contain repository passwords,
+      not the ZIP/account password.</p>
     {% for repository in export.repositories %}
       <div class="item">
         <h3>{{ repository.name }} <small>(ID {{ repository.id }})</small></h3>
@@ -106,6 +190,26 @@
           <tr><th>Repository password (plaintext)</th><td><code class="secret">{{ repository.password }}</code></td></tr>
           <tr><th>Provider environment (plaintext)</th><td><pre class="secret">{{ repository.environment | tojson(indent=2) }}</pre></td></tr>
         </table>
+        <p>Password file: <code>repositories/{{ repository.id }}/password.txt</code>.</p>
+        {% if repository.kind == 'native' %}
+          <p><strong>Replace <code>/path/to/rest-server-storage</code> below with your actual storage root.</strong>
+            The appended <code>{{ repository.native_repository_path }}</code> identifies this repository.</p>
+        {% else %}
+          <p>The configured location is reused below. Update it if the recovered storage or provider address
+            has changed.</p>
+        {% endif %}
+        <h4>Linux/macOS shell</h4>
+        <pre>{{ repository.shell_setup }}
+"$RESTIC" snapshots
+"$RESTIC" ls SNAPSHOT_ID
+"$RESTIC" restore SNAPSHOT_ID --target '/path/to/new-empty-restore-{{ repository.id }}'</pre>
+        <h4>Windows PowerShell</h4>
+        <pre>{{ repository.powershell_setup }}
+&amp; $restic snapshots
+&amp; $restic ls SNAPSHOT_ID
+&amp; $restic restore SNAPSHOT_ID --target 'C:\Recovery\new-empty-restore-{{ repository.id }}'</pre>
+        <p>Optional subtree filter: <code>--include '/path/from/restic-ls'</code>.
+          VM archive/block paths are not paths inside the guest.</p>
       </div>
     {% else %}<p>No repositories.</p>{% endfor %}
   </section>
@@ -135,6 +239,14 @@
         <table>
           <tr><th>Agent</th><td>{{ job.agent.display_name }} (ID {{ job.agent.id }})</td></tr>
           <tr><th>Type</th><td>{{ job.type }}</td></tr>
+          <tr><th>Recovery format</th><td>
+            {% if job.type == 'proxmox' %}
+              Proxmox archives/blocks require additional tools or dRastic for VM/guest-file recovery.
+            {% else %}
+              Ordinary files via Restic.{% if job.type == 'truenas' %} Restore each required dataset snapshot separately.{% endif %}
+            {% endif %}
+            See <a href="#formats">backup formats</a>; snapshot tags identify the format of each run.
+          </td></tr>
           <tr><th>Retention</th><td>{{ job.retention.mode }} — {{ job.retention.name or "None" }}{% if job.retention.effective_id %} (ID {{ job.retention.effective_id }}){% endif %}</td></tr>
           <tr><th>Configuration</th><td><pre>{{ job.config | tojson(indent=2) }}</pre></td></tr>
         </table>

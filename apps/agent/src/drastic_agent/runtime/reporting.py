@@ -17,27 +17,37 @@ def flush(send_report):
             send_report(report)
 
     # A child cannot overtake its parent. Rotate failed sends so others make progress.
-    queue = AgentReport.finished_reports
-    outstanding = {report.uuid for report in queue}
-    outstanding.update(report.uuid for report in AgentReport.pending_reports)
+    with AgentReport._registry_lock:
+        queue = AgentReport.finished_reports
+        outstanding = {report.uuid for report in queue}
+        outstanding.update(report.uuid for report in AgentReport.pending_reports)
     for _ in range(len(queue)):
-        report = queue.popleft()
-        if report.parent_operation_uuid in outstanding:
-            queue.append(report)
-            continue
-        if send_report(report):
-            operation_store.delete(report.uuid)
-        else:
-            queue.append(report)
+        with AgentReport._registry_lock:
+            report = queue.popleft()
+            if report.parent_operation_uuid in outstanding:
+                queue.append(report)
+                continue
+            # Snapshot reconciliation must still find this report during network I/O.
+            AgentReport.delivering_reports[report.uuid] = report
+        try:
+            if send_report(report):
+                operation_store.delete(report.uuid)
+            else:
+                with AgentReport._registry_lock:
+                    queue.append(report)
+        finally:
+            with AgentReport._registry_lock:
+                AgentReport.delivering_reports.pop(report.uuid, None)
         break
 
 
-def send(report, *, request, debug):
+def send(report, *, request, debug, completion_pending=None):
     """Release the report lock during I/O; concurrent updates must stay unsent."""
     debug.update(operation_uuid=report.uuid, attempt_at=datetime.now(timezone.utc).isoformat(), phase="serializing")
     started = monotonic()
     try:
         with report._lock:
+            defer_completion = bool(completion_pending and completion_pending())
             if hasattr(report, "diagnostic_at"):
                 if diagnostics.active():
                     report.diagnostic_at = datetime.now(timezone.utc)
@@ -45,6 +55,10 @@ def send(report, *, request, debug):
                     del report.diagnostic_at
             diagnostic_at = getattr(report, "diagnostic_at", None)
             payload = deepcopy(AgentReportSchema().dump(report))
+            if defer_completion:
+                # Publish recovery errors without releasing the backend's running fence or stale IDs.
+                payload.update(state="running", ended=None, artifacts=[])
+                payload["data"]["backup_completion_pending"] = True
             report.sent = True
         request_started = monotonic()
         debug["phase"] = "sending"
@@ -71,7 +85,7 @@ def send(report, *, request, debug):
             debug["last_success_at"] = datetime.now(timezone.utc).isoformat()
         else:
             diagnostics.local_event("report.rejected", debug)
-        return success
+        return success and not defer_completion
     except Exception as exc:
         report.sent = False
         debug.update(success=False, error=diagnostics.bounded({"type": type(exc).__name__, "message": str(exc)}),

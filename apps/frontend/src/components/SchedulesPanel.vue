@@ -35,7 +35,7 @@
           <q-item-section>
             <q-item-label>{{ chain.name }} <q-badge :color="chain.enabled ? 'positive' : 'grey'" text-color="black" :label="chain.enabled ? 'Scheduled' : 'Manual only'" /></q-item-label>
             <q-item-label caption>Step {{ chain.position }} of {{ chain.step_count }}{{ chain.previous_job_name ? ` · after ${chain.previous_job_name}` : '' }}</q-item-label>
-            <q-item-label v-for="(schedule, index) in chain.schedules" :key="index" caption>Chain starts: {{ schedule.cron_description }} UTC{{ schedule.enabled ? '' : ' · Disabled' }}</q-item-label>
+            <q-item-label v-for="(schedule, index) in chain.schedules" :key="index" caption>Chain starts: {{ schedule.cron_description }} {{ scheduleTimezone }}{{ schedule.enabled ? '' : ' · Disabled' }}</q-item-label>
             <q-item-label caption>This job starts when its turn arrives.</q-item-label>
             <q-item-label caption>{{ getRepositoryName(chain.repository_id) }}</q-item-label>
           </q-item-section>
@@ -50,7 +50,7 @@
       :repositories="repositories"
       :all-repositories="allRepositories"
       :time-only="timeOnly"
-      :timezone="timezone"
+      :timezone="scheduleTimezone"
       :agent-id="agentId"
       @submit="onScheduleSubmit"
     />
@@ -63,6 +63,7 @@ import { computed, ref } from 'vue'
 import { useQuasar } from 'quasar'
 import ScheduleManageDialog from 'components/ScheduleManageDialog.vue'
 import { describeTiming, scheduleTiming, retrySettings } from 'src/utils/schedule'
+import { useUserStore } from 'stores/user'
 
 const props = defineProps({
   modelValue: { type: Array, default: () => [] },
@@ -78,6 +79,8 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue', 'open-chain'])
 
 const $q = useQuasar()
+const userStore = useUserStore()
+const scheduleTimezone = computed(() => props.timezone || userStore.user?.schedule_timezone || 'UTC')
 
 const scheduleDialogVisible = ref(false)
 const editingSchedule = ref(null)
@@ -86,7 +89,7 @@ const modelSchedules = computed(() => props.modelValue)
 
 const scheduleColumns = computed(() => [
   { name: 'enabled', label: 'Enabled', field: 'enabled', align: 'left' },
-  { name: 'cron_description', label: props.timezone ? `Description (${props.timezone})` : 'Description', field: row => row.cron_description || getCronDescription(row), align: 'left' },
+  { name: 'cron_description', label: `Description (${scheduleTimezone.value})`, field: row => row.cron_description || getCronDescription(row), align: 'left' },
   ...(!props.timeOnly ? [
     { name: 'repository_name', label: 'Repository', field: row => row.repository_name || getRepositoryName(row.repository_id), align: 'left' },
     { name: 'repository_check', label: 'Check', field: getRepositoryCheckLabel, align: 'left' },

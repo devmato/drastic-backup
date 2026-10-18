@@ -12,6 +12,12 @@ from drastic_agent.runtime.agent import Agent
 from drastic_common.restic.exceptions import ResticError, ResticFailedError
 
 
+@pytest.fixture(autouse=True)
+def isolate_completion_tagging(monkeypatch):
+    # Restic rewrite/restart behavior is covered in test_backup_completion; isolate lifecycle outcomes here.
+    monkeypatch.setattr(base_module, "complete_backup", lambda *args: None)
+
+
 class _FakeReport:
     def __init__(self):
         self.final_state = None
@@ -109,6 +115,8 @@ class _CheckingResticApi:
 
 
 class _CheckingAgent:
+    owner_uuid = "00000000-0000-0000-0000-000000000001"
+
     def __init__(self, resticapi):
         self.resticapi = resticapi
 
@@ -448,6 +456,8 @@ def test_repository_preparation_failure_runs_error_and_end_but_not_start(monkeyp
             return [{"hook": hook}]
 
     class RepositoryFailingAgent:
+        owner_uuid = "00000000-0000-0000-0000-000000000001"
+
         @staticmethod
         def set_repository(repository_id):
             raise RuntimeError("repository unavailable")

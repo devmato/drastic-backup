@@ -237,6 +237,28 @@ def test_scheduler_restart_deduplicates_persisted_utc_slot(monkeypatch, tmp_path
     assert rows[0]["status"] == "finished"
 
 
+def test_scheduler_and_preview_use_persisted_account_zone_after_restart(monkeypatch, tmp_path):
+    test_db = connect_database(tmp_path)
+    settings = test_db["agent"]
+    settings.insert({"name": "schedule_timezone", "settings": "Europe/Berlin"})
+    runs = create_schedule_runs_table(test_db)
+    schedule = {"id": 41, "job_id": 4, "repository_id": 9, "cron_string": "0 2 * * *", "config": {}}
+    monkeypatch.setattr(agent_module, "agent_settings", settings)
+    monkeypatch.setattr(agent_module, "schedule_runs", runs)
+    monkeypatch.setattr(agent_module, "jobs", [{"id": 4}])
+    monkeypatch.setattr(agent_module, "schedules", Schedules(schedule))
+    started = []
+    for _ in range(2):
+        agent = build_agent()
+        agent._Agent__execution = ImmediateExecution()
+        agent.cmd_run_job = lambda *args, **kwargs: started.append(1)
+        agent._Agent__run_due_schedules(datetime(2026, 7, 23, 0, 0, tzinfo=timezone.utc))
+        assert agent.cmd_preview_schedule({"type": "daily", "hour": 2, "minute": 0}).data["timezone"] == "Europe/Berlin"
+    assert started == [1]
+    assert runs.find_one(schedule_id=41)["planned_slot"] == "2026-07-23T00:00:00+00:00"
+    test_db.close()
+
+
 def test_once_schedule_is_not_replayed_after_restart_or_history_cleanup(monkeypatch, tmp_path):
     runs = create_schedule_runs_table(connect_database(tmp_path))
     schedule = {"id": 41, "job_id": 4, "repository_id": 9, "cron_string": "",
@@ -245,7 +267,7 @@ def test_once_schedule_is_not_replayed_after_restart_or_history_cleanup(monkeypa
     monkeypatch.setattr(agent_module, "schedule_runs", runs)
     monkeypatch.setattr(agent_module, "jobs", [{"id": 4}])
     monkeypatch.setattr(agent_module, "schedules", Schedules(schedule))
-    now = datetime(2026, 7, 23, 12, 5)
+    now = datetime(2026, 7, 23, 12, 5, tzinfo=timezone.utc)
     for _ in range(2):
         agent = build_agent()
         agent._Agent__execution = ImmediateExecution()

@@ -1360,6 +1360,6 @@ def test_container_dependencies_are_required_and_shared_with_build(tmp_path, exi
     assert result.returncode == exit_code
     assert calls.read_text().splitlines() == [
         "-o DPkg::Lock::Timeout=60 update",
-        *(["-o DPkg::Lock::Timeout=60 install -y --no-remove --no-install-recommends ca-certificates git openssh-client"]
+        *(["-o DPkg::Lock::Timeout=60 install -y --no-remove --no-install-recommends ca-certificates git openssh-client tzdata"]
           if exit_code == 0 else []),
     ]

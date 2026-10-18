@@ -19,7 +19,7 @@
           <div class="col-12 col-sm">
             <div class="text-subtitle1 text-weight-medium">{{ chain.name }} <q-badge :color="chain.enabled ? 'positive' : 'grey'" text-color="black" :label="chain.enabled ? 'Scheduled' : 'Manual only'" /></div>
             <div class="text-body2">{{ chain.steps.length }} steps · {{ chain.schedules.length }} schedules</div>
-            <div v-for="(schedule, index) in chain.schedules" :key="index" class="text-body2">{{ schedule.cron_description }} UTC{{ schedule.enabled ? '' : ' · Disabled' }}</div>
+            <div v-for="(schedule, index) in chain.schedules" :key="index" class="text-body2">{{ schedule.cron_description }} {{ userStore.user?.schedule_timezone || 'UTC' }}{{ schedule.enabled ? '' : ' · Disabled' }}</div>
             <div v-if="chain.last_run" class="text-body2 q-mt-xs">
               Latest: <q-badge :color="stateColor(chain.last_run.state)" :text-color="['success', 'warning'].includes(chain.last_run.state) ? 'black' : 'white'" :label="stateLabel(chain.last_run.state)" /> · {{ formatDate(chain.last_run.started) }}
             </div>
@@ -79,7 +79,7 @@
               <div class="text-caption">Jobs require agent protocol 23 or newer. Each job's retention policy applies.</div>
               <q-separator class="q-my-md" />
               <div class="text-subtitle1">Schedules</div>
-              <SchedulesPanel v-model="form.schedules" time-only timezone="UTC" />
+              <SchedulesPanel v-model="form.schedules" time-only />
               <div class="text-caption">Each enabled schedule starts the entire chain. Without enabled schedules, run it manually with Start Chain.</div>
             </div>
           </q-card-section>
@@ -182,7 +182,7 @@ function selectJob(step) {
 }
 const jobOptions = computed(() => jobs.value.map(job => {
   const protocol = props.agents.find(agent => agent.id === job.agent_id)?.protocol_version || 0
-  return { label: `${job.name} · ${job.agent_name}${protocol < 23 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 23 }
+  return { label: `${job.name} · ${job.agent_name}${protocol < 24 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 24 }
 }))
 function moveStep(index, offset) {
   const [step] = form.steps.splice(index, 1)

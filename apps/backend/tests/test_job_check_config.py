@@ -161,6 +161,8 @@ def test_schedule_retry_roundtrip_bounds_and_protocol_gate():
     data = {"config": {"retry": retry, "repository_check": {"enabled": True, "read_data": "5%"}}}
     with pytest.raises(ValueError, match="protocol 18"):
         job_schedule_config(SimpleNamespace(protocol_version=17), data)
-    normalized = job_schedule_config(SimpleNamespace(protocol_version=18), data)
+    with pytest.raises(ValueError, match="protocol 24"):
+        job_schedule_config(SimpleNamespace(protocol_version=23), data)
+    normalized = job_schedule_config(SimpleNamespace(protocol_version=24), data)
     assert normalized["retry"] == retry
     assert normalized["repository_check"]["read_data"] == "5%"

@@ -6,6 +6,8 @@ import dataset
 
 from drastic_agent.config import DefaultConfig, env_value
 
+CURRENT_SCHEMA_VERSION = 7
+
 
 def _agent_data_dir() -> str:
     return env_value("DRASTIC_AGENT_DATA_DIR", DefaultConfig.AGENT_DATA_DIR)
@@ -43,6 +45,11 @@ def initialize_schema():
     """Apply local migrations before operation recovery and workers start."""
     version = agent_schema.find_one(name="agent")
     current = int(version["version"]) if version else 0
+    if current > CURRENT_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Agent database schema {current} is newer than supported schema {CURRENT_SCHEMA_VERSION}; "
+            "start a compatible agent version"
+        )
     if current < 1:
         # dataset creates the queue table on first insert; this row records the
         # serialization contract independently from application releases.

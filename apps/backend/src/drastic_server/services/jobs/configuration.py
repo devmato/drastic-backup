@@ -3,7 +3,11 @@
 from croniter import croniter
 from marshmallow import ValidationError
 
-from drastic_common.agent.commands import BACKUP_RETRY_PROTOCOL, PATH_INCLUDE_EXCEPTIONS_PROTOCOL
+from drastic_common.agent.commands import (
+    BACKUP_RETRY_PROTOCOL,
+    PATH_INCLUDE_EXCEPTIONS_PROTOCOL,
+    SCHEDULE_TIMEZONE_PROTOCOL,
+)
 from drastic_common.agent.schemas import (
     AgentFileBackupJobConfigSchema,
     AgentProxmoxBackupJobConfigSchema,
@@ -118,9 +122,9 @@ def job_schedule_config(agent, data):
     config = normalize_schedule_config(data.get("config") or {})
     if config["retry"]["enabled"] and (agent.protocol_version or 0) < BACKUP_RETRY_PROTOCOL:
         raise ValueError(f"Update the agent to use backup retries (protocol {BACKUP_RETRY_PROTOCOL} required)")
+    if (agent.protocol_version or 0) < SCHEDULE_TIMEZONE_PROTOCOL:
+        raise ValueError(f"Update the agent to use account time zones (protocol {SCHEDULE_TIMEZONE_PROTOCOL} required)")
     if "timing" in data:
-        if (agent.protocol_version or 0) < 12:
-            raise ValueError("Update the agent to use schedule types (protocol 12 required)")
         config["timing"] = data["timing"]
     return config
 

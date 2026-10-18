@@ -108,10 +108,10 @@ def delete_repository(user_id, repository_id):
         raise ValueError("Can't remove repository used by schedules. Remove those schedules first.")
     quarantine = None
     try:
+        running = AgentOperation.query.filter_by(repository_id=repository.id, state=AgentOperationState.running).first()
+        if running is not None:
+            raise ResourceConflict("Repository has a running operation")
         if repository.kind == Repository.KIND_NATIVE:
-            running = AgentOperation.query.filter_by(repository_id=repository.id, state=AgentOperationState.running).first()
-            if running is not None:
-                raise ResourceConflict("Repository has a running operation")
             if repository.repository_path:
                 quarantine = quarantine_native_repository(repository.repository_path)
         password_secret = repository.password_secret

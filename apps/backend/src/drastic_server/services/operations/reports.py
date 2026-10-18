@@ -1,5 +1,6 @@
 """Ingest replayable agent reports and reconcile operation artifacts and logs."""
 
+import re
 from datetime import datetime, timezone
 
 from apprise import Apprise
@@ -55,10 +56,12 @@ class AgentOperationService:
             if ((operation_data.get("data", {}).get("scope") == "repository" or (operation.data or {}).get("scope") == "repository")
                     and operation.repository_id != operation_data.get("repository_id")):
                 raise PermissionError("Retention repository changed during report replay")
-            if (operation.data or {}).get("manual_delete"):
+            if operation.type == AgentOperationType.retention and (operation.data or {}).get("scope") == "repository":
                 data = operation_data["data"]
-                data.update(manual_delete=True, scope="repository", deleted_snapshot_ids=sorted(
+                data.update(scope="repository", deleted_snapshot_ids=sorted(
                     set(operation.data.get("deleted_snapshot_ids", [])) | set(data.get("deleted_snapshot_ids", []))))
+                if operation.data.get("manual_delete"):
+                    data["manual_delete"] = True
         else:
             self._resolve_new_operation_references(operation_data)
 
@@ -84,6 +87,29 @@ class AgentOperationService:
         pending_parent_uuid = (operation.data or {}).get(_PENDING_PARENT_UUID_KEY)
         operation_data_payload = dict(operation_data.get("data") or {})
         operation_data_payload.pop(_PENDING_PARENT_UUID_KEY, None)
+        replacements = operation_data_payload.get("snapshot_replacements", {})
+        if not isinstance(replacements, dict):
+            raise ValueError("Invalid snapshot replacements")
+        if replacements:
+            # Deleting a finished repository detaches history; a lost acknowledgement must still replay.
+            detached_replay = operation.repository_id is None and replacements == previous_data.get("snapshot_replacements")
+            if (operation.type != AgentOperationType.backup
+                    or (operation.repository_id != operation_data.get("repository_id") and not detached_replay)
+                    or operation_data_payload.get("owner_uuid") != self.agent.user.backup_owner_uuid):
+                raise PermissionError("Snapshot replacement does not belong to this backup owner/repository")
+            if (len(replacements) != 1 or (previous_data.get("snapshot_replacements")
+                                         and replacements != previous_data["snapshot_replacements"])):
+                raise ValueError("Conflicting completion snapshot replacement")
+            for old_id, new_id in replacements.items():
+                if (not isinstance(old_id, str) or not isinstance(new_id, str) or old_id == new_id
+                        or not re.fullmatch(r"[0-9a-f]{64}", old_id) or not re.fullmatch(r"[0-9a-f]{64}", new_id)
+                        or previous_data.get("snapshot_replacements", {}).get(old_id, new_id) != new_id):
+                    raise ValueError("Invalid or conflicting snapshot replacement")
+        if replacements or previous_data.get("snapshot_replacements"):
+            operation_data_payload["snapshot_replacements"] = {**previous_data.get("snapshot_replacements", {}), **replacements}
+        for key in ("owner_uuid", "backup_run_complete"):
+            if previous_data.get(key):
+                operation_data_payload[key] = previous_data[key]
         if (operation_data["type"] == AgentOperationType.repository_check and operation_data["state"] == AgentOperationState.failed
                 and not operation_data_payload.get("repository_locked")):
             operation_data_payload["retention_check_failed"] = True
@@ -284,6 +310,7 @@ class AgentOperationService:
 
     @staticmethod
     def _upsert_artifacts(operation, artifacts):
+        replacements = (operation.data or {}).get("snapshot_replacements", {})
         for artifact_data in artifacts:
             artifact_key = str(artifact_data.get("artifact_key") or "").strip()
             if not artifact_key:
@@ -301,8 +328,11 @@ class AgentOperationService:
             if artifact_data.get("uuid"):
                 artifact.uuid = artifact_data["uuid"]
             if artifact.state != "success" or not artifact.snapshot_id:
-                artifact.snapshot_id = artifact_data.get("snapshot_id")
+                identity = artifact_data.get("snapshot_id")
+                artifact.snapshot_id = replacements.get(identity, identity)
                 artifact.state = artifact_data.get("state") or "running"
+            elif artifact.snapshot_id in replacements:
+                artifact.snapshot_id = replacements[artifact.snapshot_id]
             artifact.data = artifact_data.get("data") or {}
             # Late/replayed backup reports must not resurrect snapshots removed by another agent.
             artifact.forgotten_at = artifact.forgotten_at or _parse_datetime(artifact_data.get("forgotten_at"))

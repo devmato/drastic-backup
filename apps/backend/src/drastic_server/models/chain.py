@@ -5,6 +5,7 @@ from drastic_server.models.mixins import IdMixin, TimeMixin
 class BackupChain(IdMixin, TimeMixin, db.Model):
     __tablename__ = "backup_chains"
     user_id = db.Column(db.Integer, db.ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user = db.relationship("User")
     name = db.Column(db.String(255), nullable=False)
     schedules = db.Column(db.JSON, nullable=False, default=list)
     start_timeout_minutes = db.Column(db.Integer, nullable=False, default=60)

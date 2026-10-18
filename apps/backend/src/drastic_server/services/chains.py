@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from threading import Lock
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 from flask import current_app
 from sqlalchemy import or_
@@ -12,8 +13,8 @@ from sqlalchemy.exc import IntegrityError
 
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
+    BACKUP_COMPLETION_PROTOCOL,
     BACKUP_RETRY_PROTOCOL,
-    JOB_RETENTION_PROTOCOL,
     AgentCommandName,
 )
 from drastic_common.backup_retry import BackupRetrySchema, retry_allowed
@@ -43,7 +44,7 @@ from drastic_server.services.jobs.configuration import (
 )
 from drastic_server.services.queries import require_result
 
-CHAIN_PROTOCOL = JOB_RETENTION_PROTOCOL
+CHAIN_PROTOCOL = BACKUP_COMPLETION_PROTOCOL
 CHAIN_DISPATCH_WORKERS = 4
 TERMINAL_STEPS = {"success", "warning", "failed", "cancelled", "skipped"}
 
@@ -156,6 +157,7 @@ def chain_payload(chain):
     latest = BackupChainRun.query.filter_by(chain_id=chain.id).order_by(BackupChainRun.id.desc()).first()
     active = BackupChainRun.query.filter_by(active_chain_id=chain.id).first()
     return {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
+            "timezone": chain.user.schedule_timezone,
             "retry": BackupRetrySchema().load(chain.retry or {}),
             "schedules": describe_schedules(chain.schedules),
             "start_timeout_minutes": chain.start_timeout_minutes,
@@ -165,13 +167,30 @@ def chain_payload(chain):
 
 def start_chain(chain, *, now=None, planned_slot=None):
     now = now or utcnow()
+    # Serialize manual/scheduled starts and consume one-shots with their durable occurrence.
+    chain = require_result(BackupChain.query.filter_by(id=chain.id).populate_existing().with_for_update())
+    busy = False
+    if planned_slot is not None:
+        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.schedule_timezone))
+        due = [index for index, schedule in enumerate(chain.schedules) if schedule["enabled"]
+               and matches(schedule.get("timing") or timing_from_cron(schedule["cron_string"]), local_now)]
+        if not due or BackupChainRun.query.filter_by(chain_id=chain.id, planned_slot=planned_slot).first():
+            db.session.rollback()
+            return None
+        chain.schedules = [{**schedule, "enabled": False}
+                           if index in due and (schedule.get("timing") or {}).get("type") == "once" else schedule
+                           for index, schedule in enumerate(chain.schedules)]
+        busy = BackupChainRun.query.filter_by(active_chain_id=chain.id).first() is not None
     retry = BackupRetrySchema().load(chain.retry or {})
-    steps = [{**step, "state": "pending", "operation_uuid": str(uuid4()),
-              "retry": retry, "attempt": 1}
-             for step in describe_steps(chain.steps)]
-    run = BackupChainRun(chain=chain, active_chain_id=chain.id, planned_slot=planned_slot,
-                         steps=steps, start_timeout_minutes=chain.start_timeout_minutes,
-                         started=now, state="running")
+    steps = describe_steps(chain.steps)
+    if busy:
+        steps = [{**step, "state": "skipped", "reason": "Previous chain run still active"} for step in steps]
+    else:
+        steps = [{**step, "state": "pending", "operation_uuid": str(uuid4()), "retry": retry, "attempt": 1}
+                 for step in steps]
+    run = BackupChainRun(chain=chain, active_chain_id=None if busy else chain.id, planned_slot=planned_slot,
+                          steps=steps, start_timeout_minutes=chain.start_timeout_minutes,
+                          started=now, ended=now if busy else None, state="skipped" if busy else "running")
     db.session.add(run)
     try:
         db.session.commit()
@@ -382,23 +401,15 @@ def tick(*, now=None):
     now = now or utcnow()
     slot = now.replace(second=0, microsecond=0)
     for chain in BackupChain.query.all():
+        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.schedule_timezone))
         if (not any(schedule["enabled"] and matches(schedule.get("timing") or timing_from_cron(schedule["cron_string"]),
-                                                   now.replace(tzinfo=timezone.utc)) for schedule in chain.schedules)
+                                                   local_now) for schedule in chain.schedules)
                 or BackupChainRun.query.filter_by(chain_id=chain.id, planned_slot=slot).first()):
             continue
         try:
             start_chain(chain, now=now, planned_slot=slot)
         except ValueError:
-            # Record a busy occurrence; never build up catch-up runs.
-            if not BackupChainRun.query.filter_by(chain_id=chain.id, planned_slot=slot).first():
-                skipped = BackupChainRun(chain=chain, planned_slot=slot, started=now, ended=now,
-                                         state="skipped", start_timeout_minutes=chain.start_timeout_minutes,
-                                         steps=[{**item, "state": "skipped", "reason": "Previous chain run still active"} for item in describe_steps(chain.steps)])
-                db.session.add(skipped)
-                try:
-                    db.session.commit()
-                except IntegrityError:
-                    db.session.rollback()
+            db.session.rollback()  # Another dispatcher already claimed this slot.
 
 
 def _advance_in_background(app, run_id):

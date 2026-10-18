@@ -1,6 +1,10 @@
 """Serve authenticated agent configuration queries and adapt incoming reports."""
 
-from drastic_common.agent.commands import BACKUP_RETRY_PROTOCOL, PATH_INCLUDE_EXCEPTIONS_PROTOCOL
+from drastic_common.agent.commands import (
+    BACKUP_RETRY_PROTOCOL,
+    PATH_INCLUDE_EXCEPTIONS_PROTOCOL,
+    SCHEDULE_TIMEZONE_PROTOCOL,
+)
 from drastic_common.backup_selection import requires_include_exceptions
 from drastic_server.models.agent import (
     Agent,
@@ -116,10 +120,13 @@ class AgentRequestService:
 
         if (self.agent.protocol_version or 0) < JOB_RETENTION_PROTOCOL:
             raise AgentException(f"Update the agent for job retention (protocol {JOB_RETENTION_PROTOCOL})")
+        if agent_schedules and (self.agent.protocol_version or 0) < SCHEDULE_TIMEZONE_PROTOCOL:
+            raise AgentException(f"Update the agent for account time zones (protocol {SCHEDULE_TIMEZONE_PROTOCOL})")
         return SyncSchema().dump(
             {
                 "agent_uuid": self.agent.uuid,
                 "backup_owner_uuid": self.agent.user.backup_owner_uuid,
+                "schedule_timezone": self.agent.user.schedule_timezone,
                 "diagnostic_enabled": bool(self.agent.user.debug_token_hash),
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),

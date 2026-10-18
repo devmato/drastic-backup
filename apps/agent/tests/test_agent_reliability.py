@@ -12,7 +12,7 @@ from uuid import uuid4
 
 import dataset
 import pytest
-from test_agent_retention import OWNER, Backend, Repo
+from test_agent_retention import FOREIGN, OWNER, Backend, Repo
 
 import drastic_agent.jobs.base as backup_base
 import drastic_agent.runtime.agent as runtime_module
@@ -39,7 +39,7 @@ from drastic_agent.storage.database import (
 )
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.repository import ResticRepository
-from drastic_common.restic.snapshots import restore_point_key
+from drastic_common.restic.snapshots import RUN_COMPLETE_TAG, restore_point_key
 
 
 @pytest.fixture
@@ -97,23 +97,29 @@ class _OfflineAgent:
 
 
 @pytest.mark.parametrize("stage", ["next_batch", "prune"])
-def test_manual_deletion_replays_confirmed_removals_after_agent_restart(clean_agent_state, stage):
+@pytest.mark.parametrize("manual", [False, True], ids=["automatic", "manual"])
+def test_deletion_replays_confirmed_removals_after_agent_restart(clean_agent_state, stage, manual, tmp_path):
     repo, backend = Repo(), Backend()
     repo.operation_cancellation = lambda _: nullcontext()
     artifacts = repo.add_run(backend, count=1100)
+    if not manual:
+        repo.add_run(backend, number=11, count=1)
     ids = [item["snapshot_id"] for item in artifacts]
     key = restore_point_key(repo.items[ids[0]])
     operation_uuid = str(uuid4())
     sent = []
 
     def interrupt():
-        report = AgentReport.get_report(uuid=operation_uuid)
+        nonlocal operation_uuid
+        report = AgentReport.pending_reports[-1]
+        operation_uuid = report.uuid
         assert report in AgentReport.pending_reports
         stored = agent_operations.find_one(uuid=operation_uuid)
         assert stored["state"] == "running"
         assert set(stored["data"]["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
         reporting.flush(lambda running: sent.append(AgentReportSchema().dump(running)) or True)
-        assert sent[-1]["state"] == "running" and sent[-1]["data"]["manual_delete"]
+        assert sent[-1]["state"] == "running"
+        assert bool(sent[-1]["data"].get("manual_delete")) is manual
         raise SystemExit("Simulated process restart")
 
     forget = repo.forget_snapshots
@@ -125,9 +131,15 @@ def test_manual_deletion_replays_confirmed_removals_after_agent_restart(clean_ag
 
     repo.forget_snapshots = remove
     repo.prune = interrupt
+    settings_db = dataset.connect(f"sqlite:///{tmp_path}/retention-settings.db")
     with pytest.raises(SystemExit):
-        RestoreService.delete_point(RestoreContext(repo, lambda _: None), repository_id=1,
-            snapshot_ids=ids, point_key=key, operation_uuid=operation_uuid)
+        if manual:
+            RestoreService.delete_point(RestoreContext(repo, lambda _: None), repository_id=1,
+                snapshot_ids=ids, point_key=key, operation_uuid=operation_uuid)
+        else:
+            RetentionService.run(repository_id=1, job_id=None, job_uuid=None, current_operation_uuid=None,
+                current_policy=None, request_context=backend, set_repository=lambda _: None,
+                resticapi=repo, settings=settings_db["agent"], send_report=backend.send_report)
     AgentReport.load_queue()
     AgentReport.recover_interrupted()
     recovered = next(report for report in AgentReport.finished_reports if report.uuid == operation_uuid)
@@ -135,6 +147,7 @@ def test_manual_deletion_replays_confirmed_removals_after_agent_restart(clean_ag
     assert set(recovered.data["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
     assert len(recovered.data["deleted_snapshot_ids"]) == (1000 if stage == "next_batch" else 1100)
     assert json.loads(agent_operation_queue.find_one(uuid=operation_uuid)["payload"])["data"] == recovered.data
+    settings_db.close()
 
 
 class _RetentionAgent(_OfflineAgent):
@@ -172,12 +185,12 @@ def test_real_file_backup_finishes_in_durable_outbox(
         ),
         job={
             "id": 81,
-            "uuid": "file-job-81",
+            "uuid": "00000000-0000-0000-0000-000000000081",
             "type": "file",
             "config": {"paths": [{"path": str(source)}], "exclude_patterns": []},
         },
         repository_id=71,
-        operation_uuid="real-file-backup-81",
+        operation_uuid="00000000-0000-0000-0000-000000000082",
     )
 
     report = handler.run()
@@ -219,6 +232,9 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
     settings.create_column("settings", settings_db.types.text)
 
     job_uuids = {job_id: str(uuid4()) for job_id in (83, 84)}
+    foreign_id = resticapi.backup([str(source)], tags=[f"drastic-owner:{FOREIGN}",
+        f"job_uuid:{job_uuids[83]}", f"operation_uuid:{uuid4()}", f"artifact_uuid:{uuid4()}",
+        "artifact_key:default", RUN_COMPLETE_TAG])["snapshot_id"]
     backend = Backend(job_uuids=list(job_uuids.values()), default={"keep_last": 3})
     agent = _RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location}, settings, monkeypatch, backend)
     retentions.insert({"id": 73, "keep_last": 1})
@@ -245,7 +261,7 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
                     assert report.data["files_unmodified"] == 1
                 parents[job_id] = snapshot_id
                 latest.append(snapshot_id)
-        assert {snapshot["id"] for snapshot in resticapi.snapshots()} == set(latest)
+        assert {snapshot["id"] for snapshot in resticapi.snapshots()} == set(latest) | {foreign_id}
         target = tmp_path / "restore"
         resticapi.restore(parents[83], str(target), ["/"])
         restored_source = target.joinpath(*source.parts[1:])
@@ -256,7 +272,7 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
         deletion = RestoreService.delete_point(RestoreContext(resticapi, agent.set_repository),
             repository_id=73, snapshot_ids=[snapshot["id"]], point_key=restore_point_key(snapshot), operation_uuid=str(uuid4()))
         assert deletion.state == AgentOperationState.success
-        assert {item["id"] for item in resticapi.snapshots()} == {parents[84]}
+        assert {item["id"] for item in resticapi.snapshots()} == {parents[84], foreign_id}
         resticapi.check()
     finally:
         settings_db.engine.dispose()

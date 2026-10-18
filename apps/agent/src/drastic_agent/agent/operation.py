@@ -43,6 +43,7 @@ class AgentOperation:
     pending_reports = pending_operations
     finished_reports = finished_operations
     running_operations = {}
+    delivering_reports = {}
     _registry_lock = RLock()
 
     def __init__(
@@ -464,9 +465,9 @@ class AgentOperation:
             self.pending_reports.remove(self)
         with self._registry_lock:
             self.running_operations.pop(self.uuid, None)
-        if self.type != AgentOperationType.command:
-            logging.info(f"Appending operation {self.uuid} of type {self.type} to operation queue")
-            self.finished_reports.append(self)
+            if self.type != AgentOperationType.command:
+                logging.info(f"Appending operation {self.uuid} of type {self.type} to operation queue")
+                self.finished_reports.append(self)
         return self
 
     def log_message(self, message, final_state=None, data=None):
@@ -581,6 +582,7 @@ class AgentOperation:
         cls.pending_reports = []
         cls.pending_operations = cls.pending_reports
         cls.running_operations = {}
+        cls.delivering_reports = {}
         cls.finished_reports = deque()
         cls.finished_operations = cls.finished_reports
         cls.finished_reports.extend(operation_store.load(cls))

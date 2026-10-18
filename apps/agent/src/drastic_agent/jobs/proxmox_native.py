@@ -141,7 +141,8 @@ def run_native(handler, report, guest, index, info=None):
     report.log_message(f"VM {vmid}: temporary backup storage {info['fleecing_storage']} ({'configured' if storage else 'automatic'})")
     check_thin_pools({"volumes": info["pools"]}, report=report)
     old_manifest, parent, reason = None, None, "CBT disabled" if mode == "native" else "No confirmed checkpoint"
-    snapshots = handler.agent.resticapi.snapshots(tags=[f"job_uuid:{handler.job['uuid']},vmid:{vmid},backup_method:native"]) or []
+    snapshots = handler.agent.resticapi.snapshots(tags=[
+        f"drastic-owner:{handler.agent.owner_uuid},job_uuid:{handler.job['uuid']},vmid:{vmid},backup_method:native"]) or []
     if (mode == "native_cbt" and checkpoint.get("valid") and checkpoint.get("info") == info
             and info["session"] != "stopped" and any(s["id"] == checkpoint["snapshot_id"] for s in snapshots)):
         with tempfile.TemporaryDirectory(prefix="drastic-parent-") as directory:

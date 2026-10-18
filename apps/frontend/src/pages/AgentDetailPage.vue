@@ -36,7 +36,7 @@
       <q-tab-panels v-model="activeTab">
         <q-tab-panel name="info">
           <q-form class="q-mb-md" @submit="saveAlias">
-            <q-input v-model="alias" outlined clearable maxlength="255" label="Display name (optional)"
+            <q-input v-model="alias" outlined :dense="!$q.platform.has.touch" clearable maxlength="255" label="Display name (optional)"
               hint="Leave empty to use the hostname." :disable="savingAlias" />
             <div class="row justify-end q-mt-sm">
               <q-btn unelevated no-caps color="primary" type="submit" label="Save display name"
@@ -99,6 +99,7 @@
           <q-input
             readonly
             outlined
+            :dense="!$q.platform.has.touch"
             autogrow
             type="textarea"
             :model-value="agent?.ssh_public_key || ''"

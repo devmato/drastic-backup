@@ -29,6 +29,7 @@
         <q-card-section class="q-px-lg q-py-none">
           <q-input
             outlined
+            :dense="!$q.platform.has.touch"
             autofocus
             v-model="username"
             label="Username"
@@ -41,6 +42,7 @@
 
           <q-input
             outlined
+            :dense="!$q.platform.has.touch"
             v-model="password"
             :type="showPassword ? 'password' : 'text'"
             label="Password"
@@ -56,6 +58,7 @@
 
           <q-input
             outlined
+            :dense="!$q.platform.has.touch"
             v-if="needsInit"
             v-model="confirmPassword"
             :type="showPassword ? 'password' : 'text'"

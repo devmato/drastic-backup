@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.services.backup_completion import complete_backup, task_key
 from drastic_agent.services.retention import RetentionService
 from drastic_agent.storage.database import (
     actions,
@@ -59,6 +60,7 @@ class BackupJobHandler:
         self.operation["retention_id"] = self.retention_id
         self.report = report
         report.set_data("job_uuid", self.job["uuid"])
+        report.set_data("owner_uuid", self.agent.owner_uuid)
         if self.run_options.get("chain_run_id"):
             report.set_data("chain_run_id", self.run_options["chain_run_id"])
         if self.retry["enabled"] and report.source != AgentOperationSource.manual:
@@ -197,9 +199,14 @@ class BackupJobHandler:
         if report.cancel_event.is_set():
             report.final_state = AgentOperationState.cancelled
             return
+        try:
+            complete_backup(self.agent.resticapi, agent_settings, report, self.agent.owner_uuid, self.job["uuid"])
+            self._sync_operation(report)
+        except Exception as exc:
+            report.log_message(f"Backup completion tag pending: {exc}", final_state=AgentOperationState.warning)
         check_succeeded = self._run_post_backup_check(report)
 
-        if check_succeeded:
+        if check_succeeded and not agent_settings.find_one(name=task_key(self.repository_id, report.uuid)):
             self._run_retention(report)
 
         try:

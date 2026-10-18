@@ -24,6 +24,14 @@ export async function changePassword(currentPassword, newPassword) {
   return (await api.put('/user/password', { current_password: currentPassword, new_password: newPassword })).data
 }
 
+export async function getTimezones() {
+  return (await api.get('/user/timezones')).data.timezones
+}
+
+export async function updateSettings(scheduleTimezone) {
+  return (await api.put('/user/', { schedule_timezone: scheduleTimezone })).data
+}
+
 export async function getDebugAccess() {
   return (await api.get('/user/debug')).data
 }
@@ -38,10 +46,12 @@ export async function logout() {
   })
 }
 
-export async function recoveryExport(password) {
+export async function recoveryExport(password, archivePassword, resticTargets, signal) {
   // This endpoint needs both the blob and Content-Disposition, unlike JSON endpoints.
   try {
-    return await api.post('/user/recovery-export', { password }, { responseType: 'blob' })
+    return await api.post('/user/recovery-export', {
+      password, archive_password: archivePassword, restic_targets: resticTargets,
+    }, { responseType: 'blob', signal })
   } catch (error) {
     const data = error?.response?.data
     if (typeof Blob !== 'undefined' && data instanceof Blob) {
