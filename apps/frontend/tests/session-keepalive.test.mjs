@@ -11,7 +11,7 @@ function source(path) {
   return readFileSync(new URL(`../src/${path}`, import.meta.url), 'utf8').replace(/^import .*$/gm, '')
 }
 
-function setup(adapter, { router, disconnectAppSocket = () => {} } = {}) {
+function setup(adapter, { router, disconnectAppSocket = () => {}, intl = Intl } = {}) {
   let userStore
   const bootSource = source('boot/axios.js')
     .replaceAll("import('stores/user')", 'Promise.resolve(storeModule)')
@@ -30,10 +30,29 @@ function setup(adapter, { router, disconnectAppSocket = () => {} } = {}) {
     ;useUserStore`, {
     ref, computed, defineStore, userApi, isAuthError, isRecoveryKeyError,
     disconnectAppSocket, setDiagnosticRecording: () => {},
+    Intl: intl,
   })
   userStore = useUserStore(createPinia())
   return userStore
 }
+
+test('login sends the browser time zone when available and tolerates unavailable browser metadata', async () => {
+  for (const zone of ['Europe/Berlin', undefined, 'unavailable']) {
+    const requests = []
+    const store = setup(async config => {
+      requests.push(JSON.parse(config.data))
+      return { status: 200, config, headers: {}, data: { recovery_key: 'unlocked-key' } }
+    }, { intl: { DateTimeFormat: () => {
+      if (zone === 'unavailable') throw new Error('Time zone hidden')
+      return { resolvedOptions: () => ({ timeZone: zone }) }
+    } } })
+    await store.login('admin', 'password')
+    assert.equal(requests[0].username, 'admin')
+    assert.equal(requests[0].password, 'password')
+    assert.equal(requests[0].schedule_timezone, zone === 'Europe/Berlin' ? zone : undefined)
+    assert.equal(store.recoveryKey, 'unlocked-key')
+  }
+})
 
 test('expired access tokens refresh on reload; network/server failures preserve the session', async () => {
   for (const failure of [null, 'offline', 'server']) {

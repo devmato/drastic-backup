@@ -56,7 +56,11 @@ export const useUserStore = defineStore('user', () => {
 
   async function login(username, password) {
     sessionRevision++
-    const data = await userApi.login(username, password)
+    let scheduleTimezone
+    try {
+      scheduleTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone
+    } catch { /* Browser privacy settings may hide the zone; login must still work. */ }
+    const data = await userApi.login(username, password, scheduleTimezone)
     recoveryKey.value = data.recovery_key || null
     return data
   }

@@ -9,6 +9,7 @@ class LoginInputSchema(Schema):
 
     username = fields.String(required=True, validate=validate.Length(min=1))
     password = fields.String(required=True, validate=validate.Length(min=1))
+    schedule_timezone = fields.String(load_default=None, allow_none=True, validate=validate.Length(max=255))
 
 
 class LoginResponseSchema(Schema):

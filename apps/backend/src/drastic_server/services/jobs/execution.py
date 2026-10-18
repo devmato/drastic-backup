@@ -75,7 +75,7 @@ def cancel_job(user_id, job_id):
 
 def preview_schedule(user_id, data):
     if data["agent_id"] is None:
-        return preview(data["timing"], datetime.now(ZoneInfo(get_user(user_id).schedule_timezone)))
+        return preview(data["timing"], datetime.now(ZoneInfo(get_user(user_id).effective_schedule_timezone)))
     agent = get_agent(user_id, data["agent_id"])
     if not agent.online:
         raise ResourceConflict("Next execution is available when the agent is online")

@@ -11,7 +11,7 @@ depends_on = None
 
 def upgrade():
     with op.batch_alter_table("users") as batch:
-        batch.add_column(sa.Column("schedule_timezone", sa.String(255), nullable=False, server_default="UTC"))
+        batch.add_column(sa.Column("schedule_timezone", sa.String(255), nullable=True))
 
 
 def downgrade():

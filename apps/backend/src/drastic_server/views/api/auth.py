@@ -30,6 +30,7 @@ class AuthLogin(MethodView):
     def post(self, data):
         recovery_key, access_token, refresh_token = SessionAuthService.login(
             data["username"], data["password"], user_agent=request.user_agent.string or "",
+            schedule_timezone=data["schedule_timezone"],
         )
         response = make_response({"ok": True, "recovery_key": recovery_key})
         set_access_cookies(response, access_token)

@@ -1,13 +1,20 @@
+"""Authenticate account sessions and initialize optional browser time-zone metadata."""
+
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from datetime import UTC, datetime
 
 import bcrypt
 from flask_jwt_extended import create_access_token, create_refresh_token, decode_token
+from marshmallow import ValidationError
 
+from drastic_common.scheduling import validate_timezone
 from drastic_server.extensions import db
+from drastic_server.integrations.agent import AgentService
+from drastic_server.models.agent import Agent
 from drastic_server.models.user import User
 from drastic_server.models.user_session import UserSession
 from drastic_server.services.exceptions import AuthenticationFailed
@@ -22,7 +29,7 @@ class SessionAuthService:
     """Session lifecycle; callers pass request metadata and set response cookies."""
 
     @classmethod
-    def login(cls, username, password, *, user_agent=""):
+    def login(cls, username, password, *, user_agent="", schedule_timezone=None):
         user = User.query.filter_by(name=username.lower()).first()
         if not user or not bcrypt.checkpw(password.encode("UTF-8"), user.password.encode("UTF-8")):
             raise AuthenticationFailed("Wrong username or password")
@@ -30,8 +37,26 @@ class SessionAuthService:
             recovery_key = ensure_user_recovery_key(user, password)
         except RepositorySecretError as exc:
             raise AuthenticationFailed("Wrong username or password") from exc
+        initialized_timezone = False
+        if user.schedule_timezone is None and schedule_timezone:
+            try:
+                validate_timezone(schedule_timezone)
+            except ValidationError:
+                pass  # Optional browser metadata must not prevent a valid login.
+            else:
+                # A concurrent login or explicit save must win over this initial proposal.
+                initialized_timezone = bool(User.query.filter(
+                    User.id == user.id, User.schedule_timezone.is_(None),
+                ).update({User.schedule_timezone: schedule_timezone}, synchronize_session=False))
         _, access, refresh = cls.create_session(user, user_agent=user_agent)
         db.session.commit()
+        if initialized_timezone:
+            for agent in Agent.query.filter_by(user_id=user.id):
+                if agent.online:
+                    try:
+                        AgentService.sync(agent)
+                    except Exception:
+                        logging.getLogger(__name__).exception("Could not notify agent %s of the initial time zone", agent.id)
         return recovery_key, access, refresh
 
     @classmethod

@@ -126,7 +126,7 @@ class AgentRequestService:
             {
                 "agent_uuid": self.agent.uuid,
                 "backup_owner_uuid": self.agent.user.backup_owner_uuid,
-                "schedule_timezone": self.agent.user.schedule_timezone,
+                "schedule_timezone": self.agent.user.effective_schedule_timezone,
                 "diagnostic_enabled": bool(self.agent.user.debug_token_hash),
                 "repositories": self._repositories_payload(),
                 "secret_envelopes": self._secret_envelopes_payload(),

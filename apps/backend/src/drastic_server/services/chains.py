@@ -157,7 +157,7 @@ def chain_payload(chain):
     latest = BackupChainRun.query.filter_by(chain_id=chain.id).order_by(BackupChainRun.id.desc()).first()
     active = BackupChainRun.query.filter_by(active_chain_id=chain.id).first()
     return {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
-            "timezone": chain.user.schedule_timezone,
+            "timezone": chain.user.effective_schedule_timezone,
             "retry": BackupRetrySchema().load(chain.retry or {}),
             "schedules": describe_schedules(chain.schedules),
             "start_timeout_minutes": chain.start_timeout_minutes,
@@ -171,7 +171,7 @@ def start_chain(chain, *, now=None, planned_slot=None):
     chain = require_result(BackupChain.query.filter_by(id=chain.id).populate_existing().with_for_update())
     busy = False
     if planned_slot is not None:
-        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.schedule_timezone))
+        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.effective_schedule_timezone))
         due = [index for index, schedule in enumerate(chain.schedules) if schedule["enabled"]
                and matches(schedule.get("timing") or timing_from_cron(schedule["cron_string"]), local_now)]
         if not due or BackupChainRun.query.filter_by(chain_id=chain.id, planned_slot=planned_slot).first():
@@ -401,7 +401,7 @@ def tick(*, now=None):
     now = now or utcnow()
     slot = now.replace(second=0, microsecond=0)
     for chain in BackupChain.query.all():
-        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.schedule_timezone))
+        local_now = now.replace(tzinfo=timezone.utc).astimezone(ZoneInfo(chain.user.effective_schedule_timezone))
         if (not any(schedule["enabled"] and matches(schedule.get("timing") or timing_from_cron(schedule["cron_string"]),
                                                    local_now) for schedule in chain.schedules)
                 or BackupChainRun.query.filter_by(chain_id=chain.id, planned_slot=slot).first()):

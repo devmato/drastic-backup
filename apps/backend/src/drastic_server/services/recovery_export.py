@@ -144,7 +144,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 "email": user.email,
                 "default_retention_id": user.default_retention_id,
                 "backup_owner_uuid": user.backup_owner_uuid,
-                "schedule_timezone": user.schedule_timezone,
+                "schedule_timezone": user.effective_schedule_timezone,
             },
             "agents": [
                 {
@@ -181,7 +181,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
             ],
             "backup_chains": [
                 {"id": chain.id, "name": chain.name, "enabled": chain.enabled,
-                   "schedules": chain.schedules, "timezone": user.schedule_timezone,
+                   "schedules": chain.schedules, "timezone": user.effective_schedule_timezone,
                  "start_timeout_minutes": chain.start_timeout_minutes, "steps": chain.steps, "retry": chain.retry or {}}
                 for chain in BackupChain.query.filter_by(user_id=user.id).order_by(BackupChain.id)
             ],

@@ -16,7 +16,7 @@ class User(IdMixin, TimeMixin, db.Model):
     __tablename__ = 'users'
     name = db.Column(db.String(120), nullable=False, unique=True)
     email = db.Column(db.String(120), unique=True)
-    schedule_timezone = db.Column(db.String(255), nullable=False, default="UTC", server_default="UTC")
+    schedule_timezone = db.Column(db.String(255), nullable=True)
     backup_owner_uuid = db.Column(db.String(36), nullable=False, unique=True, default=lambda: str(uuid4()))
     default_retention_id = db.Column(
         db.Integer,
@@ -33,6 +33,10 @@ class User(IdMixin, TimeMixin, db.Model):
         cascade="all, delete-orphan",
         passive_deletes=True,
     )
+
+    @property
+    def effective_schedule_timezone(self):
+        return self.schedule_timezone or "UTC"
 
     def check_password(self, password: str) -> bool:
         if not self.password:

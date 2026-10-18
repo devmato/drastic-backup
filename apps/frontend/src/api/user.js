@@ -1,7 +1,7 @@
 import { api } from 'boot/axios'
 
-export async function login(username, password) {
-  return (await api.post('/auth/login', { username, password })).data
+export async function login(username, password, scheduleTimezone) {
+  return (await api.post('/auth/login', { username, password, schedule_timezone: scheduleTimezone })).data
 }
 
 export async function refreshSession() {

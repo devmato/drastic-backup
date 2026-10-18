@@ -9,7 +9,7 @@ class UserResponseSchema(Schema):
     name = fields.String(required=True)
     email = fields.Email(allow_none=True)
     debug_enabled = fields.Function(lambda user: bool(user.debug_token_hash))
-    schedule_timezone = fields.String(required=True)
+    schedule_timezone = fields.String(required=True, allow_none=True)
 
 
 class UserSettingsInputSchema(Schema):
