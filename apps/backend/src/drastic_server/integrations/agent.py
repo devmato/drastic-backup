@@ -172,6 +172,11 @@ class AgentService:
         )
 
     @classmethod
+    def run_retention(cls, agent, repository_id, operation_uuid):
+        return cls.send_command(agent, AgentCommandName.run_retention, repository_id=repository_id,
+            operation_uuid=operation_uuid, repository_scope=True)
+
+    @classmethod
     def unlock_repository(cls, agent, repository_id, operation_uuid=None):
         return cls.send_command(
             agent,

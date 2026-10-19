@@ -59,12 +59,22 @@ def validate_policy(policy):
         raise ValueError("Retention must keep at least one backup")
 
 
-def validate_context(context):
-    if (not isinstance(context, dict) or set(context) != {"owner_uuid", "job_uuids", "default", "running_operation_uuids", "check_token"}
+def validate_context(context, repository_scope=False):
+    keys = {"owner_uuid", "job_uuids", "default", "running_operation_uuids", "check_token"}
+    if repository_scope:
+        keys.add("job_policies")
+    if (not isinstance(context, dict) or set(context) != keys
             or not isinstance(context["job_uuids"], list) or not isinstance(context["running_operation_uuids"], list)):
         raise ValueError("Missing or incomplete backend retention context; cleanup deferred")
     context["owner_uuid"] = str(UUID(context["owner_uuid"]))
     validate_policy(context["default"])
+    if repository_scope:
+        policies = context["job_policies"]
+        if not isinstance(policies, dict) or set(policies) != set(context["job_uuids"]):
+            raise ValueError("Missing or incomplete job retention policies; cleanup deferred")
+        for job_uuid, policy in policies.items():
+            UUID(job_uuid)
+            validate_policy(policy)
     return context
 
 
@@ -76,6 +86,9 @@ class RetentionService:
             if row["name"].startswith(("retention_task:", "backup_completion:")):
                 payload = json.loads(row["settings"])
                 if payload["retry_at"] <= time():
+                    if row["name"].startswith("backup_completion:"):
+                        # Existing completion intents stored no parent in their retry arguments.
+                        payload["args"]["current_operation_uuid"] = payload["operation_uuid"]
                     tasks.append(payload["args"])
         return tasks
 
@@ -117,29 +130,57 @@ class RetentionService:
 
     @classmethod
     def run(cls, *, repository_id, job_id, job_uuid, current_operation_uuid, current_policy,
-            request_context, set_repository, resticapi, settings, send_report):
+            request_context, set_repository, resticapi, settings, send_report,
+            operation_uuid=None, repository_scope=False):
+        """Persist cleanup/retries; a reserved operation UUID identifies an explicit solo start.
+
+        Automatic no-policy attempts return an unpersisted command unless pending work needs acknowledgement.
+        """
         task_key = f"retention_task:{repository_id}:{job_uuid or 'repository'}"
         prune_key = f"retention_prune:{repository_id}"
-        settings.upsert({"name": task_key, "settings": json.dumps({"args": {
-            "repository_id": repository_id, "job_id": job_id, "job_uuid": job_uuid,
-            "current_operation_uuid": current_operation_uuid}, "retry_at": time() + 900})}, ["name"])
-        report = AgentReport(type=AgentOperationType.retention, repository_id=repository_id, job_id=job_id,
-            parent_operation_uuid=current_operation_uuid,
-            source=AgentOperationSource.triggered if current_operation_uuid else AgentOperationSource.manual,
-            data={"scope": "repository", "job_uuid": job_uuid, "cleanup_pending": True,
-                  "deleted_snapshot_ids": []}).start_reporting()
+        pending = settings.find_one(name=task_key) or settings.find_one(
+            name=f"backup_completion:{repository_id}:{current_operation_uuid}")
+
+        def start_report():
+            return AgentReport(type=AgentOperationType.retention, operation_uuid=operation_uuid,
+                repository_id=repository_id, job_id=job_id, parent_operation_uuid=current_operation_uuid,
+                source=AgentOperationSource.manual if operation_uuid and not current_operation_uuid else AgentOperationSource.triggered,
+                data={"scope": "repository", "job_uuid": job_uuid, "cleanup_pending": True,
+                      "deleted_snapshot_ids": []}).start_reporting()
+
+        report = start_report() if operation_uuid else None
+        # Retain the solo parent even if repository setup is interrupted before its first response.
+        args = {"repository_id": repository_id, "job_id": job_id, "job_uuid": job_uuid,
+                "current_operation_uuid": current_operation_uuid or operation_uuid, "repository_scope": repository_scope}
+        settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
         try:
             validate_policy(current_policy)
             set_repository(repository_id)
+            context = validate_context(request_context(), repository_scope)
+            applicable = (any(context["job_policies"].values()) if repository_scope else current_policy)
+            if not applicable and not context["default"] and not settings.find_one(name=prune_key):
+                settings.delete(name=task_key)
+                report = report or (start_report() if pending else AgentReport.command_report())
+                report.set_data("cleanup_pending", False)
+                report.log_message("Retention skipped: no applicable policy configured")
+                return report.finish()
+            report = report or start_report()
+            # Retries of a solo run remain children of that run rather than new history entries.
+            args["current_operation_uuid"] = current_operation_uuid or report.uuid
+            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
+            report.log_message("Running retention for repository")
             snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
-            context = validate_context(request_context())
+            context = validate_context(request_context(), repository_scope)
             owner = context["owner_uuid"]
             scanned_jobs = {snapshot_uuid(snapshot, "job_uuid") for snapshot in snapshots.values()
                             if snapshot_uuid(snapshot, "drastic-owner") == owner} - {None}
             policies = dict.fromkeys(scanned_jobs - set(context["job_uuids"]), context["default"])
-            if job_uuid in context["job_uuids"]:
+            if repository_scope:
+                policies.update(context["job_policies"])
+            elif job_uuid in context["job_uuids"]:
                 policies[job_uuid] = current_policy
             selected = cls.select_runs(snapshots, context, policies, current_operation_uuid)
+            report.log_message(f"Retention selected {len(selected)} expired snapshot(s)")
             if selected or settings.find_one(name=prune_key):
                 full = bool(context["check_token"] or settings.find_one(name=f"retention_check_failed:{repository_id}"))
                 try:
@@ -156,7 +197,7 @@ class RetentionService:
                 # Acknowledge full verification, not a deletion plan, and check for newer failures.
                 if full and not send_report(report):
                     raise ValueError("Repository verification could not be acknowledged; cleanup deferred")
-                context = validate_context(request_context())
+                context = validate_context(request_context(), repository_scope)
                 if context["owner_uuid"] != owner or context["check_token"]:
                     raise ValueError("A repository check failure remains unresolved; cleanup deferred")
                 settings.delete(name=f"retention_check_failed:{repository_id}")
@@ -168,10 +209,16 @@ class RetentionService:
                     # Keep confirmed removals replayable if a later batch/prune or the process fails.
                     report.set_data("deleted_snapshot_ids", report.data["deleted_snapshot_ids"] + batch)
                     report.checkpoint()
+                    report.log_message(f"Retention removed {len(batch)} expired snapshot(s)")
+                report.log_message("Reclaiming repository space")
                 report.data["prune"] = resticapi.prune()
                 settings.delete(name=prune_key)
             settings.delete(name=task_key)
             report.data["cleanup_pending"] = False
+            report.log_message(f"Retention finished: {len(report.data['deleted_snapshot_ids'])} snapshot(s) removed")
         except Exception as exc:
+            report = report or start_report()
+            args["current_operation_uuid"] = current_operation_uuid or report.uuid
+            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
             report.log_message(str(exc), final_state=AgentOperationState.warning)
         return report.finish()

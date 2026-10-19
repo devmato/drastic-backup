@@ -71,7 +71,7 @@ class AgentRequestService:
     def get_repositories(self):
         return self._repositories_payload()
 
-    def retention_context(self, repository_id):
+    def retention_context(self, repository_id, include_policies=False):
         """Return current ownership, job membership and safety state, not backup history."""
         from drastic_server.models.job import Job
         from drastic_server.models.retention import Retention
@@ -81,7 +81,7 @@ class AgentRequestService:
         if repository is None:
             raise AgentException("Repository is not assigned to this agent")
         policy = Retention.query.filter_by(id=self.agent.user.default_retention_id, user_id=self.agent.user_id).first()
-        return {
+        context = {
             "owner_uuid": self.agent.user.backup_owner_uuid,
             "running_operation_uuids": [uuid for (uuid,) in AgentOperation.query.with_entities(AgentOperation.uuid).filter_by(
                 user_id=self.agent.user_id, repository_id=repository.id, type=AgentOperationType.backup,
@@ -89,8 +89,16 @@ class AgentRequestService:
             "check_token": repository.retention_check_token,
             "job_uuids": [uuid for (uuid,) in Job.query.with_entities(Job.uuid).join(Agent).filter(Agent.user_id == self.agent.user_id)],
             "default": {key: getattr(policy, key) for key in
-                        ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")} if policy else None,
+                         ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")} if policy else None,
         }
+        # Older agents validate the context's exact keys; extend it only on explicit request.
+        if include_policies:
+            policies = {item.id: {key: getattr(item, key) for key in
+                        ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
+                        for item in Retention.query.filter_by(user_id=self.agent.user_id)}
+            context["job_policies"] = {job.uuid: policies.get(job.effective_retention_id)
+                for job in Job.query.join(Agent).filter(Agent.user_id == self.agent.user_id)}
+        return context
 
     def sync(self):
         from drastic_common.agent.commands import JOB_RETENTION_PROTOCOL

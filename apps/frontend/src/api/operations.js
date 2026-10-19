@@ -39,3 +39,7 @@ export async function startRepositoryUnlock({ repositoryId, agentId }) {
   const response = await api.post(`/repositories/${repositoryId}/unlock`, { agent_id: agentId })
   return response.data
 }
+
+export async function startRepositoryRetention({ repositoryId, agentId }) {
+  return (await api.post(`/repositories/${repositoryId}/retention`, { agent_id: agentId })).data
+}

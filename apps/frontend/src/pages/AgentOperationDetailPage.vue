@@ -115,7 +115,7 @@
           :filter="logFilter"
           :filter-method="filterLogs"
           :rows-per-page-options="[0]"
-          row-key="sequence"
+          row-key="id"
           flat
           hide-bottom
         >
@@ -268,6 +268,11 @@ const operationListRoute = computed(() => ({
 
 const sortedLogs = computed(() => {
   const logs = Array.isArray(operation.value?.logs) ? operation.value.logs : []
+  const retentionLogs = operation.value?.retention_logs || []
+  if (retentionLogs.length) {
+    return [...logs, ...retentionLogs].sort((left, right) =>
+      String(left.created || '').localeCompare(String(right.created || '')) || left.id - right.id)
+  }
   return [...logs].sort((left, right) => (left.sequence || 0) - (right.sequence || 0))
 })
 
@@ -692,7 +697,8 @@ function cleanupOperationSocketListener() {
 }
 
 async function syncOperationSocketListener() {
-  if (!operation.value?.agent_id || operation.value.state !== 'running') {
+  // Finished parents can still receive queued retention reports and later retries.
+  if (!operation.value?.agent_id) {
     cleanupOperationSocketListener()
     return
   }
@@ -706,7 +712,7 @@ async function syncOperationSocketListener() {
       void queueOperationRefresh(Boolean(payload.data?.state && payload.data.state !== 'running'))
     }
   })
-  if (disposed || listenerVersion !== operationListenerVersion || stopOperationSocketListener || String(route.params.operationId) !== operationId || operation.value?.state !== 'running') {
+  if (disposed || listenerVersion !== operationListenerVersion || stopOperationSocketListener || String(route.params.operationId) !== operationId || !operation.value?.agent_id) {
     stopListener()
   } else {
     stopOperationSocketListener = stopListener

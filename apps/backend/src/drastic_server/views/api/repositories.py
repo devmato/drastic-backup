@@ -91,3 +91,12 @@ class RepositoryUnlockAgents(MethodView):
     @blp.response(200, UnlockAgentResponseSchema(many=True))
     def get(self, repository_id):
         return management.unlock_agents(get_jwt_identity(), repository_id)
+
+
+@blp.route("/<int:repository_id>/retention")
+class RepositoryRetention(MethodView):
+    @jwt_required()
+    @blp.arguments(UnlockInputSchema)
+    @blp.response(202, AgentOperationStartResponseSchema)
+    def post(self, data, repository_id):
+        return maintenance.start_retention(get_jwt_identity(), repository_id, data)

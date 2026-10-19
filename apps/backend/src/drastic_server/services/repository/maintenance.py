@@ -1,8 +1,9 @@
-"""Dispatch repository checks and unlocks through the durable operation lifecycle."""
+"""Dispatch repository maintenance through the durable operation lifecycle."""
 
+from drastic_common.agent.commands import MANUAL_RETENTION_PROTOCOL
 from drastic_server.integrations.agent import AgentService, is_agent_timeout_response
 from drastic_server.models.agent import AgentOperationState, AgentOperationType
-from drastic_server.services.exceptions import AgentCommandFailed
+from drastic_server.services.exceptions import AgentCommandFailed, InvalidInput
 from drastic_server.services.jobs.queries import get_agent
 from drastic_server.services.operations.lifecycle import (
     agent_operation_start_response,
@@ -19,6 +20,28 @@ def start_check(user_id, repository_id, data):
 
 def start_unlock(user_id, repository_id, data):
     return _start(user_id, repository_id, data, check=False)
+
+
+def start_retention(user_id, repository_id, data):
+    repository = get_repository(user_id, repository_id)
+    agent = get_agent(user_id, data["agent_id"])
+    if not any(assigned.id == repository.id for assigned in agent.repositories):
+        raise InvalidInput("Repository is not assigned to this agent")
+    if not agent.online:
+        raise InvalidInput("Agent is offline")
+    if (agent.protocol_version or 0) < MANUAL_RETENTION_PROTOCOL:
+        raise InvalidInput(f"Update the agent for manual retention (protocol {MANUAL_RETENTION_PROTOCOL})")
+    operation = start_agent_operation(agent=agent, repository=repository,
+        operation_type=AgentOperationType.retention, msg="Retention started", log_message="Retention queued",
+        data={"scope": "repository"})
+    response = AgentService.run_retention(agent, repository_id=repository.id, operation_uuid=operation.uuid)
+    if is_agent_timeout_response(response):
+        return unknown_agent_operation_dispatch_response(operation, "Retention dispatch status unknown")
+    if response.get("state") != AgentOperationState.success:
+        message = response.get("log", "Could not start retention")
+        fail_started_agent_operation(operation, message)
+        raise AgentCommandFailed({**response, "log": message})
+    return agent_operation_start_response(operation, "Retention started")
 
 
 def _start(user_id, repository_id, data, *, check):

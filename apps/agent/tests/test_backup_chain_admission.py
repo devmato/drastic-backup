@@ -4,7 +4,7 @@ from threading import Event
 
 import pytest
 
-from drastic_agent.agent.enums import AgentOperationState
+from drastic_agent.agent.enums import AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.runtime.execution import ExecutionManager
@@ -53,29 +53,33 @@ def test_admission_validates_current_job_policy_not_stale_command_policy(agent):
     assert "Retention policy 1" in agent._Agent__validate_run_job_admission(args)
 
 
-def test_duplicate_admission_before_after_completion_and_restart(agent, monkeypatch):
+@pytest.mark.parametrize("command", ["run_job", "run_retention"])
+def test_duplicate_admission_before_after_completion_and_restart(agent, monkeypatch, command):
     started = Event()
     finish = Event()
     calls = []
+    command_request = request() if command == "run_job" else {"command": command,
+        "args": {"repository_id": 27, "operation_uuid": "chain-step", "repository_scope": True}}
 
-    def backup(**kwargs):
+    def execute(**kwargs):
         calls.append(kwargs["operation_uuid"])
-        report = AgentReport.backup_operation(job_id=17, repository_id=27, operation_uuid=kwargs["operation_uuid"])
+        report = AgentReport(type=AgentOperationType.backup if command == "run_job" else AgentOperationType.retention,
+            job_id=kwargs.get("job_id"), repository_id=27, operation_uuid=kwargs["operation_uuid"]).start_reporting()
         started.set()
         assert finish.wait(5)
         return report.finish()
 
-    monkeypatch.setattr(agent, "cmd_run_job", backup)
+    monkeypatch.setattr(agent, f"cmd_{command}", execute)
     with ThreadPoolExecutor(max_workers=2) as executor:
-        results = list(executor.map(agent._Agent__handle_execute_command, [request(), request()]))
+        results = list(executor.map(agent._Agent__handle_execute_command, [command_request, command_request]))
     assert started.wait(5)
     assert all(result.final_state == AgentOperationState.success for result in results)
     assert calls == ["chain-step"]
     finish.set()
     agent._Agent__execution.shutdown()
-    assert agent._Agent__handle_execute_command(request()).data["operation_state"] == "success"
+    assert agent._Agent__handle_execute_command(command_request).data["operation_state"] == "success"
     restarted = Agent.__new__(Agent)
-    assert restarted._Agent__handle_execute_command(request()).data["known"] is True
+    assert restarted._Agent__handle_execute_command(command_request).data["known"] is True
     assert calls == ["chain-step"]
 
 

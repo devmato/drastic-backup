@@ -107,7 +107,7 @@ class AgentOperationService:
                     raise ValueError("Invalid or conflicting snapshot replacement")
         if replacements or previous_data.get("snapshot_replacements"):
             operation_data_payload["snapshot_replacements"] = {**previous_data.get("snapshot_replacements", {}), **replacements}
-        for key in ("owner_uuid", "backup_run_complete"):
+        for key in ("owner_uuid", "backup_run_complete", "retention_logs_nested"):
             if previous_data.get(key):
                 operation_data_payload[key] = previous_data[key]
         if (operation_data["type"] == AgentOperationType.repository_check and operation_data["state"] == AgentOperationState.failed
@@ -161,7 +161,14 @@ class AgentOperationService:
         if operation.type not in {AgentOperationType.backup, AgentOperationType.retention}:
             return
         parent = (AgentOperation.query.filter_by(id=operation.parent_operation_id).populate_existing().with_for_update().first()
-                  if operation.type == AgentOperationType.retention else operation)
+                   if operation.type == AgentOperationType.retention and operation.parent_operation_id else operation)
+        if parent is not None and parent.type == AgentOperationType.retention:
+            latest_retry = AgentOperation.query.filter_by(parent_operation_id=parent.id, type=AgentOperationType.retention).filter(
+                AgentOperation.state != AgentOperationState.running, AgentOperation.ended.is_not(None),
+            ).order_by(AgentOperation.ended.desc(), AgentOperation.id.desc()).populate_existing().with_for_update().first()
+            if latest_retry:
+                parent.data = {**(parent.data or {}), "retention_state": latest_retry.state.name,
+                    "cleanup_pending": bool((latest_retry.data or {}).get("cleanup_pending", True))}
         job_uuid = (operation.data or {}).get("job_uuid")
         if operation.job_id is None and not job_uuid:
             return  # Historical deleted jobs without identity must not share cleanup status.
@@ -564,6 +571,11 @@ class AgentOperationService:
             lambda: emit_operation_update(operation),
             "operation update",
         )
+        if operation.type == AgentOperationType.retention and operation.parent_operation is not None:
+            AgentOperationService._emit_operation_event(
+                lambda: emit_operation_update(operation.parent_operation),
+                "parent operation update",
+            )
 
     @staticmethod
     def _emit_operation_event(emit, event_name):

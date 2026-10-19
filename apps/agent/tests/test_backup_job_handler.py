@@ -88,6 +88,7 @@ class _ConfiguredRetentions:
 
 
 class _SuccessfulReport:
+    type = base_module.AgentOperationType.retention
     state = AgentReportState.success
     log_list = ["retention ok"]
     data = {"cleanup_pending": False}
@@ -206,11 +207,14 @@ def test_job_registry_forwards_server_operation_uuid():
 
 
 @pytest.mark.parametrize("own_retention", [False, True])
-def test_post_backup_check_runs_before_retention_and_stats(monkeypatch, own_retention):
+@pytest.mark.parametrize("retention_state", [AgentReportState.success, AgentReportState.warning])
+def test_post_backup_check_runs_before_retention_and_stats(monkeypatch, own_retention, retention_state):
     AgentReport.pending_reports = []
     AgentReport.finished_reports.clear()
     monkeypatch.setattr(base_module, "actions", _FakeActions())
     monkeypatch.setattr(base_module, "retentions", _ConfiguredRetentions())
+    monkeypatch.setattr(_SuccessfulReport, "state", retention_state)
+    monkeypatch.setattr(_SuccessfulReport, "log_list", ["Prune unavailable"])
     resticapi = _CheckingResticApi()
     handler = _Handler(
         _CheckingAgent(resticapi),
@@ -252,7 +256,10 @@ def test_post_backup_check_runs_before_retention_and_stats(monkeypatch, own_rete
 
     assert phases == ["check", "retention", "statistics"]
     assert targets == [(1, 2)]
-    assert report.final_state == AgentReportState.success
+    assert report.final_state == retention_state
+    assert report.data["retention_logs_nested"] is True
+    assert ("Retention did not complete: Prune unavailable" in report.log) is (retention_state == AgentReportState.warning)
+    assert "Prune unavailable" not in report.log_list
     assert resticapi.check_calls == [{"read_data": False, "read_data_subset": "1/10"}]
     assert report.data["check"] == {"message_type": "summary", "errors": 0}
     assert report.data["stats"] == {"total_size": 123, "mode": "raw-data"}

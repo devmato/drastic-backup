@@ -158,10 +158,16 @@ class AgentOperationResponseSchema(Schema):
 
 
 class AgentOperationDetailResponseSchema(AgentOperationResponseSchema):
+    retention_logs = fields.Method("get_retention_logs")
     agent_hostname = fields.String(attribute="agent.hostname", dump_default=None, allow_none=True)
     agent_display_name = fields.String(allow_none=True)
     job_name = fields.String(attribute="job.name", dump_default=None, allow_none=True)
     repository_name = fields.String(attribute="repository.name", dump_default=None, allow_none=True)
+
+    def get_retention_logs(self, obj):
+        from drastic_server.services.operations.history import retention_logs
+
+        return AgentOperationLogResponseSchema(many=True).dump(retention_logs(obj))
 
 
 class AgentOperationListResponseSchema(AgentOperationResponseSchema):

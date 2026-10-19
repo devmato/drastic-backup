@@ -1,9 +1,10 @@
 """Retention selects owned snapshot groups without a historical report catalog."""
 
 import hashlib
+import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import dataset
 import pytest
@@ -108,10 +109,10 @@ def settings(tmp_path):
     database.engine.dispose()
 
 
-def execute(repo, backend, settings, *, policy=None, job_uuid=B, request=None, send=None, current_operation_uuid=None):
+def execute(repo, backend, settings, *, policy=None, job_uuid=B, request=None, send=None, current_operation_uuid=None, **options):
     report = RetentionService.run(repository_id=1, job_id=None, job_uuid=job_uuid,
         current_operation_uuid=current_operation_uuid, current_policy=policy, request_context=request or backend,
-        set_repository=lambda _: None, resticapi=repo, settings=settings, send_report=send or backend.send_report)
+        set_repository=lambda _: None, resticapi=repo, settings=settings, send_report=send or backend.send_report, **options)
     backend.accept(report)
     return report
 
@@ -126,7 +127,9 @@ def test_reportless_owned_runs_are_retained_together_while_foreign_and_legacy_sn
         repo.items[artifact["snapshot_id"]]["tags"].remove(f"drastic-owner:{OWNER}")
     # The group starts at its first snapshot, regardless of how long later components took.
     repo.items[old[-1]["snapshot_id"]]["time"] = "2027-01-01T00:00:00+00:00"
-    assert execute(repo, backend, settings).state == AgentReportState.success
+    result = execute(repo, backend, settings)
+    assert result.state == AgentReportState.success
+    assert result.source.name == "triggered"  # Internal cleanup without a parent is still not a solo start.
     assert set(repo.items) == {a["snapshot_id"] for a in kept + foreign + legacy}
     assert repo.checks == [{"read_data": False, "read_data_subset": None}]
 
@@ -149,32 +152,45 @@ def test_incomplete_backend_response_never_means_all_jobs_were_deleted(settings,
     assert len(repo.items) == 4 and not repo.removed
 
 
-@pytest.mark.parametrize("failure", ["forget", "prune", "verification"])
-def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, monkeypatch):
+@pytest.mark.parametrize("failure", ["forget", "prune", "verification", "policy_removed"])
+@pytest.mark.parametrize("solo", [False, True])
+def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, solo, monkeypatch):
     monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 0)
     repo, backend = Repo(), Backend()
-    repo.add_run(backend, number=10, count=1100)
+    old = repo.add_run(backend, number=10, count=1100)
     kept = repo.add_run(backend, number=11, count=1100)
-    if failure == "verification":
+    verification = failure in {"verification", "policy_removed"}
+    if verification:
         backend.check_token = "known-failure"
     else:
         setattr(repo, "fail_" + failure, True)
-    result = execute(repo, backend, settings, send=(lambda _: False) if failure == "verification" else None)
+    def context():
+        return {**backend(), "job_policies": {B: None}} if solo else backend()
+
+    result = execute(repo, backend, settings, request=context,
+        send=(lambda _: False) if verification else None,
+        **({"operation_uuid": str(uuid4()), "repository_scope": True} if solo else {}))
+    original_uuid = result.uuid
     assert result.state == AgentReportState.warning
     if failure == "prune":
         assert set(result.data["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
     assert RetentionService.pending_tasks(settings) == []
-    if failure == "prune":
+    if failure in {"prune", "policy_removed"}:
         monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
         args, = RetentionService.pending_tasks(settings)
-        result = RetentionService.run(**args, current_policy=None, request_context=backend,
+        assert args["current_operation_uuid"] == original_uuid and args["repository_scope"] is solo
+        backend.default = None  # Policy removal must finish pending work, including already-needed prune.
+        result = RetentionService.run(**args, current_policy=None, request_context=context,
             set_repository=lambda _: None, resticapi=repo, settings=settings, send_report=backend.send_report)
+        assert result.parent_operation_uuid == original_uuid and result.source.name == "triggered"
+        assert result.data["cleanup_pending"] is False
     else:
         settings.delete()  # A different agent needs no local backup history to remove remaining expired snapshots.
         result = execute(repo, backend, settings)
     assert result.state == AgentReportState.success
-    assert set(repo.items) == {a["snapshot_id"] for a in kept}
-    assert repo.prune_calls == (2 if failure == "prune" else 1)
+    remaining = old + kept if failure == "policy_removed" else kept
+    assert set(repo.items) == {a["snapshot_id"] for a in remaining}
+    assert repo.prune_calls == {"prune": 2, "policy_removed": 0}.get(failure, 1)
 
 
 @pytest.mark.parametrize("tag", ["drastic-owner:invalid", f"drastic-owner:{FOREIGN}", "job_uuid:invalid", "operation_uuid:invalid"])
@@ -292,3 +308,50 @@ def test_new_jobs_after_initial_scan_are_not_orphans(settings):
     repo.on_check = new_backup
     assert execute(repo, backend, settings).state == AgentReportState.success
     assert {a["snapshot_id"] for a in added}.issubset(repo.items)
+
+
+def test_no_policy_skips_automatic_history_but_manual_run_explains_the_noop(settings):
+    repo, backend = Repo(), Backend()
+    backend.default = None
+    repo.add_run(backend)
+    automatic = execute(repo, backend, settings, current_operation_uuid=str(UUID(int=100)))
+    assert automatic.type.name == "command" and automatic.history_operation is None
+    assert "no applicable policy" in automatic.log
+    assert not list(settings.all()) and not repo.removed
+    manual = execute(repo, backend, settings, job_uuid=None, operation_uuid=str(UUID(int=101)))
+    assert manual.type.name == "retention" and manual.history_operation is not None
+    assert manual.state == AgentReportState.success and not manual.data["cleanup_pending"]
+    assert "no applicable policy" in manual.log
+
+
+@pytest.mark.parametrize("missing_policy", [False, True])
+def test_repository_scope_uses_each_jobs_policy_and_default_only_for_orphans(settings, missing_policy):
+    repo, backend = Repo(), Backend(job_uuids=[A, B])
+    old_a = repo.add_run(backend, job=A, number=10)
+    new_a = repo.add_run(backend, job=A, number=11)
+    disabled = repo.add_run(backend, job=B, number=12) + repo.add_run(backend, job=B, number=13)
+    orphan = str(UUID(int=1000))
+    old_orphan = repo.add_run(backend, job=orphan, number=14)
+    new_orphan = repo.add_run(backend, job=orphan, number=15)
+
+    def context():
+        return {**backend(), "job_policies": {A: {"keep_last": 1}, **({} if missing_policy else {B: None})}}
+
+    report = execute(repo, backend, settings, job_uuid=None, operation_uuid=str(UUID(int=102)),
+        repository_scope=True, request=context)
+    if missing_policy:
+        assert report.state == AgentReportState.warning and not repo.removed
+    else:
+        assert report.state == AgentReportState.success
+        assert set(repo.items) == {item["snapshot_id"] for item in new_a + disabled + new_orphan}
+        assert set(report.data["deleted_snapshot_ids"]) == {item["snapshot_id"] for item in old_a + old_orphan}
+        assert "4 snapshot(s) removed" in report.log
+
+
+def test_existing_completion_intents_retry_under_their_backup(settings):
+    operation_uuid = str(UUID(int=105))
+    settings.insert({"name": f"backup_completion:1:{operation_uuid}", "settings": json.dumps({
+        "operation_uuid": operation_uuid, "retry_at": 0,
+        "args": {"repository_id": 1, "job_id": 2, "job_uuid": A, "current_operation_uuid": None}})})
+    task, = RetentionService.pending_tasks(settings)
+    assert task["current_operation_uuid"] == operation_uuid

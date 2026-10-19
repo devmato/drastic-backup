@@ -5,6 +5,7 @@ from uuid import uuid4
 
 import pytest
 import test_proxmox_restore_api
+from sqlalchemy import event
 
 from drastic_server.extensions import db
 from drastic_server.models.agent import (
@@ -26,6 +27,7 @@ from drastic_server.services.operations.history import (
     delete_operation,
     get_operation,
     list_operations,
+    retention_logs,
 )
 from drastic_server.services.operations.lifecycle import (
     fail_started_agent_operation,
@@ -213,6 +215,15 @@ def test_live_context_includes_all_owned_jobs_only(restore_api):
     assert context == {"owner_uuid": agent.user.backup_owner_uuid, "default": None,
                        "running_operation_uuids": [running.uuid], "check_token": agent.repositories[0].retention_check_token}
     assert request.sync()["backup_owner_uuid"] == context["owner_uuid"] != foreign.user.backup_owner_uuid
+    default = create_retention(agent.user_id, {"name": "Default", "rtype": "count", "keep_last": 2})
+    update_retention(agent.user_id, default.id, {"is_default": True})
+    custom = create_retention(agent.user_id, {"name": "Custom", "rtype": "count", "keep_last": 3})
+    job.retention_mode, job.retention = "custom", custom
+    db.session.commit()
+    context = request.retention_context(agent.repositories[0].id, include_policies=True)
+    assert set(context["job_policies"]) == {job.uuid, disabled.uuid}
+    assert context["job_policies"][job.uuid]["keep_last"] == 3
+    assert context["job_policies"][disabled.uuid] is None and context["default"]["keep_last"] == 2
     with pytest.raises(AgentException, match="not assigned"):
         AgentRequestService(foreign).retention_context(agent.repositories[0].id)
     with pytest.raises(AgentException, match="not assigned"):
@@ -316,3 +327,103 @@ def test_manual_check_requires_full_data_to_clear_its_captured_token(restore_api
         AgentOperationService(agent).ingest({"uuid": check.uuid, "type": "repository_check", "state": "success",
             "repository_id": repository.id, "data": {"read_data": read_data, "check": {}}})
         assert repository.retention_check_token == (None if read_data == "100%" else token)
+
+
+@pytest.mark.parametrize("parent_type,legacy", [("backup", False), ("backup", True), ("retention", False)])
+def test_retention_retries_share_original_history_and_logs(restore_api, monkeypatch, parent_type, legacy):
+    from drastic_server.services.operations import reports
+
+    client, _, agent, _, job, _ = restore_api
+    events = []
+    monkeypatch.setattr(reports, "emit_operation_update", lambda operation: events.append(operation.uuid))
+    service = AgentOperationService(agent)
+    parent_uuid = str(uuid4())
+    child = {"uuid": str(uuid4()), "type": "retention", "source": "triggered", "state": "warning",
+        "job_id": job.id if parent_type == "backup" else None,
+        "repository_id": agent.repositories[0].id, "parent_operation_uuid": parent_uuid,
+        "started": "2026-10-19T02:01:00Z", "ended": "2026-10-19T02:02:00Z",
+        "data": {"scope": "repository", "job_uuid": job.uuid if parent_type == "backup" else None, "cleanup_pending": True},
+        "logs": [{"sequence": 1, "level": "warning", "message": "Retention deferred"}]}
+    child_id = service.ingest(child)  # Offline replay may precede its parent.
+    parent = {"uuid": parent_uuid, "type": parent_type, "state": "warning", "source": "manual",
+        "job_id": child["job_id"], "repository_id": agent.repositories[0].id,
+        "started": "2026-10-19T02:00:00Z", "ended": "2026-10-19T02:03:00Z",
+        "data": {"job_uuid": child["data"]["job_uuid"], "retention_logs_nested": not legacy, "cleanup_pending": True},
+        "logs": [{"sequence": 1, "level": "info", "message": "Run finished"}]}
+    parent_id = service.ingest(parent)
+    retry = {**child, "uuid": str(uuid4()), "state": "success", "started": "2026-10-19T02:04:00Z",
+        "ended": "2026-10-19T02:05:00Z", "data": {**child["data"], "cleanup_pending": False},
+        "logs": [{"sequence": 1, "level": "info", "message": "Retention finished"}]}
+    service.ingest(retry)
+    service.ingest(retry)
+    assert events[-1] == parent_uuid
+    # A stale parent report must not erase the log format marker or the retry result.
+    service.ingest({**parent, "data": {"job_uuid": child["data"]["job_uuid"], "cleanup_pending": True}})
+    db.session.expire_all()
+    operation = get_operation(agent.user_id, parent_id)
+    queries = []
+
+    def count_query(*_):
+        queries.append(True)
+
+    event.listen(db.engine, "before_cursor_execute", count_query)
+    try:
+        retention_logs(operation)
+    finally:
+        event.remove(db.engine, "before_cursor_execute", count_query)
+    assert len(queries) == 1  # Child count must not determine the number of log queries.
+    detail = client.get(f"/api/agents/operations/{parent_id}").json
+    assert [log["message"] for log in detail["logs"]] == ["Run finished"]
+    assert [log["message"] for log in detail["retention_logs"]] == (
+        ["Retention finished"] if legacy else ["Retention deferred", "Retention finished"])
+    assert detail["data"]["cleanup_pending"] is False and detail["data"]["retention_state"] == "success"
+    assert db.session.get(AgentOperation, child_id).parent_operation_id == parent_id
+    for url in ("/api/agents/operations", f"/api/agents/{agent.id}/operations"):
+        assert [row["id"] for row in client.get(url).json] == [parent_id]
+    assert sum(row["count"] for row in client.get("/api/agents/operations/summary").json) == 1
+    assert client.delete(f"/api/agents/operations/{parent_id}").status_code == 200
+    assert client.get("/api/agents/operations").json == []  # Detached child reports stay internal.
+
+
+@pytest.mark.parametrize("outcome", ["accepted", "unknown", "busy"])
+def test_manual_retention_uses_committed_operation_and_preserves_unknown_dispatch(restore_api, monkeypatch, outcome):
+    client, _, agent, _, _, _ = restore_api
+    agent.protocol_version = 25
+    db.session.commit()
+
+    def send(selected_agent, **kwargs):
+        operation = AgentOperation.query.filter_by(uuid=kwargs["operation_uuid"]).one()
+        assert operation.state == AgentOperationState.running and selected_agent.id == agent.id
+        if outcome == "unknown":
+            return AgentService.failed_command_report("Agent request timed out", timeout=True)
+        if outcome == "busy":
+            return AgentService.failed_command_report("Requested resource is busy")
+        return {"state": AgentOperationState.success}
+
+    monkeypatch.setattr(AgentService, "run_retention", send)
+    response = client.post(f"/api/repositories/{agent.repositories[0].id}/retention", json={"agent_id": agent.id})
+    assert response.status_code == (409 if outcome == "busy" else 202)
+    operation = AgentOperation.query.filter_by(type=AgentOperationType.retention).one()
+    assert operation.source.name == "manual"
+    assert operation.state == (AgentOperationState.failed if outcome == "busy" else AgentOperationState.running)
+    if outcome != "busy":
+        assert response.json["dispatch_status"] == outcome
+
+
+@pytest.mark.parametrize("invalid", ["foreign_agent", "unassigned", "old_protocol"])
+def test_manual_retention_validates_before_reserving_history(restore_api, invalid):
+    client, _, agent, foreign, _, _ = restore_api
+    agent.protocol_version = 25
+    repository = agent.repositories[0]
+    agent_id = agent.id
+    expected = 422
+    if invalid == "foreign_agent":
+        agent_id, expected = foreign.id, 404
+    elif invalid == "unassigned":
+        agent.repositories.clear()
+    else:
+        agent.protocol_version = 24
+    db.session.commit()
+    response = client.post(f"/api/repositories/{repository.id}/retention", json={"agent_id": agent_id})
+    assert response.status_code == expected
+    assert AgentOperation.query.count() == 0

@@ -31,6 +31,7 @@ Important paths:
 - `apps/backend/src/drastic_server/services` -- Business use cases, grouped by responsibility.
 - `apps/backend/src/drastic_server/services/jobs` -- Job configuration, queries, management and execution.
 - `apps/backend/src/drastic_server/services/operations` -- Durable operation lifecycle, history and report ingestion.
+- `apps/backend/src/drastic_server/services/repository/maintenance.py` -- Durable repository check, unlock and standalone retention dispatch; the agent Actions tab exposes standalone retention for assigned repositories.
 - `apps/backend/src/drastic_server/services/agent/installer.py` -- Installer rendering, standalone controller delivery through `/install.py`, and reproducible backend build targets.
 - `apps/backend/src/drastic_server/services/recovery_export.py` -- Account-scoped recovery data, AES ZIP assembly and optional verified Restic archives; offline instructions live in `templates/recovery/`.
 - `apps/backend/src/drastic_server/integrations` -- External transport adapters.

@@ -1,11 +1,11 @@
 """Owner-scoped operation history and deletion constraints."""
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 
-from drastic_common.agent.enums import AgentOperationState, AgentOperationType
+from drastic_common.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent, AgentOperation
+from drastic_server.models.agent import Agent, AgentOperation, AgentOperationLog
 from drastic_server.models.chain import BackupChainRun
 from drastic_server.services.exceptions import InvalidInput, ResourceConflict
 from drastic_server.services.queries import require_result
@@ -15,11 +15,30 @@ def get_operation(user_id, operation_id):
     return require_result(AgentOperation.query.filter_by(user_id=user_id, id=operation_id))
 
 
+def retention_logs(operation):
+    """Read child logs without changing replay sequences or copying durable log rows."""
+    query = AgentOperationLog.query.join(AgentOperation).filter(
+        AgentOperation.parent_operation_id == operation.id,
+        AgentOperation.type == AgentOperationType.retention,
+        AgentOperation.source == AgentOperationSource.triggered,
+        AgentOperation.user_id == operation.user_id,
+    )
+    # Legacy agents copied initial retention messages into the backup, but not retry messages.
+    if operation.type == AgentOperationType.backup and not (operation.data or {}).get("retention_logs_nested"):
+        if operation.ended is None:
+            return []
+        query = query.filter(AgentOperation.started >= operation.ended)
+    return query.order_by(AgentOperationLog.created, AgentOperationLog.id).all()
+
+
 def _filtered_operations(user_id, agent_id, filters):
     """Use the same owner and time constraints for history and dashboard counts."""
     if agent_id is not None:
         require_result(Agent.query.filter_by(id=agent_id, user_id=user_id))
-    query = AgentOperation.query.filter_by(user_id=user_id)
+    query = AgentOperation.query.filter_by(user_id=user_id).filter(or_(
+        AgentOperation.type != AgentOperationType.retention,
+        AgentOperation.source != AgentOperationSource.triggered,
+    ))
     if agent_id is not None:
         query = query.filter(AgentOperation.agent_id == agent_id)
     for key in ("type", "job_id"):

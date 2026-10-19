@@ -11,18 +11,18 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const source = readFileSync(new URL('../src/pages/AgentOperationDetailPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
   const route = reactive({ params: { operationId: '1', agentId: '1' }, query: {} })
-  let resolveRequest, confirm
+  let resolveRequest, confirm, operationEvent
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const cancellations = []
   const quasar = { notify: () => assert.fail('background error notification'), dialog: () => ({ onOk: callback => { confirm = callback } }) }
-  const page = runInNewContext(`${source}\n;({ operation, operationListRoute, confirmCancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+  const page = runInNewContext(`${source}\n;({ operation, sortedLogs, operationListRoute, confirmCancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
     computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload, operationFilters,
     useRoute: () => route,
     useAgentStore: () => store,
     useOperationStore: () => ({ cancelRestore: async id => cancellations.push(['restore', id]) }),
     cancelJob: async id => cancellations.push(['backup', id]),
     useQuasar: () => quasar,
-    subscribeToSocketEvents: async () => () => {},
+    subscribeToSocketEvents: async handler => { operationEvent = handler; return () => { operationEvent = null } },
     recordBrowserDiagnostic: () => {},
     watch: () => {},
     onBeforeUnmount: () => {},
@@ -36,6 +36,15 @@ test('background operation updates stay quiet and preserve data on failure', asy
   resolveRequest({ id: 1, state: 'running', data: {} })
   await initialLoad
   assert.equal(page.loading.value, false)
+
+  page.operation.value = {
+    logs: [{ id: 1, sequence: 1, created: '2026-10-19T02:00:00Z', message: 'Backup started' },
+      { id: 3, sequence: 2, created: '2026-10-19T02:02:00Z', message: 'Backup finished' }],
+    retention_logs: [{ id: 2, sequence: 1, created: '2026-10-19T02:01:00Z', level: 'warning', message: 'Retention deferred' },
+      { id: 4, sequence: 1, created: '2026-10-19T02:03:00Z', message: 'Retention retry finished' }],
+  }
+  assert.deepEqual(Array.from(page.sortedLogs.value, log => log.id), [1, 2, 3, 4])
+  assert.equal(page.sortedLogs.value[1].level, 'warning')
 
   const refresh = page.queueOperationRefresh()
   assert.equal(page.loading.value, false)
@@ -475,4 +484,13 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const previousConfirmation = confirm
   page.confirmCancelOperation()
   assert.equal(confirm, previousConfirmation, 'a deleted agent cannot receive a cancellation command')
+
+  page.operation.value = { id: 1, agent_id: 1, type: 'backup', state: 'warning', data: {} }
+  await page.loadOperation()
+  assert.equal(typeof operationEvent, 'function', 'finished parents must still receive child reports')
+  store.getOperation = async () => ({ ...page.operation.value,
+    retention_logs: [{ id: 5, sequence: 1, message: 'Retention retry finished' }] })
+  operationEvent({ name: 'operationupdate1', data: { state: 'warning' } })
+  await new Promise(setImmediate)
+  assert.equal(page.sortedLogs.value[0].message, 'Retention retry finished')
 })

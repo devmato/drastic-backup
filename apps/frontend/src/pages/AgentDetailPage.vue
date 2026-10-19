@@ -183,7 +183,7 @@
           <q-list>
             <q-item v-for="action in agentActions" :key="action.name" clickable v-ripple
               role="button" :aria-label="action.title" :aria-busy="Boolean(pendingActions[action.name])"
-              :disable="!agent?.online || Boolean(pendingActions[action.name])"
+              :disable="!agent?.online || action.disable || Boolean(pendingActions[action.name])"
               class="rounded-borders" @click="action.run">
               <q-item-section avatar>
                 <q-icon :name="action.icon" :color="action.color" />
@@ -212,6 +212,25 @@
     />
     <RunBackupDialog v-if="agent" :key="agent.id" v-model="backupDialogOpen" :agent="agent" @started="operationStarted" />
     <RestoreDialog v-model="restoreDialogOpen" :agent-id="agent?.id" :agents="agentStore.agents" @started="operationStarted" />
+    <q-dialog v-model="retentionDialogOpen" :persistent="Boolean(pendingActions.retention)" aria-labelledby="run-retention-title">
+      <q-card class="db-dialog-card-sm">
+        <q-card-section><h2 id="run-retention-title" class="text-h6 q-my-none">Run retention</h2></q-card-section>
+        <q-form @submit="submitRetention">
+          <q-card-section class="q-gutter-sm">
+            <div class="text-body2">Apply each job's configured retention to this repository. Backups of deleted jobs use the default policy. Backups without an applicable policy are kept.</div>
+            <q-select v-if="agentRepositories.length" v-model="retentionRepositoryId" outlined :dense="!$q.platform.has.touch"
+              :options="agentRepositories.map(repository => ({ label: repository.name, value: repository.id }))"
+              label="Repository" emit-value map-options :disable="Boolean(pendingActions.retention)" />
+            <div v-else role="status">No repositories assigned to this agent.</div>
+          </q-card-section>
+          <q-card-actions align="right" class="q-pa-md">
+            <q-btn flat no-caps label="Cancel" :disable="Boolean(pendingActions.retention)" v-close-popup />
+            <q-btn unelevated no-caps type="submit" color="primary" label="Run retention"
+              :loading="Boolean(pendingActions.retention)" :disable="!canStartRetention" />
+          </q-card-actions>
+        </q-form>
+      </q-card>
+    </q-dialog>
   </q-page>
 </template>
 
@@ -232,6 +251,7 @@ import RestoreDialog from 'components/restore/RestoreDialog.vue'
 import { getAgentConnections, getAvailableConnectionTypes } from 'src/utils/agent-connections'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import { supportsAgentUpdate } from 'src/utils/agent-updates'
+import { startRepositoryRetention } from 'src/api/operations'
 
 const $q = useQuasar()
 const agentStore = useAgentStore()
@@ -251,6 +271,11 @@ const loadError = ref('')
 const connectionDialogOpen = ref(false)
 const restoreDialogOpen = ref(false)
 const backupDialogOpen = ref(false)
+const retentionDialogOpen = ref(false)
+const retentionRepositoryId = ref(null)
+const supportsRetention = computed(() => (agent.value?.protocol_version || 0) >= 25)
+const canStartRetention = computed(() => agent.value?.online && supportsRetention.value
+  && agentRepositories.value.some(repository => repository.id === retentionRepositoryId.value))
 
 function operationStarted(result) {
   router.push({ path: `/agents/${result.agent_id}/operations/${result.operation_id}`, query: { agent_id: String(result.agent_id) } })
@@ -286,6 +311,18 @@ const agentActions = computed(() => [
     description: 'Restore from an accessible repository, including backups of deleted jobs.',
     run: () => { restoreDialogOpen.value = true },
   },
+  {
+    name: 'retention', title: 'Run retention', icon: 'auto_delete', color: 'primary',
+    description: supportsRetention.value
+      ? 'Apply configured retention policies to an assigned repository.'
+      : 'Update this agent to protocol 25 to run retention manually.',
+    disable: !supportsRetention.value,
+    run: () => {
+      if (!agent.value?.online || !supportsRetention.value || pendingActions.value.retention) return
+      retentionRepositoryId.value = agentRepositories.value[0]?.id || null
+      retentionDialogOpen.value = true
+    },
+  },
   ...(supportsUpdate.value ? [{
     name: 'update', title: 'Update Agent', icon: 'system_update', color: 'primary',
     description: 'Update from the saved Git repository and ref; tags and commits stay pinned.',
@@ -319,6 +356,23 @@ async function openBackup() {
     if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
   } finally {
     pendingActions.value.backup = false
+  }
+}
+
+async function submitRetention() {
+  if (!retentionDialogOpen.value || !canStartRetention.value || pendingActions.value.retention) return
+  const agentId = agent.value.id
+  const repositoryId = retentionRepositoryId.value
+  pendingActions.value.retention = true
+  try {
+    const result = await startRepositoryRetention({ agentId, repositoryId })
+    retentionDialogOpen.value = false
+    $q.notify({ message: result.msg || 'Retention started', color: result.dispatch_status === 'unknown' ? 'warning' : 'positive' })
+    if (agent.value?.id === agentId) operationStarted(result)
+  } catch (error) {
+    if (!shouldIgnoreApiError(error)) $q.notify({ message: getApiErrorMessage(error), color: 'negative' })
+  } finally {
+    pendingActions.value.retention = false
   }
 }
 
@@ -383,6 +437,7 @@ watch(() => route.params.agentId, loadAgent, { immediate: true })
 watch(() => route.params.agentId, () => {
   connectionDialogOpen.value = false
   backupDialogOpen.value = false
+  retentionDialogOpen.value = false
 })
 
 const agentRepositories = computed(() => agent.value?.repositories || [])

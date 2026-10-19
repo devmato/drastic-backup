@@ -1393,7 +1393,8 @@ class Agent:
 
     """ Run restore point retention """
 
-    def cmd_run_retention(self, repository_id, job_id, job_uuid, current_operation_uuid=None):
+    def cmd_run_retention(self, repository_id, job_id=None, job_uuid=None, current_operation_uuid=None,
+                          operation_uuid=None, repository_scope=False):
         job = jobs.find_one(id=job_id)
         if job and job.get("uuid") != job_uuid:
             job = None
@@ -1405,7 +1406,8 @@ class Agent:
                 policy = {key: selected.get(key) for key in ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
 
         def request_context():
-            response = self.__send_request("retention_context", repository_id=repository_id)
+            response = self.__send_request("retention_context", repository_id=repository_id,
+                **({"include_policies": True} if repository_scope else {}))
             if not response.get("success"):
                 raise AgentExeption("Backend retention context unavailable; cleanup deferred")
             return response["result"]
@@ -1414,6 +1416,7 @@ class Agent:
             repository_id=repository_id, job_id=job_id if job else None, job_uuid=job_uuid, current_operation_uuid=current_operation_uuid,
             current_policy=policy, request_context=request_context, set_repository=self.__set_repository,
             resticapi=self.__resticapi, settings=agent_settings, send_report=self.__send_report,
+            operation_uuid=operation_uuid, repository_scope=repository_scope,
         )
 
     """ Unlock repository """

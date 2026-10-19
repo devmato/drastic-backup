@@ -15,6 +15,7 @@ from drastic_common.backup_retry import BackupRetrySchema
 def operation_type(command):
     return {
         AgentCommandName.run_job.value: AgentReportType.backup,
+        AgentCommandName.run_retention.value: AgentReportType.retention,
         AgentCommandName.run_restore.value: AgentReportType.restore,
         AgentCommandName.delete_restore_point.value: AgentReportType.retention,
         AgentCommandName.check_repository.value: AgentReportType.repository_check,
@@ -32,7 +33,7 @@ def operation_report(command, args):
                                              repository_id=args.get("repository_id"))
     if command == AgentCommandName.check_repository.value:
         return AgentReport.check_operation(repository_id=args.get("repository_id"), operation_uuid=uuid)
-    if command == AgentCommandName.delete_restore_point.value:
+    if command in {AgentCommandName.delete_restore_point.value, AgentCommandName.run_retention.value}:
         return AgentReport(type=AgentReportType.retention, repository_id=args.get("repository_id"), operation_uuid=uuid)
     return AgentReport(type=AgentReportType.repository_unlock, repository_id=args.get("repository_id"), operation_uuid=uuid)
 
@@ -172,6 +173,8 @@ def execute(request, *, find_handler, submit_async, validate_job, operations):
         report.log_message(f"Started repository unlock on repository {args.get('repository_id')}")
     elif command == AgentCommandName.delete_restore_point:
         report.log_message(f"Started restore point deletion on repository {args.get('repository_id')}")
+    elif command == AgentCommandName.run_retention:
+        report.log_message(f"Started retention on repository {args.get('repository_id')}")
     else:
         report.log_message(f"Started repository check on repository {args.get('repository_id')}")
     return report.finish()

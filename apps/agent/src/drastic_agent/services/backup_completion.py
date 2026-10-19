@@ -83,7 +83,7 @@ def complete_backup(restic, settings, report, owner_uuid, job_uuid):
                 "operation_uuid": str(UUID(report.uuid)), "artifact_uuid": str(UUID(artifact["uuid"])),
                 "artifact_key": artifact["artifact_key"], "snapshot_id": artifact["snapshot_id"], "retry_at": time() + 900,
                 "args": {"repository_id": report.repository_id, "job_id": report.job_id,
-                         "job_uuid": job_uuid, "current_operation_uuid": None}}
+                         "job_uuid": job_uuid, "current_operation_uuid": report.uuid}}
         if artifact.get("data", {}).get("backup_method") == "native":
             task["native_vmid"] = artifact["data"]["vmid"]
         report.checkpoint()

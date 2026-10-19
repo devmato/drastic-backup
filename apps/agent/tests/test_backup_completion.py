@@ -17,6 +17,7 @@ from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.runtime import reporting
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.services.backup_completion import complete_backup, recover_repository, task_key
+from drastic_agent.services.retention import RetentionService
 from drastic_common.restic.client import ResticApi
 from drastic_common.restic.exceptions import ResticError
 from drastic_common.restic.repository import ResticRepository
@@ -122,6 +123,24 @@ def test_tag_recovery_updates_outbox_and_cbt_without_replaying_stale_ids(local_d
     tagged = list(repository.tagged)
     recover_repository(repository, settings, 1, OWNER)
     assert repository.tagged == tagged
+
+
+def test_solo_retry_keeps_parent_when_repository_setup_is_interrupted(local_db, monkeypatch):
+    test_database_schema.database_module.initialize_schema()
+    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 0)
+
+    def interrupt(_):
+        raise SystemExit("Agent stopped during repository setup")
+
+    with pytest.raises(SystemExit):
+        RetentionService.run(repository_id=1, job_id=None, job_uuid=None, current_operation_uuid=None,
+            current_policy=None, operation_uuid=RUN, repository_scope=True, request_context=lambda: {},
+            set_repository=interrupt, resticapi=None, settings=local_db["agent"], send_report=lambda _: True)
+    AgentReport.load_queue()
+    AgentReport.recover_interrupted()
+    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
+    task, = RetentionService.pending_tasks(local_db["agent"])
+    assert task["current_operation_uuid"] == RUN and task["repository_scope"] is True
 
 
 def test_completion_cannot_use_a_foreign_marker(local_db):
@@ -233,8 +252,9 @@ def test_real_restic_tag_changes_metadata_id_but_preserves_restore_contents(loca
     assert (target / "data").read_bytes() == b"complete backup\n"
 
 
-@pytest.mark.parametrize("partial,stats_warning", [(False, False), (False, True), (True, False)])
-def test_shared_lifecycle_tags_only_after_all_data_and_before_post_backup_warnings(local_db, partial, stats_warning):
+@pytest.mark.parametrize("partial,stats_warning,retention_crash", [
+    (False, False, False), (False, True, False), (True, False, False), (False, False, True)])
+def test_shared_lifecycle_tags_only_after_all_data_and_before_post_backup_warnings(local_db, partial, stats_warning, retention_crash):
     test_database_schema.database_module.initialize_schema()
     AgentReport.pending_reports, AgentReport.running_operations = [], {}
     repository = TaggedRepository({"id": OLD, "tree": "b" * 64, "tags": []})
@@ -246,10 +266,16 @@ def test_shared_lifecycle_tags_only_after_all_data_and_before_post_backup_warnin
         return {}
 
     repository.stats = stats
+
+    def retention(**kwargs):
+        if retention_crash:
+            raise SystemExit("Agent stopped during retention")
+        return AgentReport.command_report(data={"cleanup_pending": False}).finish()
+
     agent = SimpleNamespace(owner_uuid=OWNER, resticapi=repository,
         set_repository=lambda identity: {"id": identity, "location": "/repo"},
         execute_actions=lambda **kwargs: None,
-        cmd_run_retention=lambda **kwargs: AgentReport.command_report(data={"cleanup_pending": False}).finish())
+        cmd_run_retention=retention)
 
     class Handler(BackupJobHandler):
         def run_backup(self, report):
@@ -264,7 +290,16 @@ def test_shared_lifecycle_tags_only_after_all_data_and_before_post_backup_warnin
             if partial:
                 raise ResticError("Second VM incomplete")
 
-    report = Handler(agent, {"id": 1, "uuid": JOB}, 1, operation_uuid=RUN).run()
+    handler = Handler(agent, {"id": 1, "uuid": JOB}, 1, operation_uuid=RUN)
+    if retention_crash:
+        with pytest.raises(SystemExit):
+            handler.run()
+        AgentReport.load_queue()
+        AgentReport.recover_interrupted()
+        recovered = next(report for report in AgentReport.finished_reports if report.uuid == RUN)
+        assert recovered.data["retention_logs_nested"] is True
+        return
+    report = handler.run()
     if partial:
         assert report.state == AgentOperationState.failed
         assert not repository.tagged and not report.data.get("backup_run_complete")

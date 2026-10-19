@@ -64,10 +64,10 @@ test('agent list flags differing known builds without claiming an update is avai
 test('agent actions preserve confirmation, prevent duplicate runs and recover after failure', async () => {
   const source = readFileSync(new URL('../src/pages/AgentDetailPage.vue', import.meta.url), 'utf8')
     .split('<script setup>')[1].split('</script>')[0].replace(/^import .*$/gm, '')
-  const agent = reactive({ id: 1, online: true, protocol_version: 3, install_type: 'git', os: 'Linux' })
+  const agent = reactive({ id: 1, online: true, protocol_version: 3, install_type: 'git', os: 'Linux', repositories: [{ id: 7, name: 'Offsite' }] })
   const calls = []
   let finish, confirm
-  const page = runInNewContext(`${source}\n;({ agentActions, pendingActions, backupDialogOpen })`, {
+  const page = runInNewContext(`${source}\n;({ agentActions, pendingActions, backupDialogOpen, retentionDialogOpen, submitRetention })`, {
     computed, ref, getAgentConnections, getAvailableConnectionTypes, supportsAgentUpdate,
     useAgentStore: () => ({ agents: [agent], runAction: (id, action) => {
       calls.push({ id, action })
@@ -78,13 +78,14 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
     useUserStore: () => ({ withRecoveryKey: operation => operation('recovery-key') }),
     useJobStore: () => ({ loadJobs: async () => { calls.push('load-jobs') } }),
     useRepositoryStore: () => ({ loadRepositories: async () => { calls.push('load-repositories') } }),
-    useRoute: () => ({ params: { agentId: '1' }, query: {} }), useRouter: () => ({}),
+    useRoute: () => ({ params: { agentId: '1' }, query: {} }), useRouter: () => ({ push: () => {} }),
     useQuasar: () => ({ dialog: () => ({ onOk: callback => { confirm = callback } }), notify: () => {} }),
     watch: () => {}, defineOptions: () => {},
     getApiErrorMessage: error => error.message, shouldIgnoreApiError: () => false,
+    startRepositoryRetention: async args => { calls.push(args); return { agent_id: 1, operation_id: 12 } },
   })
   const action = name => page.agentActions.value.find(item => item.name === name)
-  assert.deepEqual(Array.from(page.agentActions.value.slice(0, 2), item => item.name), ['backup', 'restore'])
+  assert.deepEqual(Array.from(page.agentActions.value.slice(0, 3), item => item.name), ['backup', 'restore', 'retention'])
   const openBackup = action('backup').run()
   await action('backup').run()
   await openBackup
@@ -130,6 +131,14 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   assert.equal(action('update').name, 'update')
   agent.install_type = 'manual'
   assert.equal(action('update'), undefined)
+  assert.equal(action('retention').disable, true)
+  agent.online = true
+  agent.protocol_version = 25
+  action('retention').run()
+  assert.equal(page.retentionDialogOpen.value, true)
+  await page.submitRetention()
+  assert.deepEqual({ ...calls.at(-1) }, { agentId: 1, repositoryId: 7 })
+  assert.equal(page.retentionDialogOpen.value, false)
 })
 
 test('one-shot single and bulk updates share the existing action, skip duplicates and release buttons after start responses', async () => {

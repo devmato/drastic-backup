@@ -2,7 +2,7 @@
 
 from uuid import uuid4
 
-from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState
+from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_agent.services.backup_completion import complete_backup, task_key
 from drastic_agent.services.retention import RetentionService
@@ -225,15 +225,19 @@ class BackupJobHandler:
     def _run_retention(self, report):
         try:
             report.set_data("backup_phase", "retention")
+            report.set_data("retention_logs_nested", True)
+            report.checkpoint()  # Restart recovery must not mistake this backup for a legacy log copy.
             retention_report = self.agent.cmd_run_retention(
                 repository_id=self.repository["id"], job_id=self.job["id"], job_uuid=self.job["uuid"],
                 current_operation_uuid=self.operation["uuid"],
             )
-            report.append_logs(retention_report.log_list)
+            if retention_report.type == AgentOperationType.command:
+                report.append_logs(retention_report.log_list)
             report.set_data("retention_state", retention_report.state.name)
             report.set_data("cleanup_pending", retention_report.data.get("cleanup_pending", False))
             if retention_report.state != AgentOperationState.success:
-                report.final_state = AgentOperationState.warning
+                message = retention_report.log_list[-1] if retention_report.log_list else retention_report.state.name
+                report.log_message(f"Retention did not complete: {message}", final_state=AgentOperationState.warning)
         except Exception as exc:
             report.log_message(f"Retention failed after backup: {exc}", final_state=AgentOperationState.warning)
             report.set_data("retention_state", "failed")
