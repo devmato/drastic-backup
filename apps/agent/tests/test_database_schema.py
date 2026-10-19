@@ -67,7 +67,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
         old_columns = list(db.query("PRAGMA table_info(retentions)"))
 
     database_module.initialize_schema()
-    assert db["agent_schema"].find_one(name="agent")["version"] == 7
+    assert db["agent_schema"].find_one(name="agent")["version"] == 8
     assert {"vmid", "snapshot_name", "owner", "host_id", "confirmed", "created_at"}.issubset(db["proxmox_snapshots"].columns)
     if existing:
         old_job = db["jobs"].find_one(id=7)
@@ -106,11 +106,7 @@ def test_startup_prepares_schema_for_threaded_writes(local_db, monkeypatch, exis
             "retentions": [{
                 "id": 1,
                 "name": "daily",
-                "keep_last": 2,
-                "keep_hourly": None,
-                "keep_weekly": None,
-                "keep_monthly": None,
-                "keep_yearly": None,
+                "rules": [{"type": "last", "count": 2}],
             }],
             "actions": [{"id": 1, "job_id": 1, "module": "shell", "hook": "start", "data": {}}],
             "schedules": [{
@@ -231,6 +227,18 @@ def test_newer_schema_is_rejected_before_modifying_agent_state(local_db):
     assert local_db["agent_schema"].find_one(name="agent")["version"] == future_version
     assert local_db["agent"].find_one(name="keep-setting")["settings"] == "keep-value"
     assert list(local_db.query("SELECT name, sql FROM sqlite_master ORDER BY name")) == schema
+
+
+def test_retention_migration_keeps_local_count_policies_without_a_runtime_fallback(local_db):
+    database_module.initialize_schema()
+    local_db["agent_schema"].update({"name": "agent", "version": 7}, ["name"])
+    local_db["retentions"].insert({"id": 1, "name": "Existing", "keep_last": 2, "keep_weekly": 4})
+    database_module.initialize_schema()
+    assert local_db["retentions"].find_one(id=1)["rules"] == [
+        {"type": "last", "count": 2}, {"type": "last", "count": 4, "period": "week"}]
+    local_db["retentions"].update({"id": 1, "rules": [{"type": "recent", "days": 7}]}, ["id"])
+    database_module.initialize_schema()
+    assert local_db["retentions"].find_one(id=1)["rules"] == [{"type": "recent", "days": 7}]
 
 
 def test_statistics_migration_preserves_backup_history_and_replay(local_db):

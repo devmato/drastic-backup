@@ -79,7 +79,7 @@ test('chain edits preserve schedules and allow the same job on another repositor
     ;({ editChain, save, form, newStep, jobOptions })`, {
     computed, reactive, ref, scheduleTiming, retrySettings, watch: () => {}, onMounted: () => {}, onBeforeUnmount: () => {},
     defineProps: () => ({ agentJobs: [{ display_name: 'Agent', jobs: [{ id: 1, name: 'Files', agent_id: 1 }] }],
-      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 24 }] }),
+      repositories: [{ id: 2, name: 'Local' }, { id: 3, name: 'Offsite' }], agents: [{ id: 1, protocol_version: 26 }] }),
     defineEmits: () => () => {},
     useRoute: () => ({ query: {} }), useRouter: () => ({}), useQuasar: () => ({ notify: () => {} }),
     useChainStore: () => ({ saveChain: async (id, payload) => { assert.equal(id, 3); saved = payload } }),

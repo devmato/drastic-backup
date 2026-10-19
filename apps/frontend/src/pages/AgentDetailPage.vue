@@ -273,7 +273,7 @@ const restoreDialogOpen = ref(false)
 const backupDialogOpen = ref(false)
 const retentionDialogOpen = ref(false)
 const retentionRepositoryId = ref(null)
-const supportsRetention = computed(() => (agent.value?.protocol_version || 0) >= 25)
+const supportsRetention = computed(() => (agent.value?.protocol_version || 0) >= 26)
 const canStartRetention = computed(() => agent.value?.online && supportsRetention.value
   && agentRepositories.value.some(repository => repository.id === retentionRepositoryId.value))
 
@@ -315,7 +315,7 @@ const agentActions = computed(() => [
     name: 'retention', title: 'Run retention', icon: 'auto_delete', color: 'primary',
     description: supportsRetention.value
       ? 'Apply configured retention policies to an assigned repository.'
-      : 'Update this agent to protocol 25 to run retention manually.',
+      : 'Update this agent to protocol 26 to run retention manually.',
     disable: !supportsRetention.value,
     run: () => {
       if (!agent.value?.online || !supportsRetention.value || pendingActions.value.retention) return

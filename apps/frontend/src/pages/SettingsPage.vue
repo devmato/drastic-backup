@@ -8,8 +8,9 @@
             <h2 class="text-h6 q-mt-none q-mb-md">Preferences</h2>
             <q-select v-model="scheduleTimezone" outlined :dense="!$q.platform.has.touch" hide-bottom-space use-input hide-selected fill-input :input-debounce="0"
               :options="filteredTimezones" label="Zeitzone" :disable="timezoneBusy || !timezones.length"
-              hint="Applies to all your job and backup chain schedules. Offline agents receive changes on their next synchronization."
+              hint="Applies to job schedules, backup chains and retention rules. Until a time zone is set, UTC is used; login can initialize it from your browser. Offline agents receive changes on their next synchronization."
               :rules="[required]" @filter="filterTimezones" />
+            <div v-if="!userStore.user?.schedule_timezone" class="text-caption q-mt-sm">Effective time zone: UTC (standard)</div>
             <q-banner v-if="timezoneError" class="q-mt-md bg-negative text-white">{{ timezoneError }}</q-banner>
           </q-card-section>
           <q-card-actions align="right" class="q-pa-md">

@@ -600,7 +600,7 @@ def test_new_operation_rejects_cross_agent_references(monkeypatch, foreign_refer
                 location="rest:http://repo.test/owner",
             )
             job = Job(agent=owner, name="Owner job", type=JobType.file, config={"paths": []})
-            retention = Retention(user=owner_user, name="Owner retention", keep_last=1)
+            retention = Retention(user=owner_user, name="Owner retention", rules=[{"type": "last", "count": 1}])
             schedule = JobSchedule(
                 job=job,
                 repository=repository,

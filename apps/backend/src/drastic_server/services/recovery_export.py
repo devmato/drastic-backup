@@ -168,11 +168,7 @@ def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
                 {
                     "id": retention.id,
                     "name": retention.name,
-                    "keep_last": retention.keep_last,
-                    "keep_hourly": retention.keep_hourly,
-                    "keep_weekly": retention.keep_weekly,
-                    "keep_monthly": retention.keep_monthly,
-                    "keep_yearly": retention.keep_yearly,
+                    "rules": retention.rules,
                 }
                 for retention in retentions
             ],

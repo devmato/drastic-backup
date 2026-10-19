@@ -46,7 +46,7 @@ def request(uuid="chain-step"):
 
 def test_admission_validates_current_job_policy_not_stale_command_policy(agent):
     jobs.update({"id": 17, "retention_id": 1}, ["id"])
-    retentions.insert({"id": 1, "name": "Current", "keep_last": 2})
+    retentions.insert({"id": 1, "name": "Current", "rules": [{"type": "last", "count": 2}]})
     args = {**request()["args"], "retention_id": 999}
     assert agent._Agent__validate_run_job_admission(args) is None
     retentions.delete(id=1)

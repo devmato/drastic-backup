@@ -5,6 +5,7 @@
         <q-btn unelevated no-caps no-wrap color="primary" icon="add" label="Add Retention Policy" @click="showManageDialog(null)" />
       </template>
     </PageHeader>
+    <div class="text-caption q-mb-md">Calendar time zone: {{ userStore.user?.schedule_timezone || 'UTC (standard)' }}. Uses your account settings, including for existing policies.</div>
     <q-select class="q-mb-md" outlined :dense="!$q.platform.has.touch" hide-bottom-space
       :model-value="defaultRetentionId" :options="defaultOptions" label="Default retention policy" emit-value map-options
       hint="Applies to jobs using the default and to backups of deleted jobs. Without a default, deleted-job backups are retained. Selecting a policy also applies it to existing backups."
@@ -14,6 +15,7 @@
     </q-card>
     <q-table
       v-else
+      wrap-cells
       hide-no-data
       :rows="retentionStore.retentions"
       :columns="columns"
@@ -26,15 +28,7 @@
     >
       <template v-slot:body-cell-policy="props">
         <q-td :props="props">
-          <span v-if="props.row.rtype === 'count'">
-            <strong>Last:</strong> {{ props.row.keep_last }} backup runs
-          </span>
-          <span v-else>
-            <strong>Hourly:</strong> {{ props.row.keep_hourly || 'Disabled' }}
-            <strong>Weekly:</strong> {{ props.row.keep_weekly || 'Disabled' }}
-            <strong>Monthly:</strong> {{ props.row.keep_monthly || 'Disabled' }}
-            <strong>Yearly:</strong> {{ props.row.keep_yearly || 'Disabled' }}
-          </span>
+          <div v-for="(rule, index) in props.row.rules" :key="index">{{ describeRetentionRule(rule) }}</div>
         </q-td>
       </template>
       <template v-slot:body-cell-actions="props">
@@ -61,11 +55,14 @@ import TableActionButton from 'components/TableActionButton.vue'
 import { computed, ref, onMounted } from 'vue'
 import { useQuasar } from 'quasar'
 import { useRetentionStore } from 'stores/retention'
+import { useUserStore } from 'stores/user'
+import { describeRetentionRule } from 'src/utils/retention-rules'
 import { getApiErrorMessage, shouldIgnoreApiError } from 'src/utils/api-error'
 import RetentionManageDialog from 'components/retentions/RetentionManageDialog.vue'
 
 const $q = useQuasar()
 const retentionStore = useRetentionStore()
+const userStore = useUserStore()
 const savingDefault = ref(false)
 const defaultRetentionId = computed(() => retentionStore.retentions.find(item => item.is_default)?.id || null)
 const defaultOptions = computed(() => [{ label: 'None', value: null }, ...retentionStore.retentions.map(item => ({ label: item.name, value: item.id }))])
@@ -89,7 +86,6 @@ const managing = ref(false)
 const columns = [
   { name: 'id', label: '#', field: 'id', align: 'left', sortable: true },
   { name: 'name', label: 'Name', field: 'name', align: 'left', sortable: true },
-  { name: 'rtype', label: 'Type', field: row => row.rtype === 'count' ? 'Count' : 'Date', align: 'left' },
   { name: 'policy', label: 'Policy', field: 'id', align: 'left' },
   { name: 'actions', label: '', field: 'id', align: 'right' },
 ]

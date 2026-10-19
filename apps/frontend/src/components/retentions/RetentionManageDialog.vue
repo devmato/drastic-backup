@@ -1,94 +1,81 @@
 <template>
   <q-dialog v-model="dialogVisible" persistent>
     <q-card class="db-dialog-card-md">
-      <q-card-section>
-        <div class="text-h6">{{ isEdit ? 'Edit Retention Policy' : 'Add Retention Policy' }}</div>
-      </q-card-section>
-
+      <q-card-section><div class="text-h6">{{ retention ? 'Edit Retention Policy' : 'Add Retention Policy' }}</div></q-card-section>
       <q-form @submit="submitForm">
-        <q-card-section class="q-gutter-sm">
-          <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="form.name" label="Name" :rules="[val => !!val || 'Required']" />
-          <q-btn-toggle v-model="form.rtype" :options="typeOptions" class="q-mb-sm" />
-
-          <q-input v-if="form.rtype === 'count'" outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_last" label="Keep last backup runs" type="number" :rules="[val => val >= 1 || 'Must be at least 1']" />
-
-          <template v-if="form.rtype === 'date'">
-            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_hourly" label="Keep hourly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_weekly" label="Keep weekly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_monthly" label="Keep monthly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model.number="form.keep_yearly" label="Keep yearly" type="number" :rules="[val => val >= 0 || 'Must be >= 0']" />
-            <div class="text-caption">0 disables this rule.</div>
-          </template>
+        <q-card-section class="q-gutter-md">
+          <q-input v-model="form.name" outlined :dense="!$q.platform.has.touch" hide-bottom-space label="Name" maxlength="255"
+            :disable="submitting" :rules="[val => !!val?.trim() || 'Required']" />
+          <div class="row items-center justify-between q-gutter-sm">
+            <div class="text-subtitle1">Retention rules</div>
+            <q-btn flat no-caps color="primary" icon="add" label="Add rule" :disable="submitting || form.rules.length >= 100" @click="editRule(null)" />
+          </div>
+          <q-list v-if="form.rules.length" bordered separator>
+            <q-item v-for="(rule, index) in form.rules" :key="index">
+              <q-item-section>{{ describeRetentionRule(rule) }}</q-item-section>
+              <q-item-section side>
+                <div class="row no-wrap">
+                  <TableActionButton icon="edit" label="Edit rule" :disable="submitting" @click="editRule(index)" />
+                  <TableActionButton icon="delete" label="Remove rule" color="negative" :disable="submitting" @click="form.rules.splice(index, 1)" />
+                </div>
+              </q-item-section>
+            </q-item>
+          </q-list>
+          <div v-else class="text-caption">Add at least one rule.</div>
+          <div class="text-caption">A backup is kept if any rule matches. The last confirmed complete backup is always kept.</div>
+          <div class="text-caption">Calendar time zone: {{ timezone }}</div>
+          <div v-if="error" role="alert" class="text-negative">{{ error }}</div>
         </q-card-section>
-
         <q-card-actions align="right" class="q-pa-md">
           <q-btn flat no-caps label="Cancel" :disable="submitting" v-close-popup />
-          <q-btn unelevated no-caps label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting" />
+          <q-btn unelevated no-caps label="Save" type="submit" color="primary" :loading="submitting" :disable="submitting || !form.rules.length" />
         </q-card-actions>
       </q-form>
     </q-card>
   </q-dialog>
+  <RetentionRuleDialog v-model="ruleDialogVisible" :rule="editedIndex === null ? null : form.rules[editedIndex]" :timezone="timezone" @submit="applyRule" />
 </template>
 
 <script setup>
-import { computed, reactive, watch } from 'vue'
-import { useQuasar } from 'quasar'
+import { computed, reactive, ref, watch } from 'vue'
+import TableActionButton from 'components/TableActionButton.vue'
+import RetentionRuleDialog from 'components/retentions/RetentionRuleDialog.vue'
+import { useUserStore } from 'stores/user'
+import { describeRetentionRule } from 'src/utils/retention-rules'
 
-const props = defineProps({
-  retention: { type: Object, default: null },
-  submitting: { type: Boolean, default: false },
-})
-
+const props = defineProps({ retention: { type: Object, default: null }, submitting: { type: Boolean, default: false } })
 const emit = defineEmits(['submit'])
+const dialogVisible = defineModel({ type: Boolean, required: true })
+const userStore = useUserStore()
+const timezone = computed(() => userStore.user?.schedule_timezone || 'UTC (standard)')
+const form = reactive({ name: '', rules: [] })
+const ruleDialogVisible = ref(false)
+const editedIndex = ref(null)
+const error = ref('')
 
-const $q = useQuasar()
-
-const typeOptions = [
-  { label: 'Count', value: 'count' },
-  { label: 'Date', value: 'date' },
-]
-
-const form = reactive({
-  name: '',
-  rtype: 'count',
-  keep_last: 1,
-  keep_hourly: 0,
-  keep_weekly: 0,
-  keep_monthly: 0,
-  keep_yearly: 0,
+watch(dialogVisible, open => {
+  if (!open) return
+  form.name = props.retention?.name || ''
+  form.rules = (props.retention?.rules || []).map(rule => ({ ...rule }))
+  error.value = ''
 })
 
-const isEdit = computed(() => Boolean(props.retention))
+function editRule(index) {
+  editedIndex.value = index
+  ruleDialogVisible.value = true
+}
 
-const dialogVisible = defineModel({ type: Boolean, required: true })
-
-function resetForm() {
-  const retention = props.retention
-  form.name = retention?.name || ''
-  form.rtype = retention?.rtype || 'count'
-  form.keep_last = retention?.keep_last || 1
-  form.keep_hourly = retention?.keep_hourly || 0
-  form.keep_weekly = retention?.keep_weekly || 0
-  form.keep_monthly = retention?.keep_monthly || 0
-  form.keep_yearly = retention?.keep_yearly || 0
+function applyRule(rule) {
+  if (editedIndex.value === null) form.rules.push(rule)
+  else form.rules[editedIndex.value] = rule
+  error.value = ''
 }
 
 function submitForm() {
-  if (form.rtype === 'date' && ![form.keep_hourly, form.keep_weekly, form.keep_monthly, form.keep_yearly].some(value => Number(value) > 0)) {
-    $q.notify({ message: 'For date retentions, at least one keep_* value must be greater than 0', color: 'red', position: 'top' })
+  if (!form.rules.length) {
+    error.value = 'Add at least one retention rule.'
     return
   }
-
-  emit('submit', { ...form })
+  emit('submit', { name: form.name.trim(), rules: form.rules.map(rule => ({ ...rule })) })
 }
-
-watch(dialogVisible, value => {
-  if (value) resetForm()
-})
-
-watch(() => props.retention, () => {
-  if (dialogVisible.value) resetForm()
-})
-
-defineOptions({ name: 'RetentionManageDialog' })
 </script>

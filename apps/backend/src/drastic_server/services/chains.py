@@ -13,8 +13,8 @@ from sqlalchemy.exc import IntegrityError
 
 from drastic_common.agent.commands import (
     AGENT_PROTOCOL_VERSION,
-    BACKUP_COMPLETION_PROTOCOL,
     BACKUP_RETRY_PROTOCOL,
+    RETENTION_RULES_PROTOCOL,
     AgentCommandName,
 )
 from drastic_common.backup_retry import BackupRetrySchema, retry_allowed
@@ -44,7 +44,7 @@ from drastic_server.services.jobs.configuration import (
 )
 from drastic_server.services.queries import require_result
 
-CHAIN_PROTOCOL = BACKUP_COMPLETION_PROTOCOL
+CHAIN_PROTOCOL = RETENTION_RULES_PROTOCOL
 CHAIN_DISPATCH_WORKERS = 4
 TERMINAL_STEPS = {"success", "warning", "failed", "cancelled", "skipped"}
 

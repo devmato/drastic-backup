@@ -235,9 +235,9 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
     foreign_id = resticapi.backup([str(source)], tags=[f"drastic-owner:{FOREIGN}",
         f"job_uuid:{job_uuids[83]}", f"operation_uuid:{uuid4()}", f"artifact_uuid:{uuid4()}",
         "artifact_key:default", RUN_COMPLETE_TAG])["snapshot_id"]
-    backend = Backend(job_uuids=list(job_uuids.values()), default={"keep_last": 3})
+    backend = Backend(job_uuids=list(job_uuids.values()), default={"rules": [{"type": "last", "count": 3}]})
     agent = _RetentionAgent(resticapi, {"id": 73, "kind": "custom", "location": repository.location}, settings, monkeypatch, backend)
-    retentions.insert({"id": 73, "keep_last": 1})
+    retentions.insert({"id": 73, "rules": [{"type": "last", "count": 1}]})
     for job_id, job_uuid in job_uuids.items():
         jobs.insert({"id": job_id, "uuid": job_uuid, "retention_id": 73})
     latest = []

@@ -130,6 +130,7 @@ def test_agent_deletion_waits_for_running_operations(restore_api, kind):
 
 def test_running_report_cannot_be_deleted_after_its_job_is_deleted(restore_api, monkeypatch):
     client, _, agent, _, job, _ = restore_api
+    agent.protocol_version = 26
     monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
     repository = agent.repositories[0]
     operation = AgentOperation(agent=agent, job=job, repository=repository,
@@ -164,7 +165,8 @@ def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_ap
     log = AgentOperationLog(operation=source, sequence=1, level="info", message="Backup complete")
     db.session.add_all([source, artifact, log])
     db.session.commit()
-    policy = create_retention(user.id, {"name": "Keep two", "rtype": "count", "keep_last": 2})
+    observer.protocol_version = 26
+    policy = create_retention(user.id, {"name": "Keep two", "rules": [{"type": "last", "count": 2}]})
     update_retention(user.id, policy.id, {"is_default": True})
     job_uuid = job.uuid
     assert request.retention_context(repository.id)["job_uuids"] == [job_uuid]
@@ -173,7 +175,7 @@ def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_ap
     delete_job(user.id, job.id)
     assert source.data["cleanup_pending"] is False
     assert request.retention_context(repository.id)["job_uuids"] == []
-    assert request.retention_context(repository.id)["default"]["keep_last"] == 2
+    assert request.retention_context(repository.id)["default"]["rules"][0]["count"] == 2
     db.session.execute(AgentOperation.__table__.update().where(AgentOperation.id == source.id).values(
         data={**source.data, "retention_state": "success"}))
     delete_agent(user.id, agent.id)
@@ -188,8 +190,8 @@ def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_ap
         get_operation(foreign.user_id, source.id)
     context = request.retention_context(repository.id)
     assert context["owner_uuid"] == owner
-    update_retention(user.id, policy.id, {"keep_last": 3})
-    assert request.retention_context(repository.id)["default"]["keep_last"] == 3
+    update_retention(user.id, policy.id, {"rules": [{"type": "last", "count": 3}]})
+    assert request.retention_context(repository.id)["default"]["rules"][0]["count"] == 3
     context = request.retention_context(repository.id)
     delete_operation(user.id, source.id)
     assert request.retention_context(repository.id) == context
@@ -197,7 +199,7 @@ def test_reports_remain_owned_and_usable_after_job_and_agent_deletion(restore_ap
 
 def test_live_context_includes_all_owned_jobs_only(restore_api):
     _, _, agent, foreign, job, _ = restore_api
-    agent.protocol_version = 23
+    agent.protocol_version = 26
     offline = Agent(user=agent.user, secret="offline")
     disabled = Job(agent=offline, name="Disabled", type=JobType.file, retention_mode="disabled")
     foreign_job = Job(agent=foreign, name="Foreign", type=JobType.file)
@@ -212,22 +214,55 @@ def test_live_context_includes_all_owned_jobs_only(restore_api):
     request = AgentRequestService(agent)
     context = request.retention_context(agent.repositories[0].id)
     assert set(context.pop("job_uuids")) == {job.uuid, disabled.uuid}
-    assert context == {"owner_uuid": agent.user.backup_owner_uuid, "default": None,
+    assert context == {"owner_uuid": agent.user.backup_owner_uuid, "default": None, "timezone": "UTC",
                        "running_operation_uuids": [running.uuid], "check_token": agent.repositories[0].retention_check_token}
     assert request.sync()["backup_owner_uuid"] == context["owner_uuid"] != foreign.user.backup_owner_uuid
-    default = create_retention(agent.user_id, {"name": "Default", "rtype": "count", "keep_last": 2})
+    default = create_retention(agent.user_id, {"name": "Default", "rules": [{"type": "last", "count": 2}]})
     update_retention(agent.user_id, default.id, {"is_default": True})
-    custom = create_retention(agent.user_id, {"name": "Custom", "rtype": "count", "keep_last": 3})
+    custom = create_retention(agent.user_id, {"name": "Custom", "rules": [{"type": "last", "count": 3}]})
     job.retention_mode, job.retention = "custom", custom
     db.session.commit()
     context = request.retention_context(agent.repositories[0].id, include_policies=True)
     assert set(context["job_policies"]) == {job.uuid, disabled.uuid}
-    assert context["job_policies"][job.uuid]["keep_last"] == 3
-    assert context["job_policies"][disabled.uuid] is None and context["default"]["keep_last"] == 2
+    assert context["job_policies"][job.uuid]["rules"][0]["count"] == 3
+    assert context["job_policies"][disabled.uuid] is None and context["default"]["rules"][0]["count"] == 2
     with pytest.raises(AgentException, match="not assigned"):
         AgentRequestService(foreign).retention_context(agent.repositories[0].id)
     with pytest.raises(AgentException, match="not assigned"):
         AgentRequestService(offline).retention_context(agent.repositories[0].id)
+
+
+def test_retention_crud_validates_rules_and_context_uses_effective_account_zone(restore_api, monkeypatch):
+    client, _, agent, foreign, _, _ = restore_api
+    agent.protocol_version = 26
+    monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
+    rules = [{"type": "last", "count": 2}, {"type": "calendar", "period": "week", "count": 4, "weekday": 6},
+             {"type": "recent", "months": 1}, {"type": "since", "date": "2026-01-01"}]
+    response = client.post("/api/retentions/", json={"name": "Flexible", "rules": rules})
+    assert response.status_code == 201
+    policy_id = response.json["id"]
+    assert client.get(f"/api/retentions/{policy_id}").json["rules"] == rules
+    assert client.put(f"/api/retentions/{policy_id}", json={"rules": []}).status_code == 422
+    assert client.put(f"/api/retentions/{policy_id}", json={"keep_last": 1}).status_code == 422
+    assert client.put(f"/api/retentions/{policy_id}", json={"rules": [{"type": "calendar", "period": "week", "count": 1}]}).status_code == 422
+    assert client.get(f"/api/retentions/{policy_id}").json["rules"] == rules
+    assert client.put(f"/api/retentions/{policy_id}", json={"is_default": True}).status_code == 200
+    request = AgentRequestService(agent)
+    assert request.retention_context(agent.repositories[0].id)["timezone"] == "UTC"
+    agent.user.schedule_timezone = "Europe/Berlin"
+    db.session.commit()
+    context = request.retention_context(agent.repositories[0].id)
+    assert context["timezone"] == "Europe/Berlin" and context["default"] == {"rules": rules}
+    assert request.sync()["retentions"][0]["rules"] == rules
+    from drastic_server.services.retention import get_retention
+    with pytest.raises(ResourceNotFound):
+        get_retention(foreign.user_id, policy_id)
+    agent.protocol_version = 25
+    with pytest.raises(AgentException, match="protocol 26"):
+        request.retention_context(agent.repositories[0].id)
+    with pytest.raises(AgentException, match="protocol 26"):
+        request.sync()
+    assert client.delete(f"/api/retentions/{policy_id}").status_code == 200
 
 
 @pytest.mark.parametrize("wrong", [None, "owner", "snapshot", "repository", "other_agent"])
@@ -258,6 +293,7 @@ def test_repository_results_update_only_matching_owned_artifacts(restore_api, wr
 
 def test_cleanup_results_do_not_change_retention_context_and_replay_cannot_undo_them(restore_api):
     _, _, agent, _, job, _ = restore_api
+    agent.protocol_version = 26
     repository = agent.repositories[0]
     source = AgentOperation(agent=agent, job=job, repository=repository, type=AgentOperationType.backup,
                             state=AgentOperationState.success, data={"job_uuid": job.uuid})
@@ -388,7 +424,7 @@ def test_retention_retries_share_original_history_and_logs(restore_api, monkeypa
 @pytest.mark.parametrize("outcome", ["accepted", "unknown", "busy"])
 def test_manual_retention_uses_committed_operation_and_preserves_unknown_dispatch(restore_api, monkeypatch, outcome):
     client, _, agent, _, _, _ = restore_api
-    agent.protocol_version = 25
+    agent.protocol_version = 26
     db.session.commit()
 
     def send(selected_agent, **kwargs):
@@ -413,7 +449,7 @@ def test_manual_retention_uses_committed_operation_and_preserves_unknown_dispatc
 @pytest.mark.parametrize("invalid", ["foreign_agent", "unassigned", "old_protocol"])
 def test_manual_retention_validates_before_reserving_history(restore_api, invalid):
     client, _, agent, foreign, _, _ = restore_api
-    agent.protocol_version = 25
+    agent.protocol_version = 26
     repository = agent.repositories[0]
     agent_id = agent.id
     expected = 422
@@ -422,7 +458,7 @@ def test_manual_retention_validates_before_reserving_history(restore_api, invali
     elif invalid == "unassigned":
         agent.repositories.clear()
     else:
-        agent.protocol_version = 24
+        agent.protocol_version = 25
     db.session.commit()
     response = client.post(f"/api/repositories/{repository.id}/retention", json={"agent_id": agent_id})
     assert response.status_code == expected

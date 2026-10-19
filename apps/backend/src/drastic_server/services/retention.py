@@ -26,14 +26,12 @@ def _sync_agents(user_id):
 
 def _apply(retention, data):
     retention.name = data["name"]
-    retention.keep_last = data["keep_last"] if data["rtype"] == "count" else None
-    for key in ("keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly"):
-        setattr(retention, key, None if data["rtype"] == "count" else data[key])
+    retention.rules = data["rules"]
 
 
 def create_retention(user_id, data):
     retention = Retention(user_id=user_id)
-    _apply(retention, data)
+    _apply(retention, RetentionCreateInputSchema().load(data))
     db.session.add(retention)
     db.session.commit()
     return retention
@@ -43,9 +41,7 @@ def update_retention(user_id, retention_id, data):
     user = require_result(User.query.filter_by(id=user_id))
     retention = get_retention(user_id, retention_id)
     db.session.refresh(retention, with_for_update=True)
-    payload = {"name": data.get("name", retention.name), "rtype": data.get("rtype", retention.rtype)}
-    for key in ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly"):
-        payload[key] = data.get(key, getattr(retention, key) or 0)
+    payload = {"name": data.get("name", retention.name), "rules": data.get("rules", retention.rules)}
     _apply(retention, RetentionCreateInputSchema().load(payload))
     if data.get("is_default"):
         user.default_retention_id = retention.id

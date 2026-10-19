@@ -104,10 +104,10 @@ def test_job_retention_defaults_ownership_and_sync(restore_api, monkeypatch):
     from drastic_server.services.jobs.configuration import configure_job_retention
 
     client, _, agent, foreign, job, _ = restore_api
-    agent.protocol_version = 23
-    policy = Retention(user_id=agent.user_id, name="Default", keep_last=3)
-    second = Retention(user_id=agent.user_id, name="Other", keep_last=2)
-    other = Retention(user_id=foreign.user_id, name="Foreign", keep_last=1)
+    agent.protocol_version = 26
+    policy = Retention(user_id=agent.user_id, name="Default", rules=[{"type": "last", "count": 3}])
+    second = Retention(user_id=agent.user_id, name="Other", rules=[{"type": "last", "count": 2}])
+    other = Retention(user_id=foreign.user_id, name="Foreign", rules=[{"type": "last", "count": 1}])
     db.session.add_all([policy, second, other])
     db.session.commit()
     monkeypatch.setattr(AgentService, "sync", lambda *a, **kw: None)
@@ -118,7 +118,7 @@ def test_job_retention_defaults_ownership_and_sync(restore_api, monkeypatch):
                                        (second.id, False, None), (policy.id, True, policy.id)]:
         assert client.put(f"/api/retentions/{target}", json={"is_default": selected}).status_code == 200
         assert job.effective_retention_id == expected
-    assert client.put(f"/api/retentions/{policy.id}", json={"keep_last": 4}).status_code == 200
+    assert client.put(f"/api/retentions/{policy.id}", json={"rules": [{"type": "last", "count": 4}]}).status_code == 200
     assert client.get("/api/retentions/").json[0]["is_default"] is True
     configure_job_retention(agent.user_id, job, {"retention_mode": "disabled"})
     assert job.effective_retention_id is None

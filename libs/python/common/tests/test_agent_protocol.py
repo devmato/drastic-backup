@@ -54,7 +54,7 @@ def test_agent_sync_schema_dumps_backend_like_objects():
             "agent_uuid": "550e8400-e29b-41d4-a716-446655440000",
             "backup_owner_uuid": "00000000-0000-0000-0000-000000000003",
             "repositories": [Value(id=1, kind="custom", location="rest:http://repo", environment={})],
-            "retentions": [Value(id=1, name="Daily", keep_last=1)],
+            "retentions": [Value(id=1, name="Daily", rules=[{"type": "last", "count": 1}])],
             "jobs": [Value(id=1, uuid="job-1", type=Value(name="file"), config={"paths": []}, effective_retention_id=1)],
             "actions": [Value(id=1, job_id=1, module=Value(name="command"), hook="start", data={})],
             "schedules": [

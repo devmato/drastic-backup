@@ -160,7 +160,7 @@ def test_configuration_schemas_keep_debug_fields_and_exclude_credentials(context
     client, users, agents, _ = context
     repository = Repository(user=users[0], name="Repo", kind="custom", location="sftp:user:hidden@host:/backup")
     job = Job(agent=agents[0], name="Files", type="file")
-    policy = Retention(user=users[0], name="Keep three", keep_last=3)
+    policy = Retention(user=users[0], name="Keep three", rules=[{"type": "last", "count": 3}])
     job.retention = policy
     job.retention_mode = "custom"
     schedule = JobSchedule(job=job, repository=repository, enabled=True, cron_string="* * * * *")
@@ -174,7 +174,7 @@ def test_configuration_schemas_keep_debug_fields_and_exclude_credentials(context
     repo_data = tool(client, token, "inspect_configuration", kind="repository", id=repository.id)
     assert "hidden" not in repo_data["location"] and "environment" not in repo_data
     assert tool(client, token, "inspect_configuration", kind="schedule", id=schedule.id)["cron"] == "* * * * *"
-    assert tool(client, token, "inspect_configuration", kind="retention", id=policy.id)["keep_last"] == 3
+    assert tool(client, token, "inspect_configuration", kind="retention", id=policy.id)["rules"] == [{"type": "last", "count": 3}]
 
 
 def test_browser_diagnostics_reject_foreign_operations_and_disabled_recording(context):

@@ -76,7 +76,7 @@
                 </q-card-section>
               </q-card>
               <q-btn outline no-caps icon="add" color="primary" label="Add Job" :disable="!jobs.length || form.steps.length >= 100" @click="form.steps.push(newStep())" />
-              <div class="text-caption">Jobs require agent protocol 23 or newer. Each job's retention policy applies.</div>
+              <div class="text-caption">Jobs require agent protocol 26 or newer. Each job's retention policy applies.</div>
               <q-separator class="q-my-md" />
               <div class="text-subtitle1">Schedules</div>
               <SchedulesPanel v-model="form.schedules" time-only />
@@ -182,7 +182,7 @@ function selectJob(step) {
 }
 const jobOptions = computed(() => jobs.value.map(job => {
   const protocol = props.agents.find(agent => agent.id === job.agent_id)?.protocol_version || 0
-  return { label: `${job.name} · ${job.agent_name}${protocol < 24 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 24 }
+  return { label: `${job.name} · ${job.agent_name}${protocol < 26 ? ' (update agent required)' : ''}`, value: job.id, disable: protocol < 26 }
 }))
 function moveStep(index, offset) {
   const [step] = form.steps.splice(index, 1)

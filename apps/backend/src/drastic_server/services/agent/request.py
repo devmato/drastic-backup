@@ -3,7 +3,7 @@
 from drastic_common.agent.commands import (
     BACKUP_RETRY_PROTOCOL,
     PATH_INCLUDE_EXCEPTIONS_PROTOCOL,
-    SCHEDULE_TIMEZONE_PROTOCOL,
+    RETENTION_RULES_PROTOCOL,
 )
 from drastic_common.backup_selection import requires_include_exceptions
 from drastic_server.models.agent import (
@@ -80,28 +80,27 @@ class AgentRequestService:
                            if item.id == int(repository_id) and item.user_id == self.agent.user_id), None)
         if repository is None:
             raise AgentException("Repository is not assigned to this agent")
+        if (self.agent.protocol_version or 0) < RETENTION_RULES_PROTOCOL:
+            raise AgentException(f"Update the agent for retention rules (protocol {RETENTION_RULES_PROTOCOL})")
         policy = Retention.query.filter_by(id=self.agent.user.default_retention_id, user_id=self.agent.user_id).first()
         context = {
             "owner_uuid": self.agent.user.backup_owner_uuid,
+            "timezone": self.agent.user.effective_schedule_timezone,
             "running_operation_uuids": [uuid for (uuid,) in AgentOperation.query.with_entities(AgentOperation.uuid).filter_by(
                 user_id=self.agent.user_id, repository_id=repository.id, type=AgentOperationType.backup,
                 state=AgentOperationState.running)],
             "check_token": repository.retention_check_token,
             "job_uuids": [uuid for (uuid,) in Job.query.with_entities(Job.uuid).join(Agent).filter(Agent.user_id == self.agent.user_id)],
-            "default": {key: getattr(policy, key) for key in
-                         ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")} if policy else None,
+            "default": {"rules": policy.rules} if policy else None,
         }
-        # Older agents validate the context's exact keys; extend it only on explicit request.
         if include_policies:
-            policies = {item.id: {key: getattr(item, key) for key in
-                        ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
+            policies = {item.id: {"rules": item.rules}
                         for item in Retention.query.filter_by(user_id=self.agent.user_id)}
             context["job_policies"] = {job.uuid: policies.get(job.effective_retention_id)
                 for job in Job.query.join(Agent).filter(Agent.user_id == self.agent.user_id)}
         return context
 
     def sync(self):
-        from drastic_common.agent.commands import JOB_RETENTION_PROTOCOL
         from drastic_server.models.job import Job, JobAction, JobSchedule
         from drastic_server.models.retention import Retention
         from drastic_server.schemas.sync import SyncSchema
@@ -126,10 +125,8 @@ class AgentRequestService:
         if (self.agent.protocol_version or 0) < 12 and any(schedule.config.get("timing") for schedule in agent_schedules):
             raise AgentException("Update the agent before syncing schedule types (protocol 12)")
 
-        if (self.agent.protocol_version or 0) < JOB_RETENTION_PROTOCOL:
-            raise AgentException(f"Update the agent for job retention (protocol {JOB_RETENTION_PROTOCOL})")
-        if agent_schedules and (self.agent.protocol_version or 0) < SCHEDULE_TIMEZONE_PROTOCOL:
-            raise AgentException(f"Update the agent for account time zones (protocol {SCHEDULE_TIMEZONE_PROTOCOL})")
+        if (self.agent.protocol_version or 0) < RETENTION_RULES_PROTOCOL:
+            raise AgentException(f"Update the agent for retention rules (protocol {RETENTION_RULES_PROTOCOL})")
         return SyncSchema().dump(
             {
                 "agent_uuid": self.agent.uuid,

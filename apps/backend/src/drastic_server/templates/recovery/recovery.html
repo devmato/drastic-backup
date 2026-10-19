@@ -217,16 +217,11 @@
   <section>
     <h2>Retention policies</h2>
     <p>Default policy ID: {{ export.user.default_retention_id or "None" }}. The default also applies to backups of deleted jobs.</p>
+    <p>All retention rules use account time zone {{ export.user.schedule_timezone }}.</p>
     {% for retention in export.retentions %}
       <div class="item">
         <h3>{{ retention.name }} <small>(ID {{ retention.id }})</small></h3>
-        <table>
-          <tr><th>Keep last</th><td>{{ retention.keep_last if retention.keep_last is not none else "Not set" }}</td></tr>
-          <tr><th>Keep hourly</th><td>{{ retention.keep_hourly if retention.keep_hourly is not none else "Not set" }}</td></tr>
-          <tr><th>Keep weekly</th><td>{{ retention.keep_weekly if retention.keep_weekly is not none else "Not set" }}</td></tr>
-          <tr><th>Keep monthly</th><td>{{ retention.keep_monthly if retention.keep_monthly is not none else "Not set" }}</td></tr>
-          <tr><th>Keep yearly</th><td>{{ retention.keep_yearly if retention.keep_yearly is not none else "Not set" }}</td></tr>
-        </table>
+        <ul>{% for rule in retention.rules %}<li><code>{{ rule | tojson }}</code></li>{% endfor %}</ul>
       </div>
     {% else %}<p>No retention policies.</p>{% endfor %}
   </section>

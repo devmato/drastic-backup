@@ -6,7 +6,7 @@ import dataset
 
 from drastic_agent.config import DefaultConfig, env_value
 
-CURRENT_SCHEMA_VERSION = 7
+CURRENT_SCHEMA_VERSION = 8
 
 
 def _agent_data_dir() -> str:
@@ -202,6 +202,17 @@ def initialize_schema():
         # Old schedule selections must never execute after the policy reset.
         db.query("UPDATE job_schedules SET retention_id = NULL")
         agent_schema.upsert({"name": "agent", "version": 7}, ["name"])
+
+    if current < 8:
+        retentions.create_column("rules", db.types.json)
+        with db:
+            for row in retentions.all():
+                rules = [{"type": "last", "count": row[key], **({"period": period} if period else {})}
+                         for key, period in (("keep_last", None), ("keep_hourly", "hour"),
+                                             ("keep_weekly", "week"), ("keep_monthly", "month"), ("keep_yearly", "year"))
+                         if (row.get(key) or 0) > 0]
+                retentions.update({"id": row["id"], "rules": rules}, ["id"])
+            agent_schema.upsert({"name": "agent", "version": 8}, ["name"])
 
 initialize_schema()
 

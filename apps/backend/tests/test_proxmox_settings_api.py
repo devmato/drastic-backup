@@ -122,7 +122,7 @@ def test_registration_sync_and_agent_api_share_server_owned_uuid(api_client):
     registered = db.session.get(Agent, data["identifier"])
     assert data["uuid"] == registered.uuid != existing.uuid
     assert UUID(registered.uuid).version == 4
-    registered.protocol_version = 23
+    registered.protocol_version = 26
     assert AgentRequestService(registered).sync()["agent_uuid"] == registered.uuid
     registered.hostname = "replacement-container"
     db.session.commit()

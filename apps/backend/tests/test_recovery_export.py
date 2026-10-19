@@ -112,7 +112,7 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app, mo
             version="1.2.3",
         )
         agent.repositories.append(repository)
-        retention = Retention(user=user, name="Daily", keep_last=5, keep_weekly=2)
+        retention = Retention(user=user, name="Daily", rules=[{"type": "last", "count": 5}, {"type": "last", "period": "week", "count": 2}])
         job = Job(agent=agent, name="Files <nightly>", type=AgentJobType.file, retention=retention, retention_mode="custom")
         job.config = {"paths": [{"path": "/srv/<important>", "group": "folder"}]}
         action = JobAction(
@@ -221,6 +221,9 @@ def test_recovery_export_zip_contains_scoped_escaped_reconstruction_data(app, mo
         assert "<script>alert(2)</script>" not in html
         assert "other-chain-DO-NOT-EXPORT" not in html
         assert "Daily" in html
+        retention_html = html.split("<h2>Retention policies</h2>", 1)[1].split("</section>", 1)[0]
+        assert [json.loads(value) for value in re.findall(r"<li><code>(.*?)</code></li>", retention_html)] == retention.rules
+        assert "account time zone UTC" in retention_html
         assert "SSH/SFTP target access and private agent SSH material are not included" in html
         assert "Proxmox credentials and host prerequisites are not included" in html
         assert "Native repository storage must be separately backed up" in html

@@ -13,6 +13,7 @@ from drastic_common.agent.enums import (
     AgentRepositoryKind,
 )
 from drastic_common.backup_retry import BackupRetrySchema
+from drastic_common.retention import RetentionRuleSchema
 
 _JOB_TYPE_NAMES = tuple(AgentJobType.__members__)
 _ACTION_MODULE_NAMES = tuple(AgentJobActionModule.__members__)
@@ -171,11 +172,7 @@ class AgentSecretEnvelopeSchema(Schema):
 class AgentRetentionSchema(Schema):
     id = fields.Integer(required=True)
     name = fields.String(required=True)
-    keep_last = fields.Integer(allow_none=True)
-    keep_hourly = fields.Integer(allow_none=True)
-    keep_weekly = fields.Integer(allow_none=True)
-    keep_monthly = fields.Integer(allow_none=True)
-    keep_yearly = fields.Integer(allow_none=True)
+    rules = fields.List(fields.Nested(RetentionRuleSchema), required=True)
 
 
 class AgentJobSchema(Schema):

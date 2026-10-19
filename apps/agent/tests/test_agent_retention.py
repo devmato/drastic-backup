@@ -19,21 +19,99 @@ from drastic_common.restic.snapshots import RUN_COMPLETE_TAG
 A, B, OWNER, FOREIGN = (str(UUID(int=i)) for i in (1, 2, 3, 4))
 
 
-def test_retention_uses_utc_buckets_and_combines_count_and_calendar_rules():
+def test_retention_uses_account_buckets_and_combines_rules():
     runs = [
         {"id": "new", "started": "2026-02-01T02:30:00+02:00"},
         {"id": "january", "started": "2026-02-01T01:30:00+02:00"},
         {"id": "december", "started": "2025-12-31T12:00:00+00:00"},
     ]
-    assert keep_operation_ids(runs, {"keep_monthly": 2}) == {"new", "january"}
-    assert keep_operation_ids(runs, {"keep_last": 1, "keep_yearly": 2}) == {"new", "december"}
+    now = datetime(2026, 2, 2, tzinfo=timezone.utc)
+    policy = {"rules": [{"type": "last", "period": "month", "count": 2}]}
+    assert keep_operation_ids(runs, policy, timezone_name="UTC", now=now) == {"new", "january"}
+    assert keep_operation_ids(runs, policy, timezone_name="Europe/Berlin", now=now) == {"new", "december"}
+    policy = {"rules": [{"type": "last", "count": 1}, {"type": "last", "period": "year", "count": 2}]}
+    assert keep_operation_ids(runs, policy, timezone_name="Europe/Berlin", now=now) == {"new", "december"}
+
+
+@pytest.mark.parametrize("period", [None, "hour", "day", "week", "month", "year"])
+def test_count_rules_keep_latest_runs_across_gaps(period):
+    runs = [{"id": "latest", "started": "2026-03-01T10:20:00Z"},
+            {"id": "same", "started": "2026-03-01T10:10:00Z"},
+            {"id": "old", "started": "2024-01-01T10:00:00Z"}]
+    rule = {"type": "last", "count": 2, **({"period": period} if period else {})}
+    assert keep_operation_ids(runs, {"rules": [rule]}, timezone_name="UTC",
+        now=datetime(2026, 3, 2, tzinfo=timezone.utc)) == {"latest", "old" if period else "same"}
+
+
+@pytest.mark.parametrize("rule,times,expected", [
+    ({"type": "calendar", "period": "day", "count": 2},
+     ["2026-03-08T02:00:00Z", "2026-03-08T01:00:00Z", "2026-03-07T01:00:00Z", "2026-03-06T01:00:00Z"], {1, 2}),
+    ({"type": "calendar", "period": "week", "count": 2, "weekday": 6},
+     ["2026-03-08T02:00:00Z", "2026-03-08T01:00:00Z", "2026-03-02T01:00:00Z", "2026-02-22T01:00:00Z"], {1}),
+    ({"type": "calendar", "period": "month", "count": 2, "day": 1},
+     ["2026-03-02T01:00:00Z", "2026-03-01T02:00:00Z", "2026-03-01T01:00:00Z", "2026-02-01T01:00:00Z", "2026-01-01T01:00:00Z"], {2, 3}),
+    ({"type": "calendar", "period": "month", "count": 2, "day": 31},
+     ["2026-03-01T01:00:00Z", "2026-02-28T01:00:00Z", "2026-01-31T01:00:00Z"], set()),
+    ({"type": "calendar", "period": "year", "count": 2, "month": 2},
+     ["2026-03-01T01:00:00Z", "2026-02-02T01:00:00Z", "2026-02-01T01:00:00Z", "2025-02-01T01:00:00Z", "2024-02-29T01:00:00Z"], {2, 3}),
+])
+def test_calendar_rules_keep_first_matches_and_do_not_fill_gaps(rule, times, expected):
+    runs = [{"id": index, "started": value} for index, value in enumerate(times)]
+    assert keep_operation_ids(runs, {"rules": [rule]}, timezone_name="Europe/Berlin",
+        now=datetime(2026, 3, 8, 12, tzinfo=timezone.utc)) == expected
+
+
+def test_period_rules_union_without_double_counting_or_intersection():
+    runs = [{"id": "latest", "started": "2026-03-08T10:00:00Z"},
+            {"id": "first", "started": "2026-03-08T01:00:00Z"},
+            {"id": "last-month", "started": "2026-02-01T01:00:00Z"},
+            {"id": "expired", "started": "2025-01-01T01:00:00Z"}]
+    rules = [{"type": "last", "count": 1}, {"type": "calendar", "period": "day", "count": 1},
+             {"type": "calendar", "period": "month", "count": 2, "day": 1}]
+    assert keep_operation_ids(runs, {"rules": rules}, timezone_name="Europe/Berlin",
+        now=datetime(2026, 3, 8, 12, tzinfo=timezone.utc)) == {"latest", "first", "last-month"}
+
+
+def test_recent_days_follow_local_dst_and_months_clamp_to_calendar_end():
+    runs = [{"id": "inside", "started": "2026-03-28T23:30:00Z"},
+            {"id": "outside", "started": "2026-03-28T23:29:59Z"}]
+    assert keep_operation_ids(runs, {"rules": [{"type": "recent", "days": 1}]},
+        timezone_name="Europe/Berlin", now=datetime.fromisoformat("2026-03-30T00:30:00+02:00")) == {"inside"}
+    runs = [{"id": "inside", "started": "2024-02-21T11:00:00Z"},
+            {"id": "outside", "started": "2024-02-21T10:59:59Z"}]
+    assert keep_operation_ids(runs, {"rules": [{"type": "recent", "months": 1, "weeks": 1, "days": 1}]},
+        timezone_name="Europe/Berlin", now=datetime.fromisoformat("2024-03-31T12:00:00+02:00")) == {"inside"}
+    assert keep_operation_ids(runs, {"rules": [{"type": "recent", "days": 365000, "weeks": 52000, "months": 12000}]},
+        timezone_name="Europe/Berlin", now=datetime.fromisoformat("2024-03-31T12:00:00+02:00")) == {"inside", "outside"}
+
+
+def test_hourly_thinning_distinguishes_repeated_dst_hours_and_since_uses_local_midnight():
+    runs = [{"id": "second", "started": "2026-10-25T01:30:00Z"},
+            {"id": "first", "started": "2026-10-25T00:30:00Z"},
+            {"id": "midnight", "started": "2026-10-24T22:00:00Z"}]
+    now = datetime(2026, 10, 25, 12, tzinfo=timezone.utc)
+    assert keep_operation_ids(runs, {"rules": [{"type": "last", "count": 2, "period": "hour"}]},
+        timezone_name="Europe/Berlin", now=now) == {"first", "second"}
+    assert keep_operation_ids(runs, {"rules": [{"type": "since", "date": "2026-10-25"}]},
+        timezone_name="Europe/Berlin", now=now) == {"first", "second"}
+
+
+def test_weekly_rules_cross_iso_year_boundaries_in_the_account_zone():
+    runs = [{"id": "sunday", "started": "2027-01-03T12:00:00Z"},
+            {"id": "friday", "started": "2027-01-01T12:00:00Z"},
+            {"id": "previous", "started": "2026-12-27T12:00:00Z"}]
+    now = datetime(2027, 1, 3, 20, tzinfo=timezone.utc)
+    for rule in ({"type": "last", "period": "week", "count": 2},
+                 {"type": "calendar", "period": "week", "count": 2, "weekday": 6}):
+        assert keep_operation_ids(runs, {"rules": [rule]}, timezone_name="Europe/Berlin", now=now) == {"sunday", "previous"}
 
 
 class Backend:
     def __init__(self, job_uuids=None, default=None, owner_uuid=OWNER):
         self.owner_uuid = owner_uuid
         self.job_uuids = [B] if job_uuids is None else job_uuids
-        self.default = {"keep_last": 1} if default is None else default
+        self.default = {"rules": [{"type": "last", "count": 1}]} if default is None else default
+        self.timezone = "UTC"
         self.running = []
         self.check_token = None
 
@@ -49,7 +127,7 @@ class Backend:
 
     def __call__(self):
         return deepcopy({"owner_uuid": self.owner_uuid, "job_uuids": self.job_uuids, "default": self.default,
-                         "check_token": self.check_token, "running_operation_uuids": self.running})
+                          "check_token": self.check_token, "running_operation_uuids": self.running, "timezone": self.timezone})
 
 
 class Repo:
@@ -134,7 +212,7 @@ def test_reportless_owned_runs_are_retained_together_while_foreign_and_legacy_sn
     assert repo.checks == [{"read_data": False, "read_data_subset": None}]
 
 
-@pytest.mark.parametrize("policy,remaining", [(None, 4), ({"keep_last": 1}, 2), ({"keep_last": 2}, 4)])
+@pytest.mark.parametrize("policy,remaining", [(None, 4), ({"rules": [{"type": "last", "count": 1}]}, 2), ({"rules": [{"type": "last", "count": 2}]}, 4)])
 def test_existing_jobs_use_only_the_executing_jobs_policy(settings, policy, remaining):
     repo, backend = Repo(), Backend(job_uuids=[A, B])
     repo.add_run(backend, number=10)
@@ -256,7 +334,7 @@ def test_current_run_counts_while_another_running_run_stays_protected(settings):
     current = repo.add_run(backend, number=11)
     current_uuid = str(UUID(int=11))
     backend.running = [str(UUID(int=9)), current_uuid]
-    assert execute(repo, backend, settings, job_uuid=A, policy={"keep_last": 1},
+    assert execute(repo, backend, settings, job_uuid=A, policy={"rules": [{"type": "last", "count": 1}]},
         current_operation_uuid=current_uuid).state == AgentReportState.success
     assert set(repo.items) == {a["snapshot_id"] for a in current + other}
     assert {item["id"] for item in repo.removed} == {a["snapshot_id"] for a in expired}
@@ -272,6 +350,44 @@ def test_new_check_failure_cannot_be_cleared_by_an_older_check(settings):
     repo.on_check = None
     assert execute(repo, backend, settings).state == AgentReportState.success
     assert [check["read_data"] for check in repo.checks] == [False, True]
+
+
+@pytest.mark.parametrize("invalid", ["missing-zone", "invalid-zone", "empty-rules", "unknown-rule", "legacy-policy", "changed-zone"])
+def test_invalid_or_changed_context_never_deletes_backups(settings, invalid):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+
+    def context():
+        value = backend()
+        if invalid == "missing-zone":
+            value.pop("timezone")
+        elif invalid == "invalid-zone":
+            value["timezone"] = "not/a-zone"
+        elif invalid == "empty-rules":
+            value["default"] = {"rules": []}
+        elif invalid == "unknown-rule":
+            value["default"] = {"rules": [{"type": "unknown"}]}
+        elif invalid == "legacy-policy":
+            value["default"] = {"keep_last": 1}
+        return value
+
+    if invalid == "changed-zone":
+        repo.on_check = lambda: setattr(backend, "timezone", "Europe/Berlin")
+    report = execute(repo, backend, settings, request=context)
+    assert report.state == AgentReportState.warning and report.data["cleanup_pending"]
+    assert not repo.removed and not repo.prune_calls
+
+
+@pytest.mark.parametrize("timestamp", [None, "invalid", "2026-01-01T00:00:00"])
+def test_missing_or_offsetless_snapshot_times_do_not_use_the_host_zone(settings, timestamp):
+    repo, backend = Repo(), Backend()
+    artifacts = repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    repo.items[artifacts[0]["snapshot_id"]]["time"] = timestamp
+    report = execute(repo, backend, settings)
+    assert report.state == AgentReportState.warning and not repo.removed
+    assert "invalid timestamp" in report.log
 
 
 def test_lock_conflicts_defer_cleanup_without_creating_an_integrity_block(settings, monkeypatch):
@@ -335,7 +451,7 @@ def test_repository_scope_uses_each_jobs_policy_and_default_only_for_orphans(set
     new_orphan = repo.add_run(backend, job=orphan, number=15)
 
     def context():
-        return {**backend(), "job_policies": {A: {"keep_last": 1}, **({} if missing_policy else {B: None})}}
+        return {**backend(), "job_policies": {A: {"rules": [{"type": "last", "count": 1}]}, **({} if missing_policy else {B: None})}}
 
     report = execute(repo, backend, settings, job_uuid=None, operation_uuid=str(UUID(int=102)),
         repository_scope=True, request=context)

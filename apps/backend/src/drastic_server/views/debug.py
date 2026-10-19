@@ -185,7 +185,7 @@ def configuration(user_id, kind, item_id):
         schema = AgentJobScheduleSchema(only=("id", "job_id", "repository_id", "enabled", "cron_string", "config"))
     else:
         item = Retention.query.filter_by(user_id=user_id, id=item_id).first()
-        schema = RetentionResponseSchema(exclude=("rtype", "created"))
+        schema = RetentionResponseSchema(exclude=("created",))
     if item is None:
         return None
     result = schema.dump(item)

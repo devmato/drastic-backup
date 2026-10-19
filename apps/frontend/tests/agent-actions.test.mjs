@@ -133,7 +133,7 @@ test('agent actions preserve confirmation, prevent duplicate runs and recover af
   assert.equal(action('update'), undefined)
   assert.equal(action('retention').disable, true)
   agent.online = true
-  agent.protocol_version = 25
+  agent.protocol_version = 26
   action('retention').run()
   assert.equal(page.retentionDialogOpen.value, true)
   await page.submitRetention()

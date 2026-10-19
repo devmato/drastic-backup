@@ -57,11 +57,11 @@ def setup(monkeypatch, tmp_path):
         db.create_all()
         user = User(name="admin")
         user.set_initial_password("account-password", recovery_key="user-recovery-key")
-        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=24) for i in range(2)]
+        agents = [Agent(user=user, secret="secret", alias=f"Agent {i}", protocol_version=26) for i in range(2)]
         for i, agent in enumerate(agents):
             AgentSession(agent=agent, request_sid=f"sid-{i}")
         repository = Repository(user=user, name="Storage", kind="custom", location="/backup")
-        retention = Retention(user=user, name="Keep two", keep_last=2)
+        retention = Retention(user=user, name="Keep two", rules=[{"type": "last", "count": 2}])
         jobs = [Job(agent=agent, name=f"Files {i}", type=JobType.file, config={"paths": [{"path": "/data", "group": "folder"}]}) for i, agent in enumerate(agents)]
         for agent in agents:
             agent.repositories.append(repository)
@@ -189,14 +189,14 @@ def test_old_agent_is_rejected_when_saving_and_skipped_without_waiting_at_dispat
     _, chain, jobs, calls = setup
     jobs[0].agent.protocol_version = 19
     db.session.commit()
-    with pytest.raises(ValueError, match="protocol 24"):
+    with pytest.raises(ValueError, match="protocol 26"):
         save_chain(chain, chain.user_id, {"steps": chain.steps})
     db.session.rollback()
     synced = []
     monkeypatch.setattr(AgentService, "sync", lambda agent, **kw: synced.append(agent.id) or {"state": AgentOperationState.success})
     run = start_chain(chain, now=NOW)
     advance_run(run.id, now=NOW)
-    assert run.steps[0]["state"] == "skipped" and "protocol 24" in run.steps[0]["reason"]
+    assert run.steps[0]["state"] == "skipped" and "protocol 26" in run.steps[0]["reason"]
     assert not calls and not synced
     advance_run(run.id, now=NOW)
     assert calls[0][1] == jobs[1].id
@@ -455,7 +455,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     from drastic_server.services.agent.request import AgentException, AgentRequestService
 
     app, chain, jobs, _ = setup
-    jobs[0].agent.protocol_version = 24
+    jobs[0].agent.protocol_version = 26
     db.session.commit()
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
@@ -478,9 +478,9 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
     assert '2027-02-01' in detail['cron_description']
     jobs[0].agent.protocol_version = 23
     db.session.commit()
-    with pytest.raises(AgentException, match="protocol 24"):
+    with pytest.raises(AgentException, match="protocol 26"):
         AgentRequestService(jobs[0].agent).sync()
-    jobs[0].agent.protocol_version = 24
+    jobs[0].agent.protocol_version = 26
     db.session.commit()
     invalid = client.post('/api/jobs/schedules/preview', json={'timing': {'type': 'periodic', 'interval': 0, 'offset': 0}})
     assert invalid.status_code == 422
@@ -490,7 +490,7 @@ def test_job_typed_schedule_persists_and_syncs_without_becoming_recurring(setup,
         with pytest.raises(AgentException, match="protocol 18"):
             AgentRequestService(jobs[0].agent).sync()
         schedule.enabled = False
-        jobs[0].agent.protocol_version = 24
+        jobs[0].agent.protocol_version = 26
         db.session.commit()
         assert AgentRequestService(jobs[0].agent).sync()["schedules"] == []
         schedule.enabled = True
@@ -560,7 +560,7 @@ def test_retention_changes_sync_chain_only_and_pending_cleanup_agents(setup, mon
     from drastic_server.services.agent.request import AgentRequestService
 
     app, chain, jobs, _ = setup
-    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent", protocol_version=23)
+    cleanup_agent = Agent(user_id=chain.user_id, secret="cleanup-agent", protocol_version=26)
     AgentSession(agent=cleanup_agent, request_sid="cleanup-sid")
     offline_agent = Agent(user_id=chain.user_id, secret="offline-agent")
     other_user = User(name="unrelated")
@@ -580,10 +580,10 @@ def test_retention_changes_sync_chain_only_and_pending_cleanup_agents(setup, mon
     monkeypatch.setattr(AgentService, "sync", sync)
     client = app.test_client()
     client.post("/api/auth/login", json={"username": "admin", "password": "account-password"})
-    response = client.put(f"/api/retentions/{retention_id}", json={"keep_last": 10})
+    response = client.put(f"/api/retentions/{retention_id}", json={"rules": [{"type": "last", "count": 10}]})
     assert response.status_code == 200, response.json
     assert set(received) == expected
-    assert all(any(policy["id"] == retention_id and policy["keep_last"] == 10 for policy in policies)
+    assert all(any(policy["id"] == retention_id and policy["rules"][0]["count"] == 10 for policy in policies)
                for policies in received.values())
     # Removed chain references must not prevent a pending-cleanup agent receiving deletion.
     chain.steps = [{**step, "retention_id": None} for step in chain.steps]

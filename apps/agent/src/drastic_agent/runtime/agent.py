@@ -1403,7 +1403,7 @@ class Agent:
         if job and job.get("retention_id"):
             selected = retentions.find_one(id=job.get("retention_id"))
             if selected:
-                policy = {key: selected.get(key) for key in ("keep_last", "keep_hourly", "keep_weekly", "keep_monthly", "keep_yearly")}
+                policy = {"rules": selected.get("rules")}
 
         def request_context():
             response = self.__send_request("retention_context", repository_id=repository_id,
