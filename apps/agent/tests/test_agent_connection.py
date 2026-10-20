@@ -714,7 +714,6 @@ def test_scheduler_syncs_before_schedules_and_retries_failures(monkeypatch, outc
     monkeypatch.setattr(agent_module, "monotonic", lambda: clock)
     monkeypatch.setattr(agent, "_Agent__check_update", lambda: False)
     monkeypatch.setattr(agent, "_Agent__run_due_schedules", lambda now: calls.append("schedules"))
-    monkeypatch.setattr(agent, "_Agent__retry_retention", lambda: calls.append("retention"))
     monkeypatch.setattr(agent, "_Agent__maintain_server_connection", lambda now: agent._Agent__shutdown_event.set())
     monkeypatch.setattr(agent, "_Agent__flush_report_queue", flush)
     agent._next_restore_cleanup = agent._next_diagnostics = float("inf")
@@ -723,7 +722,7 @@ def test_scheduler_syncs_before_schedules_and_retries_failures(monkeypatch, outc
     agent.client.connected = outcome != "offline"
     agent._Agent__start_scheduler()
     assert attempts == sync_times
-    assert calls == prefix + ["schedules", "retention"] + ([] if outcome == "offline" else ["reports"])
+    assert calls == prefix + ["schedules"] + ([] if outcome == "offline" else ["reports"])
     agent.client.shutdown()
 
 

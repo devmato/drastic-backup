@@ -269,9 +269,6 @@ class Agent:
             if not self.__check_update() and not (self.connected and self.__sync_pending.is_set()):
                 self._debug_scheduler["phase"] = "schedules"
                 self.__run_due_schedules(now)
-                if monotonic() >= getattr(self, "_next_retention_retry", 0):
-                    self._next_retention_retry = monotonic() + 60
-                    self.__retry_retention()
 
             # Process tasks that require server connection
             if self.connected:
@@ -395,7 +392,7 @@ class Agent:
     """ Send report to server """
 
     def __send_report(self, report):
-        # Keep the backend's running fence until metadata IDs are reconciled after a crash.
+        # Retain the outbox until metadata IDs are reconciled, without hiding execution's end.
         self._debug_report = dict(getattr(self, "_debug_report", {}))
         return reporting.send(report, request=self.__send_request, debug=self._debug_report,
                               completion_pending=lambda: bool(report.ended and agent_settings.find_one(
@@ -609,7 +606,11 @@ class Agent:
         return self.__resticapi
 
     def set_repository(self, repository_id):
-        return self.__set_repository(repository_id)
+        """Prepare a backup, recovering old completion and cleanup under its repository admission."""
+        repository = self.__set_repository(repository_id)
+        for task in RetentionService.pending_tasks(agent_settings, repository_id):
+            self.cmd_run_retention(**task)
+        return repository
 
     def execute_actions(self, actions, report):
         """Run all actions; individual failures set report.data['hook_failed'] instead of escaping."""
@@ -1332,16 +1333,6 @@ class Agent:
             report.log_message(str(exc), final_state=AgentReportState.failed)
         return report.finish()
 
-    def __retry_retention(self):
-        try:
-            for task in RetentionService.pending_tasks(agent_settings):
-                self.__execution_manager().submit(
-                    self.cmd_run_retention, **task,
-                    resources={("repository", task["repository_id"])} | ({("job", task["job_id"])} if task["job_id"] is not None else set()),
-                )
-        except Exception:
-            logging.exception("Could not retry pending retention")
-
     """ Cancel running backup job """
 
     def cmd_cancel_job(self, job_id, operation_uuid=None, cancel_if_missing=False):
@@ -1429,7 +1420,11 @@ class Agent:
         )
 
         try:
-            self.__set_repository(repository_id)
+            repository = repositories.find_one(id=repository_id)
+            if not repository:
+                raise AgentExeption(f"Repository with id {repository_id} not found in agent repositories")
+            # Unlock must work even when pending completion itself needs this lock removed.
+            self.configure_repository(repository)
             unlock_output = self.__resticapi.unlock()
             report.log_message(unlock_output.capitalize() if unlock_output else "No locks")
         except (ResticError, AgentExeption) as e:

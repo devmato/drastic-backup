@@ -203,6 +203,8 @@ class BackupJobHandler:
             complete_backup(self.agent.resticapi, agent_settings, report, self.agent.owner_uuid, self.job["uuid"])
             self._sync_operation(report)
         except Exception as exc:
+            # Recovery may finish before the chain dispatcher observes this failed completion.
+            report.set_data("backup_completion_failed", True)
             report.log_message(f"Backup completion tag pending: {exc}", final_state=AgentOperationState.warning)
         check_succeeded = self._run_post_backup_check(report)
 

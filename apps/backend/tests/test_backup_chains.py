@@ -96,6 +96,32 @@ def finish_step(run, jobs, index, state="success", data=None):
     })
 
 
+@pytest.mark.parametrize("recovered,cancel_requested", [(False, False), (True, False), (False, True)])
+def test_failed_finalization_ends_chain_without_followups_or_automatic_resume(setup, recovered, cancel_requested):
+    _, chain, jobs, calls = setup
+    chain.retry = {"enabled": True, "max_attempts": 3, "delay_minutes": 1}
+    db.session.commit()
+    run = start_chain(chain, now=NOW)
+    advance_run(run.id, now=NOW)
+    finish_step(run, jobs, 0, "warning", {"backup_data_complete": True,
+        "backup_completion_pending": not recovered, "backup_completion_failed": True})
+    run.cancel_requested = cancel_requested
+    db.session.commit()
+    advance_run(run.id, now=NOW + timedelta(seconds=10))
+    db.session.refresh(run)
+    assert run.state == "failed" and run.active_chain_id is None and run.ended is not None
+    assert [step["state"] for step in run.steps] == ["failed", "skipped"]
+    assert "finalization failed" in run.steps[0]["reason"]
+    assert len(calls) == 1
+    operation = AgentOperation.query.filter_by(uuid=run.steps[0]["operation_uuid"]).one()
+    assert operation.state == AgentOperationState.warning
+    operation.data = {**operation.data, "backup_completion_pending": False}
+    db.session.commit()
+    advance_run(run.id, now=NOW + timedelta(hours=1))
+    assert len(calls) == 1 and run.state == "failed"
+    assert start_chain(chain, now=NOW + timedelta(hours=2)).state == "running"
+
+
 @pytest.mark.parametrize("same_job,retry_result", [(False, None), (True, None), (False, "success"),
                                                   (False, "failed"), (False, "permanent")])
 def test_serial_order_retention_and_failure_continuation_survive_sessions(setup, same_job, retry_result):

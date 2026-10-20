@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-from time import time
 from uuid import UUID
 
 from drastic_agent.agent.report import AgentReport
@@ -59,14 +58,15 @@ def recover_repository(restic, settings, repository_id, owner_uuid):
         if not row["name"].startswith(f"backup_completion:{repository_id}:"):
             continue
         task = json.loads(row["settings"])
-        try:
-            if task["owner_uuid"] != owner_uuid:
-                raise ValueError("Pending completion belongs to another backup owner")
-            _reconcile(restic, settings, row["name"], task)
-        except Exception:
-            task["retry_at"] = time() + 900
-            settings.upsert({"name": row["name"], "settings": json.dumps(task)}, ["name"])
-            raise
+        if task["owner_uuid"] != owner_uuid:
+            raise ValueError("Pending completion belongs to another backup owner")
+        require_completion(task)
+        # Checks can recover completion too; persist cleanup before its only intent is removed.
+        retention_key = f"retention_task:{repository_id}:{task['job_uuid']}"
+        if not settings.find_one(name=retention_key):
+            args = {**task["args"], "current_operation_uuid": task["operation_uuid"]}
+            settings.upsert({"name": retention_key, "settings": json.dumps({"args": args, "retry_at": 0})}, ["name"])
+        _reconcile(restic, settings, row["name"], task)
 
 
 def complete_backup(restic, settings, report, owner_uuid, job_uuid):
@@ -81,7 +81,7 @@ def complete_backup(restic, settings, report, owner_uuid, job_uuid):
         artifact = report.artifacts[-1]
         task = {"owner_uuid": str(UUID(owner_uuid)), "job_uuid": str(UUID(job_uuid)),
                 "operation_uuid": str(UUID(report.uuid)), "artifact_uuid": str(UUID(artifact["uuid"])),
-                "artifact_key": artifact["artifact_key"], "snapshot_id": artifact["snapshot_id"], "retry_at": time() + 900,
+                "artifact_key": artifact["artifact_key"], "snapshot_id": artifact["snapshot_id"], "retry_at": 0,
                 "args": {"repository_id": report.repository_id, "job_id": report.job_id,
                          "job_uuid": job_uuid, "current_operation_uuid": report.uuid}}
         if artifact.get("data", {}).get("backup_method") == "native":
@@ -89,4 +89,5 @@ def complete_backup(restic, settings, report, owner_uuid, job_uuid):
         report.checkpoint()
         name = task_key(report.repository_id, report.uuid)
         settings.upsert({"name": name, "settings": json.dumps(task)}, ["name"])
+        report.set_data("backup_completion_pending", True)
     _reconcile(restic, settings, name, task)

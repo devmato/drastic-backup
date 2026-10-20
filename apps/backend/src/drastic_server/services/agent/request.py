@@ -9,7 +9,6 @@ from drastic_common.backup_selection import requires_include_exceptions
 from drastic_server.models.agent import (
     Agent,
     AgentOperation,
-    AgentOperationState,
     AgentOperationType,
     AgentSession,
 )
@@ -88,7 +87,7 @@ class AgentRequestService:
             "timezone": self.agent.user.effective_schedule_timezone,
             "running_operation_uuids": [uuid for (uuid,) in AgentOperation.query.with_entities(AgentOperation.uuid).filter_by(
                 user_id=self.agent.user_id, repository_id=repository.id, type=AgentOperationType.backup,
-                state=AgentOperationState.running)],
+                ).filter(AgentOperation.blocks_cleanup)],
             "check_token": repository.retention_check_token,
             "job_uuids": [uuid for (uuid,) in Job.query.with_entities(Job.uuid).join(Agent).filter(Agent.user_id == self.agent.user_id)],
             "default": {"rules": policy.rules} if policy else None,

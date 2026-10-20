@@ -33,6 +33,11 @@
     </q-banner>
 
     <div v-if="operation" class="column q-gutter-y-md">
+      <q-banner v-if="showFinalizationWarning" class="bg-warning text-black" role="status">
+        Backup data saved; finalization is pending. It will be retried on the next backup or retention run
+        in this repository, not automatically on a timer. If the repository has a stale lock, unlock it under
+        <router-link to="/repositories" class="text-black">Repositories</router-link> before starting a new run.
+      </q-banner>
       <q-card flat bordered>
         <q-card-section>
           <div class="q-gutter-md">
@@ -290,6 +295,7 @@ const logColumns = [
 ]
 
 const operationData = computed(() => operation.value?.data || {})
+const showFinalizationWarning = computed(() => Boolean(operation.value?.ended && operationData.value.backup_completion_pending))
 const datasetArtifacts = computed(() => (operation.value?.artifacts || []).filter(artifact => artifact.data?.dataset))
 const jobArtifacts = computed(() => (operation.value?.artifacts || []).filter(artifact => artifact.data?.dataset
   || artifact.data?.vmid && !artifact.artifact_key?.endsWith(':manifest')))

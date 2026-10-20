@@ -5,7 +5,7 @@ import logging
 from sqlalchemy.exc import IntegrityError
 
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent, AgentOperation, AgentOperationState, AgentSession
+from drastic_server.models.agent import Agent, AgentOperation, AgentSession
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.services.chains import require_unused_chain_reference
@@ -108,9 +108,9 @@ def delete_repository(user_id, repository_id):
         raise ValueError("Can't remove repository used by schedules. Remove those schedules first.")
     quarantine = None
     try:
-        running = AgentOperation.query.filter_by(repository_id=repository.id, state=AgentOperationState.running).first()
+        running = AgentOperation.query.filter_by(repository_id=repository.id).filter(AgentOperation.blocks_cleanup).first()
         if running is not None:
-            raise ResourceConflict("Repository has a running operation")
+            raise ResourceConflict("Repository has a running operation or pending backup finalization")
         if repository.kind == Repository.KIND_NATIVE:
             if repository.repository_path:
                 quarantine = quarantine_native_repository(repository.repository_path)

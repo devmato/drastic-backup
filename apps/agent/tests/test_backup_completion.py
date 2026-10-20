@@ -102,7 +102,7 @@ def test_tag_recovery_updates_outbox_and_cbt_without_replaying_stale_ids(local_d
     sent = []
     agent._Agent__send_request = lambda action, **kwargs: sent.append(kwargs["operation_json"]) or {"success": True}
     assert not agent._Agent__send_report(recovered)
-    assert sent[-1]["state"] == "running" and sent[-1]["ended"] is None and not sent[-1]["artifacts"]
+    assert sent[-1]["state"] == "failed" and sent[-1]["ended"] is not None and not sent[-1]["artifacts"]
     assert sent[-1]["data"]["backup_completion_pending"] is True
     repository.failure = None
     recover_repository(repository, settings, 1, OWNER)
@@ -125,9 +125,8 @@ def test_tag_recovery_updates_outbox_and_cbt_without_replaying_stale_ids(local_d
     assert repository.tagged == tagged
 
 
-def test_solo_retry_keeps_parent_when_repository_setup_is_interrupted(local_db, monkeypatch):
+def test_solo_retry_keeps_parent_when_repository_setup_is_interrupted(local_db):
     test_database_schema.database_module.initialize_schema()
-    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 0)
 
     def interrupt(_):
         raise SystemExit("Agent stopped during repository setup")
@@ -138,8 +137,7 @@ def test_solo_retry_keeps_parent_when_repository_setup_is_interrupted(local_db, 
             set_repository=interrupt, resticapi=None, settings=local_db["agent"], send_report=lambda _: True)
     AgentReport.load_queue()
     AgentReport.recover_interrupted()
-    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
-    task, = RetentionService.pending_tasks(local_db["agent"])
+    task, = RetentionService.pending_tasks(local_db["agent"], 1)
     assert task["current_operation_uuid"] == RUN and task["repository_scope"] is True
 
 
@@ -176,7 +174,7 @@ def test_reconciliation_during_report_delivery_cannot_requeue_or_acknowledge_sta
     agent._Agent__send_request = request
     reporting.flush(agent._Agent__send_report)
     assert len(AgentReport.finished_reports) == 1
-    assert sent[-1]["state"] == "running" and not sent[-1]["artifacts"]
+    assert sent[-1]["state"] == "warning" and sent[-1]["ended"] is not None and not sent[-1]["artifacts"]
     new_id = report.artifacts[0]["snapshot_id"]
     assert new_id != OLD
     reporting.flush(agent._Agent__send_report)
@@ -184,6 +182,139 @@ def test_reconciliation_during_report_delivery_cannot_requeue_or_acknowledge_sta
     assert local_db["agent_operation_queue"].find_one(uuid=RUN) is None
     assert sent[-1]["artifacts"][0]["snapshot_id"] == new_id
     assert sent[-1]["data"]["snapshot_replacements"] == {OLD: new_id}
+
+
+@pytest.mark.parametrize("legacy", [False, True])
+def test_pending_warning_is_delivered_once_and_retained_until_next_repository_run(local_db, monkeypatch, legacy):
+    report, snapshot, _ = backup_report(local_db)
+    settings = local_db["agent"]
+    repository = TaggedRepository(snapshot, "before")
+    with pytest.raises(RuntimeError):
+        complete_backup(repository, settings, report, OWNER, JOB)
+    report.log_message("Completion pending", final_state=AgentOperationState.warning)
+    if legacy:
+        report.remove_data("backup_completion_pending")
+    # A running progress acknowledgement must not suppress the terminal warning.
+    report.sent = True
+    report.finish()
+    ended = report.ended
+    agent = Agent.__new__(Agent)
+    sent = []
+    agent._Agent__send_request = lambda action, **kwargs: sent.append(kwargs["operation_json"]) or {"success": True}
+    for _ in range(3):
+        reporting.flush(agent._Agent__send_report)
+    assert len(sent) == 1
+    assert sent[0]["state"] == "warning" and sent[0]["ended"] is not None
+    assert sent[0]["data"]["backup_completion_pending"] is True
+    assert local_db["agent_operation_queue"].find_one(uuid=RUN) is not None
+    assert repository.tagged == [OLD]  # Sending reports never retries Restic work.
+
+    # Existing intents ignore obsolete retry timestamps and retain their backup parent.
+    task = json.loads(settings.find_one(name=task_key(1, RUN))["settings"])
+    task["retry_at"] = 10**15
+    settings.update({"name": task_key(1, RUN), "settings": json.dumps(task)}, ["name"])
+    settings.insert({"name": "backup_owner_uuid", "settings": OWNER})
+    local_db["repositories"].insert({"id": 1, "kind": "custom", "location": "/repo"})
+    agent._Agent__resticapi = repository
+    monkeypatch.setattr(agent, "configure_repository", lambda _: None)
+    cleanup = []
+
+    def retention(**args):
+        assert report.artifacts[0]["snapshot_id"] != OLD
+        assert not settings.find_one(name=task_key(1, RUN))
+        cleanup.append(args)
+
+    monkeypatch.setattr(agent, "cmd_run_retention", retention)
+    with pytest.raises(RuntimeError, match="Tagging unavailable"):
+        agent.set_repository(1)
+    assert not cleanup
+    repository.failure = None
+    agent.set_repository(1)
+    assert len(cleanup) == 1 and cleanup[0]["current_operation_uuid"] == RUN
+    assert report.data["backup_completion_failed"] is True
+    queued = json.loads(local_db["agent_operation_queue"].find_one(uuid=RUN)["payload"])
+    assert queued["data"]["backup_completion_failed"] is True
+    assert report.ended == ended and report.state == AgentOperationState.warning
+    reporting.flush(agent._Agent__send_report)
+    assert sent[-1]["data"]["backup_completion_pending"] is False
+    assert not AgentReport.finished_reports
+    assert local_db["agent_operation_queue"].find_one(uuid=RUN) is None
+
+
+@pytest.mark.parametrize("locked", [False, True])
+def test_unlock_bypasses_completion_recovery_and_preserves_pending_work(local_db, monkeypatch, locked):
+    report, snapshot, _ = backup_report(local_db)
+    repository = TaggedRepository(snapshot, "before")
+    settings = local_db["agent"]
+    with pytest.raises(RuntimeError):
+        complete_backup(repository, settings, report, OWNER, JOB)
+    settings.insert({"name": "backup_owner_uuid", "settings": OWNER})
+    local_db["repositories"].insert({"id": 1, "kind": "custom", "location": "/repo"})
+    calls = []
+
+    def unlock():
+        calls.append("unlock")
+        if locked:
+            raise ResticError("Lock still active")
+        return "removed stale lock"
+
+    repository.unlock = unlock
+    agent = Agent.__new__(Agent)
+    agent._Agent__resticapi = repository
+    monkeypatch.setattr(agent, "configure_repository", lambda _: calls.append("configure"))
+    result = agent.cmd_unlock_repository(1)
+    assert calls == ["configure", "unlock"]
+    assert result.state == (AgentOperationState.failed if locked else AgentOperationState.success)
+    assert settings.find_one(name=task_key(1, RUN)) is not None
+    assert repository.tagged == [OLD]
+
+
+@pytest.mark.parametrize("scenario", ["check", "interrupted", "existing_cleanup"])
+def test_completion_recovery_preserves_cleanup_for_the_next_backup(local_db, monkeypatch, scenario):
+    report, snapshot, _ = backup_report(local_db)
+    repository = TaggedRepository(snapshot, "before")
+    settings = local_db["agent"]
+    with pytest.raises(RuntimeError):
+        complete_backup(repository, settings, report, OWNER, JOB)
+    report.log_message("Completion pending", final_state=AgentOperationState.warning)
+    report.finish()
+    settings.insert({"name": "backup_owner_uuid", "settings": OWNER})
+    local_db["repositories"].insert({"id": 1, "kind": "custom", "location": "/repo"})
+    retention_key = f"retention_task:1:{JOB}"
+    expected_args = {"repository_id": 1, "job_id": 1, "job_uuid": JOB, "current_operation_uuid": RUN}
+    if scenario == "existing_cleanup":
+        expected_args = {**expected_args, "current_operation_uuid": str(UUID(int=99)), "repository_scope": False}
+        settings.insert({"name": retention_key, "settings": json.dumps({"args": expected_args, "retry_at": 123})})
+
+    agent = Agent.__new__(Agent)
+    agent._Agent__resticapi = repository
+    monkeypatch.setattr(agent, "configure_repository", lambda _: None)
+    repository.failure = None
+    repository.check = lambda **kwargs: {}
+    if scenario == "interrupted":
+        delete = settings.delete
+
+        def interrupt(**kwargs):
+            if kwargs.get("name") == task_key(1, RUN):
+                raise SystemExit("Stopped before clearing completion intent")
+            return delete(**kwargs)
+
+        monkeypatch.setattr(settings, "delete", interrupt)
+        with pytest.raises(SystemExit):
+            agent.cmd_check_repository(1)
+        monkeypatch.setattr(settings, "delete", delete)
+    else:
+        assert agent.cmd_check_repository(1).state == AgentOperationState.success
+        assert settings.find_one(name=task_key(1, RUN)) is None
+
+    assert json.loads(settings.find_one(name=retention_key)["settings"])["args"] == expected_args
+    AgentReport.recover_interrupted()
+    AgentReport.load_queue()
+    cleanup = []
+    monkeypatch.setattr(agent, "cmd_run_retention", lambda **kwargs: cleanup.append(kwargs))
+    agent.set_repository(1)  # Preparation is repository-scoped, even for a different next job.
+    assert cleanup == [expected_args]
+    assert settings.find_one(name=task_key(1, RUN)) is None
 
 
 def test_recovery_cannot_mutate_foreign_or_ambiguously_owned_snapshots(local_db):

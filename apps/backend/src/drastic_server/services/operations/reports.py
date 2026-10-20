@@ -87,6 +87,9 @@ class AgentOperationService:
         pending_parent_uuid = (operation.data or {}).get(_PENDING_PARENT_UUID_KEY)
         operation_data_payload = dict(operation_data.get("data") or {})
         operation_data_payload.pop(_PENDING_PARENT_UUID_KEY, None)
+        for key in ("backup_completion_pending", "backup_completion_failed"):
+            if key in operation_data_payload and type(operation_data_payload[key]) is not bool:
+                raise ValueError(f"Invalid {key} flag")
         replacements = operation_data_payload.get("snapshot_replacements", {})
         if not isinstance(replacements, dict):
             raise ValueError("Invalid snapshot replacements")
@@ -107,9 +110,15 @@ class AgentOperationService:
                     raise ValueError("Invalid or conflicting snapshot replacement")
         if replacements or previous_data.get("snapshot_replacements"):
             operation_data_payload["snapshot_replacements"] = {**previous_data.get("snapshot_replacements", {}), **replacements}
-        for key in ("owner_uuid", "backup_run_complete", "retention_logs_nested"):
+        for key in ("owner_uuid", "backup_run_complete", "backup_completion_failed", "retention_logs_nested"):
             if previous_data.get(key):
                 operation_data_payload[key] = previous_data[key]
+        if previous_data.get("backup_completion_pending") or operation_data_payload.get("backup_completion_pending"):
+            # Only a verified ID replacement clears pending work; missing/late fields are not proof.
+            operation_data_payload["backup_completion_pending"] = not bool(
+                operation_data_payload.get("snapshot_replacements") and operation_data_payload.get("backup_run_complete") is True)
+            if operation_data.get("ended") and operation_data_payload["backup_completion_pending"]:
+                operation_data_payload["backup_completion_failed"] = True
         if (operation_data["type"] == AgentOperationType.repository_check and operation_data["state"] == AgentOperationState.failed
                 and not operation_data_payload.get("repository_locked")):
             operation_data_payload["retention_check_failed"] = True

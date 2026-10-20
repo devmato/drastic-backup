@@ -36,10 +36,14 @@ def replace_snapshot(task, new_id, report=None):
         with db:
             operation, artifact = require_completion(task)
             data = operation["data"] or {}
+            # Older outbox entries predate the historical failure flag used to stop chains.
+            if operation.get("ended") and not data.get("backup_run_complete"):
+                data = {**data, "backup_completion_failed": True}
             if data.get("snapshot_replacements", {}).get(old_id, new_id) != new_id:
                 raise ValueError("Conflicting completion snapshot replacement")
             replacements = {**data.get("snapshot_replacements", {}), old_id: new_id}
-            data = {**data, "snapshot_replacements": replacements, "backup_run_complete": True}
+            data = {**data, "snapshot_replacements": replacements, "backup_run_complete": True,
+                    "backup_completion_pending": False}
             artifact["snapshot_id"] = new_id
             agent_operation_artifacts.update(artifact, ["id"])
             agent_operations.update({"id": operation["id"], "data": data}, ["id"])
@@ -51,7 +55,10 @@ def replace_snapshot(task, new_id, report=None):
             queued = agent_operation_queue.find_one(uuid=operation["uuid"])
             if queued:
                 payload = json.loads(queued["payload"])
-                payload["data"].update(snapshot_replacements=replacements, backup_run_complete=True)
+                payload["data"].update(snapshot_replacements=replacements, backup_run_complete=True,
+                                       backup_completion_pending=False)
+                if data.get("backup_completion_failed"):
+                    payload["data"]["backup_completion_failed"] = True
                 for item in payload["artifacts"]:
                     if item["uuid"] == task["artifact_uuid"]:
                         item["snapshot_id"] = new_id
@@ -59,6 +66,9 @@ def replace_snapshot(task, new_id, report=None):
         if report is not None:
             report.set_data("snapshot_replacements", replacements)
             report.set_data("backup_run_complete", True)
+            report.set_data("backup_completion_pending", False)
+            if data.get("backup_completion_failed"):
+                report.set_data("backup_completion_failed", True)
             for item in report.artifacts:
                 if item["uuid"] == task["artifact_uuid"]:
                     item["snapshot_id"] = new_id

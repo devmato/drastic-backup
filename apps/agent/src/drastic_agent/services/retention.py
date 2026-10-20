@@ -3,7 +3,6 @@
 import json
 from calendar import monthrange
 from datetime import date, datetime, timedelta, timezone
-from time import time
 from uuid import UUID
 from zoneinfo import ZoneInfo
 
@@ -129,16 +128,15 @@ def validate_context(context, repository_scope=False):
 
 class RetentionService:
     @staticmethod
-    def pending_tasks(settings):
+    def pending_tasks(settings, repository_id):
+        """Read work for the next repository run; legacy retry_at is retained only for rollback."""
         tasks = []
         for row in settings.all():
-            if row["name"].startswith(("retention_task:", "backup_completion:")):
+            if row["name"].startswith((f"retention_task:{repository_id}:", f"backup_completion:{repository_id}:")):
                 payload = json.loads(row["settings"])
-                if payload["retry_at"] <= time():
-                    if row["name"].startswith("backup_completion:"):
-                        # Existing completion intents stored no parent in their retry arguments.
-                        payload["args"]["current_operation_uuid"] = payload["operation_uuid"]
-                    tasks.append(payload["args"])
+                if row["name"].startswith("backup_completion:"):
+                    payload["args"]["current_operation_uuid"] = payload["operation_uuid"]
+                tasks.append(payload["args"])
         return tasks
 
     @staticmethod
@@ -181,7 +179,7 @@ class RetentionService:
     def run(cls, *, repository_id, job_id, job_uuid, current_operation_uuid, current_policy,
             request_context, set_repository, resticapi, settings, send_report,
             operation_uuid=None, repository_scope=False):
-        """Persist cleanup/retries; a reserved operation UUID identifies an explicit solo start.
+        """Persist unfinished cleanup for the next run; operation_uuid reserves a solo start.
 
         Automatic no-policy attempts return an unpersisted command unless pending work needs acknowledgement.
         """
@@ -201,7 +199,7 @@ class RetentionService:
         # Retain the solo parent even if repository setup is interrupted before its first response.
         args = {"repository_id": repository_id, "job_id": job_id, "job_uuid": job_uuid,
                 "current_operation_uuid": current_operation_uuid or operation_uuid, "repository_scope": repository_scope}
-        settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
+        settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": 0})}, ["name"])
         try:
             # A long repository check must not move calendar boundaries halfway through a pass.
             now = datetime.now(timezone.utc)
@@ -218,7 +216,7 @@ class RetentionService:
             report = report or start_report()
             # Retries of a solo run remain children of that run rather than new history entries.
             args["current_operation_uuid"] = current_operation_uuid or report.uuid
-            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
+            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": 0})}, ["name"])
             report.log_message("Running retention for repository")
             snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
             context = validate_context(request_context(), repository_scope)
@@ -273,6 +271,6 @@ class RetentionService:
         except Exception as exc:
             report = report or start_report()
             args["current_operation_uuid"] = current_operation_uuid or report.uuid
-            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": time() + 900})}, ["name"])
+            settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": 0})}, ["name"])
             report.log_message(str(exc), final_state=AgentOperationState.warning)
         return report.finish()

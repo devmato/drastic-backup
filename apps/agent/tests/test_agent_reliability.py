@@ -267,7 +267,7 @@ def test_real_ordered_backups_keep_latest_snapshot_per_job_in_shared_repository(
         restored_source = target.joinpath(*source.parts[1:])
         assert (restored_source / "selected/keep.txt").read_text() == "unchanged content"
         assert not (restored_source / "payload.txt").exists()
-        assert RetentionService.pending_tasks(settings) == []
+        assert RetentionService.pending_tasks(settings, 73) == []
         snapshot = next(item for item in resticapi.snapshots() if item["id"] == parents[83])
         deletion = RestoreService.delete_point(RestoreContext(resticapi, agent.set_repository),
             repository_id=73, snapshot_ids=[snapshot["id"]], point_key=restore_point_key(snapshot), operation_uuid=str(uuid4()))
@@ -325,7 +325,7 @@ def test_real_backup_on_another_agent_cleans_deleted_job_without_its_local_histo
         target = tmp_path / "restore"
         restic.restore(history[1]["artifact"]["snapshot_id"], str(target), ["/"])
         assert target.joinpath(*payload.parts[1:]).read_text() == "version 2"
-        assert RetentionService.pending_tasks(settings) == []
+        assert RetentionService.pending_tasks(settings, 1) == []
     finally:
         settings_db.engine.dispose()
 

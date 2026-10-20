@@ -1,7 +1,7 @@
 import secrets
 from uuid import uuid4
 
-from sqlalchemy import Enum
+from sqlalchemy import Enum, and_, or_
 from sqlalchemy.ext.hybrid import hybrid_property
 from sqlalchemy.ext.mutable import MutableDict
 from sqlalchemy.orm import validates
@@ -162,6 +162,18 @@ class AgentOperation(IdMixin, TimeMixin, db.Model):
     )
     started = db.Column(db.DateTime, nullable=True)
     ended = db.Column(db.DateTime, nullable=True)
+
+    @hybrid_property
+    def blocks_cleanup(self):
+        """Unresolved snapshot references need the same deletion protection as running work."""
+        return (self.state == AgentOperationState.running
+                or self.type == AgentOperationType.backup and bool((self.data or {}).get("backup_completion_pending")))
+
+    @blocks_cleanup.expression
+    def blocks_cleanup(cls):
+        return or_(cls.state == AgentOperationState.running, and_(
+            cls.type == AgentOperationType.backup,
+            cls.data["backup_completion_pending"].as_boolean().is_(True)))
 
     @validates("agent")
     def retain_owner(self, key, agent):

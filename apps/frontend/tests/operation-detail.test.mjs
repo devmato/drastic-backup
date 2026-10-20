@@ -15,7 +15,7 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const store = { agents: [], getOperation: () => new Promise(resolve => { resolveRequest = resolve }) }
   const cancellations = []
   const quasar = { notify: () => assert.fail('background error notification'), dialog: () => ({ onOk: callback => { confirm = callback } }) }
-  const page = runInNewContext(`${source}\n;({ operation, sortedLogs, operationListRoute, confirmCancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption })`, {
+  const page = runInNewContext(`${source}\n;({ operation, sortedLogs, operationListRoute, confirmCancelOperation, loading, loadOperation, queueOperationRefresh, progressValue, progressLabel, progressIndeterminate, showProgress, progressBasis, metricCards, duration, summaryColumns, technicalDetails, currentFiles, datasetArtifacts, jobDetailsCaption, showFinalizationWarning })`, {
     computed, ref, backupStates, stateColor: getBackupStateColor, createQueuedReload, operationFilters,
     useRoute: () => route,
     useAgentStore: () => store,
@@ -84,6 +84,21 @@ test('background operation updates stay quiet and preserve data on failure', asy
   const field = (fields, label) => fields.find(item => item.label === label)?.value
   assert.equal(field(page.summaryColumns.value[0], 'Status'), 'success')
   assert.equal(page.duration.value, '1h 8m 48s')
+  assert.equal(page.showFinalizationWarning.value, false)
+  page.operation.value.state = 'warning'
+  page.operation.value.data.backup_completion_pending = true
+  assert.equal(page.showFinalizationWarning.value, true)
+  page.operation.value.ended = null
+  page.operation.value.state = 'running'
+  assert.equal(page.showFinalizationWarning.value, false)
+  page.operation.value.ended = '2026-10-01T23:47:32'
+  page.operation.value.state = 'warning'
+  assert.equal(field(page.summaryColumns.value[0], 'Status'), 'warning')
+  assert.equal(page.duration.value, '1h 8m 48s')
+  assert.equal(page.progressIndeterminate.value, false)
+  page.operation.value.state = 'success'
+  delete page.operation.value.data.backup_completion_pending
+  assert.equal(page.showFinalizationWarning.value, false)
   assert.equal(field(page.summaryColumns.value[0], 'Job'), 'Documents')
   assert.equal(field(page.summaryColumns.value[0], 'Repository'), 'Offsite')
   assert.equal(field(page.summaryColumns.value[1], 'Device'), 'Backup host')

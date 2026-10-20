@@ -232,8 +232,7 @@ def test_incomplete_backend_response_never_means_all_jobs_were_deleted(settings,
 
 @pytest.mark.parametrize("failure", ["forget", "prune", "verification", "policy_removed"])
 @pytest.mark.parametrize("solo", [False, True])
-def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, solo, monkeypatch):
-    monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 0)
+def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, solo):
     repo, backend = Repo(), Backend()
     old = repo.add_run(backend, number=10, count=1100)
     kept = repo.add_run(backend, number=11, count=1100)
@@ -252,10 +251,9 @@ def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(sett
     assert result.state == AgentReportState.warning
     if failure == "prune":
         assert set(result.data["deleted_snapshot_ids"]) == {item["id"] for item in repo.removed}
-    assert RetentionService.pending_tasks(settings) == []
+    assert RetentionService.pending_tasks(settings, 2) == []
     if failure in {"prune", "policy_removed"}:
-        monkeypatch.setattr("drastic_agent.services.retention.time", lambda: 901)
-        args, = RetentionService.pending_tasks(settings)
+        args, = RetentionService.pending_tasks(settings, 1)
         assert args["current_operation_uuid"] == original_uuid and args["repository_scope"] is solo
         backend.default = None  # Policy removal must finish pending work, including already-needed prune.
         result = RetentionService.run(**args, current_policy=None, request_context=context,
@@ -469,5 +467,5 @@ def test_existing_completion_intents_retry_under_their_backup(settings):
     settings.insert({"name": f"backup_completion:1:{operation_uuid}", "settings": json.dumps({
         "operation_uuid": operation_uuid, "retry_at": 0,
         "args": {"repository_id": 1, "job_id": 2, "job_uuid": A, "current_operation_uuid": None}})})
-    task, = RetentionService.pending_tasks(settings)
+    task, = RetentionService.pending_tasks(settings, 1)
     assert task["current_operation_uuid"] == operation_uuid

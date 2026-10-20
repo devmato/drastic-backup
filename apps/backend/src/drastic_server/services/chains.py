@@ -252,6 +252,14 @@ def advance_run(run_id, *, now=None):
             operation = AgentOperation.query.filter_by(uuid=step["operation_uuid"]).first()
             if operation and operation.ended and operation.state != AgentOperationState.running:
                 data = operation.data or {}
+                if data.get("backup_completion_failed") or data.get("backup_completion_pending"):
+                    reason = "Backup finalization failed; resolve the repository and start a new chain run"
+                    step.update(state="failed", operation_id=operation.id, reason=reason)
+                    for remaining in steps:
+                        if remaining["state"] not in TERMINAL_STEPS:
+                            remaining.update(state="skipped", reason="Previous backup finalization failed")
+                    _save_progress(run_id, token, steps, state="failed", ended=now, active_chain_id=None)
+                    return
                 policy = step.get("retry") or {}
                 attempt = step.get("attempt", 1)
                 if not run.cancel_requested and retry_allowed(policy, attempt, operation.state.name, data):

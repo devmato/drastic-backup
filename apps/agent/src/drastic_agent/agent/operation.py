@@ -451,6 +451,7 @@ class AgentOperation:
                 self.data["backup_retryable"] = False
             self._full_log = True
             self.ended = ended or datetime.now(timezone.utc)
+            self.sent = False
             try:
                 if self.type != AgentOperationType.command:
                     with db:

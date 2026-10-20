@@ -21,7 +21,7 @@ from drastic_server.models.repository import Repository
 from drastic_server.services.agent import AgentService
 from drastic_server.services.agent.management import delete_agent
 from drastic_server.services.agent.request import AgentException, AgentRequestService
-from drastic_server.services.exceptions import ResourceNotFound
+from drastic_server.services.exceptions import ResourceNotFound, RestoreServiceException
 from drastic_server.services.jobs.management import delete_job
 from drastic_server.services.operations.history import (
     delete_operation,
@@ -35,9 +35,63 @@ from drastic_server.services.operations.lifecycle import (
     unknown_agent_operation_dispatch_response,
 )
 from drastic_server.services.operations.reports import AgentOperationService
+from drastic_server.services.restore import RestoreService
 from drastic_server.services.retention import create_retention, update_retention
 
 restore_api = test_proxmox_restore_api.restore_api
+
+
+def test_finished_pending_backup_keeps_deletion_fences_until_verified_replacement(restore_api, monkeypatch):
+    client, _, agent, _, job, _ = restore_api
+    agent.protocol_version = 27
+    db.session.commit()
+    repository = agent.repositories[0]
+    old_id, new_id = "a" * 64, "b" * 64
+    payload = {"uuid": str(uuid4()), "type": "backup", "state": "warning", "job_id": job.id,
+        "repository_id": repository.id, "started": "2026-10-20T00:00:00Z", "ended": "2026-10-20T00:10:00Z",
+        "data": {"owner_uuid": agent.user.backup_owner_uuid, "job_uuid": job.uuid,
+                 "backup_data_complete": True, "backup_completion_pending": True},
+        "artifacts": [{"uuid": str(uuid4()), "artifact_key": "default", "snapshot_id": old_id, "state": "success"}]}
+    service = AgentOperationService(agent)
+    for key in ("backup_completion_pending", "backup_completion_failed"):
+        with pytest.raises(ValueError, match=f"Invalid {key}"):
+            service.ingest({**payload, "data": {**payload["data"], key: "false"}})
+        db.session.rollback()
+    operation_id = service.ingest(payload)
+    operation = db.session.get(AgentOperation, operation_id)
+    assert operation.state == AgentOperationState.warning and operation.ended is not None
+    assert operation.blocks_cleanup
+    assert list_operations(agent.user_id, None, {"state": "running"}) == []
+    assert AgentRequestService(agent).retention_context(repository.id)["running_operation_uuids"] == [operation.uuid]
+    assert client.delete(f"/api/agents/operations/{operation_id}").status_code == 409
+    assert client.delete(f"/api/agents/{agent.id}").status_code == 409
+    assert client.delete(f"/api/repositories/{repository.id}").status_code == 409
+
+    snapshot = {"id": old_id, "tags": [f"drastic-owner:{agent.user.backup_owner_uuid}",
+        f"job_uuid:{job.uuid}", f"operation_uuid:{operation.uuid}"]}
+    monkeypatch.setattr(RestoreService, "list_snapshots", lambda *args: {"snapshots": [snapshot]})
+    with pytest.raises(RestoreServiceException, match="finalization is pending"):
+        RestoreService.delete_point(agent.user_id, {"agent_id": agent.id, "repository_id": repository.id,
+            "snapshot_id": old_id, "snapshot_ids": [old_id]})
+    db.session.rollback()
+
+    # Neither omission nor an explicit false value can release unresolved references.
+    for data in ({}, {"backup_completion_pending": False}):
+        service.ingest({**payload, "data": data})
+        db.session.refresh(operation)
+        assert operation.blocks_cleanup
+    service.ingest({**payload, "data": {**payload["data"], "backup_run_complete": True,
+        "backup_completion_pending": False, "snapshot_replacements": {old_id: new_id}},
+        "artifacts": [{**payload["artifacts"][0], "snapshot_id": new_id}]})
+    service.ingest(payload)  # An old pending report cannot reactivate the fence.
+    db.session.refresh(operation)
+    assert operation.state == AgentOperationState.warning
+    assert operation.data["backup_completion_pending"] is False
+    assert operation.data["backup_completion_failed"] is True
+    assert not operation.blocks_cleanup
+    assert operation.artifacts[0].snapshot_id == new_id
+    assert AgentRequestService(agent).retention_context(repository.id)["running_operation_uuids"] == []
+    assert client.delete(f"/api/agents/operations/{operation_id}").status_code == 200
 
 
 def test_completion_id_replacement_survives_old_reports_and_rejects_other_owners(restore_api):

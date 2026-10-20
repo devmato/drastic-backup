@@ -188,8 +188,8 @@ class RestoreService:
         ).populate_existing().with_for_update())
         operation_uuid = snapshot_uuid(snapshot, "operation_uuid")
         if operation_uuid and AgentOperation.query.filter_by(uuid=operation_uuid, user_id=user_id,
-                repository_id=repository.id, state=AgentOperationState.running).populate_existing().with_for_update().first():
-            raise RestoreServiceException("This backup is still running")
+                repository_id=repository.id).filter(AgentOperation.blocks_cleanup).populate_existing().with_for_update().first():
+            raise RestoreServiceException("This backup is still running or its finalization is pending")
         operation = start_agent_operation(agent=agent, repository=repository, operation_type=AgentOperationType.retention,
             msg="Restore point deletion started", data={"scope": "repository", "manual_delete": True})
         response = AgentService.send_command(agent, AgentCommandName.delete_restore_point, timeout=5,

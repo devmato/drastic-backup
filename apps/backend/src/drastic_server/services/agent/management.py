@@ -74,8 +74,8 @@ def delete_agent(user_id, agent_id):
     # Lock the parent before checking children. New operation inserts also need this
     # parent through their foreign key, and report ingestion takes the same lock.
     agent = require_result(Agent.query.filter_by(id=agent_id, user_id=user_id).populate_existing().with_for_update())
-    if AgentOperation.query.filter_by(agent_id=agent.id, state=AgentOperationState.running).with_for_update().first():
-        raise ResourceConflict("Agent has running operations; wait for them to finish before deleting it")
+    if AgentOperation.query.filter_by(agent_id=agent.id).filter(AgentOperation.blocks_cleanup).with_for_update().first():
+        raise ResourceConflict("Agent has running operations or pending backup finalization; resolve them before deleting it")
     try:
         for job in agent.jobs:
             require_unused_chain_reference(user_id, "job_id", job.id)

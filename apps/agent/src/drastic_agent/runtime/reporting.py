@@ -24,7 +24,8 @@ def flush(send_report):
     for _ in range(len(queue)):
         with AgentReport._registry_lock:
             report = queue.popleft()
-            if report.parent_operation_uuid in outstanding:
+            if (report.parent_operation_uuid in outstanding
+                    or report.sent and report.data.get("backup_completion_pending")):
                 queue.append(report)
                 continue
             # Snapshot reconciliation must still find this report during network I/O.
@@ -54,11 +55,12 @@ def send(report, *, request, debug, completion_pending=None):
                 else:
                     del report.diagnostic_at
             diagnostic_at = getattr(report, "diagnostic_at", None)
+            if defer_completion:
+                report.data.update(backup_completion_pending=True, backup_completion_failed=True)
             payload = deepcopy(AgentReportSchema().dump(report))
             if defer_completion:
-                # Publish recovery errors without releasing the backend's running fence or stale IDs.
-                payload.update(state="running", ended=None, artifacts=[])
-                payload["data"]["backup_completion_pending"] = True
+                # Execution has ended, but unresolved snapshot IDs must not be published.
+                payload["artifacts"] = []
             report.sent = True
         request_started = monotonic()
         debug["phase"] = "sending"

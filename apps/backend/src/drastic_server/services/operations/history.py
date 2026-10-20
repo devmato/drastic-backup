@@ -90,8 +90,9 @@ def delete_operation(user_id, operation_id):
     operation = get_operation(user_id, operation_id)
     # Finished states cannot become running again; avoid parent-before-child locks during report delivery.
     db.session.refresh(operation)
-    # Running reports also protect active backups from repository cleanup.
-    if operation.state == AgentOperationState.running:
+    if operation.blocks_cleanup:
+        if (operation.data or {}).get("backup_completion_pending"):
+            raise ResourceConflict("Backup finalization is pending; run the repository again before deleting its report")
         raise ResourceConflict("Operation is still running; wait for it to finish before deleting its report")
     for run in BackupChainRun.query.filter_by(state="running"):
         if any(step.get("operation_uuid") == operation.uuid for step in run.steps):
