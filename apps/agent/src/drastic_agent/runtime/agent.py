@@ -1400,7 +1400,9 @@ class Agent:
             response = self.__send_request("retention_context", repository_id=repository_id,
                 **({"include_policies": True} if repository_scope else {}))
             if not response.get("success"):
-                raise AgentExeption("Backend retention context unavailable; cleanup deferred")
+                details = response.get("result") or {}
+                reason = details.get("message") or f"backend rejected request ({details.get('error', 'unknown error')})"
+                raise AgentExeption(f"Backend retention context unavailable: {reason}; cleanup deferred")
             return response["result"]
 
         return RetentionService.run(

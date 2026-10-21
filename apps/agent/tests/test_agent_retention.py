@@ -4,10 +4,12 @@ import hashlib
 import json
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from uuid import UUID, uuid4
 
 import dataset
 import pytest
+import socketio
 
 import drastic_agent.runtime.agent as runtime_module
 from drastic_agent.agent.enums import AgentReportState
@@ -230,6 +232,71 @@ def test_incomplete_backend_response_never_means_all_jobs_were_deleted(settings,
     assert len(repo.items) == 4 and not repo.removed
 
 
+@pytest.mark.parametrize("unavailable", [False, True])
+def test_context_is_read_after_scan_and_refreshed_before_deletion(settings, monkeypatch, unavailable):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    events = []
+    snapshots = repo.snapshots
+
+    def scan():
+        events.append("scan")
+        return snapshots()
+
+    def context():
+        events.append("context")
+        if unavailable and repo.checks:
+            raise RuntimeError("Backend connection lost; cleanup deferred")
+        return backend()
+
+    monkeypatch.setattr(repo, "snapshots", scan)
+    repo.on_check = lambda: events.append("check")
+    report = execute(repo, backend, settings, request=context)
+    assert events == ["scan", "context", "check", "scan", "context"]
+    if unavailable:
+        assert report.state == AgentReportState.warning and report.data["cleanup_pending"]
+        assert not repo.removed and not repo.prune_calls
+        assert settings.find_one(name=f"retention_task:1:{B}") is not None
+    else:
+        assert report.state == AgentReportState.success
+        assert len(repo.removed) == 2 and repo.prune_calls == 1
+
+
+@pytest.mark.parametrize("failure,reason", [
+    ("timeout", "backend response timed out after 3 seconds"),
+    ("disconnected", "agent is not connected to the backend"),
+    ("rejected", "backend rejected request (AgentException)"),
+    ("transport", "backend request failed (ConnectionError)"),
+])
+def test_context_transport_failures_are_explained_in_the_operation_log(settings, monkeypatch, failure, reason):
+    repo, backend = Repo(), Backend()
+    repo.add_run(backend, number=10)
+    repo.add_run(backend, number=11)
+    calls = []
+
+    def call(*args, **kwargs):
+        calls.append(args)
+        if failure == "timeout":
+            raise socketio.exceptions.TimeoutError("private transport detail")
+        if failure == "transport":
+            raise socketio.exceptions.ConnectionError("private transport detail")
+        return {"success": False, "result": {"error": "AgentException"}}
+
+    agent = Agent.__new__(Agent)
+    agent.client = SimpleNamespace(connected=failure != "disconnected", call=call)
+    agent._Agent__resticapi = repo
+    monkeypatch.setattr(agent, "_Agent__set_repository", lambda _: None)
+    monkeypatch.setattr(runtime_module, "agent_settings", settings)
+    monkeypatch.setattr(runtime_module, "jobs", SimpleNamespace(find_one=lambda **kwargs: None))
+    monkeypatch.setenv("DRASTIC_COMMAND_TIMEOUT_SECONDS", "3")
+    report = agent.cmd_run_retention(1)
+    assert report.state == AgentReportState.warning and report.data["cleanup_pending"]
+    assert reason in report.log and "private transport detail" not in report.log
+    assert len(calls) == (0 if failure == "disconnected" else 1)
+    assert not repo.removed and not repo.prune_calls and not repo.checks
+
+
 @pytest.mark.parametrize("failure", ["forget", "prune", "verification", "policy_removed"])
 @pytest.mark.parametrize("solo", [False, True])
 def test_retry_reselects_remaining_snapshots_and_preserves_local_prune_work(settings, failure, solo):
@@ -350,7 +417,7 @@ def test_new_check_failure_cannot_be_cleared_by_an_older_check(settings):
     assert [check["read_data"] for check in repo.checks] == [False, True]
 
 
-@pytest.mark.parametrize("invalid", ["missing-zone", "invalid-zone", "empty-rules", "unknown-rule", "legacy-policy", "changed-zone"])
+@pytest.mark.parametrize("invalid", ["missing-zone", "invalid-zone", "empty-rules", "unknown-rule", "legacy-policy", "changed-zone", "changed-owner"])
 def test_invalid_or_changed_context_never_deletes_backups(settings, invalid):
     repo, backend = Repo(), Backend()
     repo.add_run(backend, number=10)
@@ -372,6 +439,8 @@ def test_invalid_or_changed_context_never_deletes_backups(settings, invalid):
 
     if invalid == "changed-zone":
         repo.on_check = lambda: setattr(backend, "timezone", "Europe/Berlin")
+    elif invalid == "changed-owner":
+        repo.on_check = lambda: setattr(backend, "owner_uuid", FOREIGN)
     report = execute(repo, backend, settings, request=context)
     assert report.state == AgentReportState.warning and report.data["cleanup_pending"]
     assert not repo.removed and not repo.prune_calls

@@ -36,10 +36,15 @@ def create_client(*, execute, sync_pending, connect_requested):
 
 
 def request(client, action, args, *, timeout):
+    error = "Disconnected"
+    message = "agent is not connected to the backend"
     if client and client.connected:
         try:
             return client.call("request", {"action": action, "args": args}, namespace="/agent", timeout=timeout)
         except Exception as exc:
             # The timed-out request may predate a successful reconnect. Do not tear it down.
             logging.warning("Agent request '%s' failed (%s): %s", action, type(exc).__name__, exc)
-    return {"success": False, "result": {}}
+            error = type(exc).__name__
+            message = (f"backend response timed out after {timeout} seconds"
+                       if isinstance(exc, socketio.exceptions.TimeoutError) else f"backend request failed ({error})")
+    return {"success": False, "result": {"error": error, "message": message}}

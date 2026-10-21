@@ -205,6 +205,7 @@ class RetentionService:
             now = datetime.now(timezone.utc)
             validate_policy(current_policy)
             set_repository(repository_id)
+            snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
             context = validate_context(request_context(), repository_scope)
             applicable = (any(context["job_policies"].values()) if repository_scope else current_policy)
             if not applicable and not context["default"] and not settings.find_one(name=prune_key):
@@ -218,8 +219,6 @@ class RetentionService:
             args["current_operation_uuid"] = current_operation_uuid or report.uuid
             settings.upsert({"name": task_key, "settings": json.dumps({"args": args, "retry_at": 0})}, ["name"])
             report.log_message("Running retention for repository")
-            snapshots = {item["id"]: item for item in resticapi.snapshots() or []}
-            context = validate_context(request_context(), repository_scope)
             owner = context["owner_uuid"]
             account_timezone = context["timezone"]
             scanned_jobs = {snapshot_uuid(snapshot, "job_uuid") for snapshot in snapshots.values()
