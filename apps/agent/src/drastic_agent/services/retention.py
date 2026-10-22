@@ -170,6 +170,7 @@ class RetentionService:
 
     @staticmethod
     def select_runs(snapshots, context, policies, current_operation_uuid, *, now):
+        """Select expired owned runs, preserving active work and each job's newest proven complete run."""
         groups = {}
         running = set(context["running_operation_uuids"]) - {current_operation_uuid}
         for snapshot in snapshots.values():

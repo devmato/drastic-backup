@@ -12,6 +12,7 @@ from drastic_common import diagnostics
 
 
 def flush(send_report):
+    """Send dirty active reports and at most one eligible finished report, deleting only acknowledged work."""
     for report in list(AgentReport.pending_reports):
         if not report.sent:
             send_report(report)

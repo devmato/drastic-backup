@@ -19,6 +19,8 @@ from drastic_common.restic.exceptions import ResticCancelledError, ResticError, 
 
 
 class BackupJobHandler:
+    """Own hooks, artifact history and post-backup safety checks around a type-specific data phase."""
+
     def __init__(
         self,
         agent,
@@ -41,6 +43,7 @@ class BackupJobHandler:
         self._backup_failure_summary = None
 
     def run(self):
+        """Return a terminal report; cleanup and hook failures must not erase already saved artifacts."""
         running_job = AgentReport.get_report(job_id=self.job["id"])
         report = AgentReport.backup_operation(
             job_id=self.job["id"],
@@ -329,6 +332,7 @@ class BackupJobHandler:
         return artifact
 
     def backup_tags(self, artifact, operation_uuid):
+        """Bind every snapshot to its account, job, run and artifact for safe selection and cleanup."""
         return [f"drastic-owner:{self.agent.owner_uuid}", f"job_uuid:{self.job['uuid']}",
                 f"operation_uuid:{operation_uuid}", f"artifact_uuid:{artifact['uuid']}",
                 f"artifact_key:{artifact['artifact_key']}"]
@@ -432,4 +436,5 @@ class BackupJobHandler:
         return True
 
     def run_backup(self, report):
+        """Implement the data phase and persist artifact results; the shared lifecycle owns final reporting."""
         raise NotImplementedError

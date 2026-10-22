@@ -5,6 +5,7 @@ let socketPromise = null
 let socketInstance = null
 
 export async function ensureSocket() {
+  // Share one cookie-authenticated connection; resolving does not wait for the server handshake.
   if (typeof window === 'undefined') {
     return null
   }
@@ -51,6 +52,7 @@ export async function ensureSocket() {
   return socketPromise
 }
 
+/** Subscribe without owning the shared connection; the returned cleanup removes only this handler. */
 export async function subscribeToSocketEvents(handler) {
   let socket = null
 

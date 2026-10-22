@@ -1,3 +1,5 @@
+"""Resolve public server URLs and preserve managed Restic repository paths."""
+
 from __future__ import annotations
 
 from typing import Any, Mapping
@@ -11,6 +13,7 @@ _RESTIC_MARKER = "/restic/"
 
 
 def configured_public_url(config: Mapping[str, Any] | None = None) -> str:
+    """Use explicit configuration or loopback without consulting HTTP request headers."""
     source = current_app.config if config is None else config
     explicit = explicit_public_url(source)
     if explicit:
@@ -21,6 +24,7 @@ def configured_public_url(config: Mapping[str, Any] | None = None) -> str:
 
 
 def public_server_url() -> str:
+    """Prefer PUBLIC_URL, then the request origin, then the configured loopback fallback."""
     explicit = explicit_public_url(current_app.config)
     if explicit:
         return explicit

@@ -1,3 +1,5 @@
+"""Wrap repository credentials for users and agents; callers own authorization and commits."""
+
 import secrets
 
 import bcrypt
@@ -25,6 +27,7 @@ def create_user_recovery_key() -> str:
 
 
 def ensure_user_recovery_key(user: User, account_password: str) -> str:
+    """Unwrap or initialize the account key without committing; this does not verify the login hash."""
     if not user.encrypted_recovery_key:
         recovery_key = create_user_recovery_key()
         user.encrypted_recovery_key = encrypt_with_password(recovery_key, account_password)
@@ -58,6 +61,7 @@ def validate_user_recovery_key(recovery_key: str | None) -> str:
 
 
 def store_recovery_key(repository: Repository, repository_recovery_key: str, user_recovery_key: str) -> None:
+    """Stage a versioned password envelope; this does not rotate keys in the Restic repository."""
     secret = repository.password_secret
     if secret is None:
         secret = UserSecret(
@@ -101,6 +105,7 @@ def ensure_agent_recovery_envelope(agent: Agent, repository: Repository, recover
 
 
 def ensure_agent_secret_envelope(agent: Agent, secret: UserSecret, plaintext: str) -> None:
+    """Stage a recipient-specific envelope that the backend cannot unwrap with the public key."""
     if not agent.public_key:
         return
 
@@ -136,6 +141,7 @@ def ensure_agent_envelopes_from_user_recovery_key(
     repositories: list[Repository],
     user_recovery_key: str | None,
 ) -> None:
+    """Require an unlocked account key only when an agent lacks a current secret envelope."""
     secrets_by_id = {}
     for repository in repositories:
         secret = repository.password_secret
@@ -174,6 +180,7 @@ def store_agent_restic_access_key(
     encrypted_restic_access_key,
     restic_key_id: str | None = None,
 ) -> None:
+    """Stage an agent-sealed key on its existing assignment; no plaintext or commit is required here."""
     db.session.execute(
         update(agent_repositories)
         .where(

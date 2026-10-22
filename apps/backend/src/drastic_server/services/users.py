@@ -44,6 +44,7 @@ def initialize_user(data):
 
 
 def change_password(user_id, data):
+    """Rewrap the account recovery key and revoke browser/debug access in the same commit."""
     user = get_user(user_id)
     try:
         user.change_password(data["current_password"], data["new_password"])

@@ -65,6 +65,7 @@ def normalize_schedule_config(config):
 
 
 def assign_agent_repository(user_id, agent, repository_id, user_recovery_key=None):
+    """Stage assignment and missing secret envelopes; return the repository and whether it was added."""
     repository = require_result(Repository.query.filter(
         Repository.id == repository_id,
         Repository.user_id == user_id,
@@ -168,6 +169,7 @@ def _get_job_type(job_type):
 
 
 def ensure_job_connection(agent, job_type, config=None):
+    """Reject unsupported job features using the agent's last reported protocol and connection state."""
     if job_type == "truenas" and (agent.protocol_version or 0) < 14:
         raise ValueError("Update the agent to use TrueNAS path selection (protocol 14 required)")
     if (agent.protocol_version or 0) < PATH_INCLUDE_EXCEPTIONS_PROTOCOL and config is not None and job_type in {"file", "truenas"}:

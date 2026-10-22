@@ -1,3 +1,5 @@
+"""Define command names, protocol gates and request envelopes for both transport peers."""
+
 import enum
 
 from marshmallow import EXCLUDE, Schema, fields, validate
@@ -69,6 +71,7 @@ AGENT_COMMAND_MIN_PROTOCOL = {
 }
 
 
+# These acknowledge admission; terminal results arrive later through durable operation reports.
 ASYNC_AGENT_COMMANDS = frozenset(
     {
         AgentCommandName.run_job,

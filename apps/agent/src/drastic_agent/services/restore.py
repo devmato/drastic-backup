@@ -22,6 +22,7 @@ class RestoreContext:
 class RestoreService:
     @staticmethod
     def delete_point(agent, repository_id, snapshot_ids, point_key, operation_uuid):
+        """Revalidate point membership under repository admission and checkpoint removals before prune."""
         report = AgentReport(type=AgentReportType.retention, repository_id=repository_id, operation_uuid=operation_uuid,
                              data={"scope": "repository", "manual_delete": True, "deleted_snapshot_ids": []}).start_reporting()
         report.log_message("Starting restore point deletion")
@@ -158,6 +159,10 @@ class RestoreService:
         ownership_by_name=False,
         skip_xattrs=False,
     ):
+        """Revalidate the source and target, returning a terminal report even on execution failure.
+
+        The caller owns resource admission. Failed or cancelled restores may leave partial destination data.
+        """
         report = AgentReport.restore_report(
             report_uuid=operation_uuid,
             job_id=job_id,

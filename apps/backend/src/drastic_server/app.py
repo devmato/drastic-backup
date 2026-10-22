@@ -1,3 +1,5 @@
+"""Compose the Flask application, authentication hooks and public entry points."""
+
 import atexit
 import hashlib
 import hmac
@@ -29,12 +31,12 @@ from drastic_server.views.restic_proxy import blp as restic_proxy_blp
 _INSECURE_MASTER_SECRETS = frozenset({"change-me-local-secret", ""})
 
 
-# Called on server shutdown
 def cleanup_app():
     print("Stopping drastic-server...")
 
 
 def create_app(config_object=None):
+    """Apply environment overrides before initializing extensions and background services."""
     app = Flask(__name__)
     app.config.from_object(DefaultConfig)
 
@@ -65,7 +67,6 @@ def create_app(config_object=None):
 
     _warn_insecure_master_secret(app)
 
-    # Register flask app object to extensions
     jwt.init_app(app)
     db.init_app(app)
     migrate.init_app(app, db)
@@ -83,17 +84,14 @@ def create_app(config_object=None):
     from drastic_server.services.chains import install_dispatcher
 
     install_dispatcher(app)
-    # Register API blueprints via flask-smorest
     for blp in api_blueprints:
         smorest_api.register_blueprint(blp)
 
-    # Register CLI commands
     register_cli(app)
     _register_install_route(app)
     _register_docs_routes(app)
     _register_spa_routes(app)
 
-    # JWT user lookup callback
     @jwt.user_lookup_loader
     def user_lookup_callback(_jwt_header, jwt_data):
         identity = jwt_data["sub"]
@@ -185,6 +183,7 @@ def _derive_settings_encryption_key(app: Flask) -> None:
 
 
 def _derive_secret(master_secret: str, purpose: bytes) -> str:
+    # Separate purposes keep signing and settings-encryption keys independent.
     return hmac.new(master_secret.encode(), purpose, hashlib.sha256).hexdigest()
 
 

@@ -1,3 +1,5 @@
+"""Run supervised Restic commands with worker-local credentials, progress and cancellation."""
+
 import json
 import logging
 import os
@@ -24,6 +26,8 @@ from drastic_common.restic.exceptions import (
 
 
 class ResticApi:
+    """Share process supervision while keeping repository and scoped cancellation state per thread."""
+
     _processes = {}
     _process_lock = threading.Lock()
     _producer_exit_grace = 1.0
@@ -390,6 +394,7 @@ class ResticApi:
         return parser(output)
 
     def set_repository(self, repository):
+        """Set the current thread's target; other workers using this client keep their own credentials."""
         self._state.repository = repository
 
     @contextmanager
@@ -483,6 +488,10 @@ class ResticApi:
         callback_throttle=None,
         producer_stderr_callback=None,
     ):
+        """Pipe a producer into Restic; both must succeed, even if Restic already saved a snapshot.
+
+        Cancellation or timeout stops both process groups; source failures retain any saved snapshot ID.
+        """
         started = time.monotonic()
         operation_uuid = (callback_args or {}).get("operation_uuid") or getattr(getattr(callback, "__self__", None), "uuid", None)
         cmd = self.__make_command(
@@ -698,6 +707,7 @@ class ResticApi:
         ownership_by_name=False,
         skip_xattrs=False,
     ):
+        """Apply Restic overwrite flags; callers own target-path safety and fail-if-exists preflight."""
         if not include_paths:
             raise ValueError("Restore requires at least one include path")
         overwrite = {

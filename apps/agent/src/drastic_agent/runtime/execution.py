@@ -25,6 +25,7 @@ class ExecutionManager:
         self._maintenance = False
 
     def submit(self, function, *args, resources=(), operation_uuid=None, **kwargs):
+        """Reserve resources through queueing and execution; return None if admission is unavailable."""
         resources = {resource for resource in resources if resource is not None}
         with self._lock:
             if self._shutdown or self._maintenance or self._admitted >= self.max_workers + self.max_pending:
@@ -69,6 +70,7 @@ class ExecutionManager:
             return self._operations.get(operation_uuid)
 
     def cancel(self, operation_uuid):
+        """Cancel only a queued Future; running workers need their operation's cancellation event."""
         with self._lock:
             operation = self._operations.get(operation_uuid)
         return isinstance(operation, Future) and operation.cancel()
@@ -79,6 +81,7 @@ class ExecutionManager:
             return self._maintenance
 
     def start_maintenance(self, starter, *, preflight=None):
+        """Launch only while idle; a launch exception leaves admission paused for updater reconciliation."""
         with self._lock:
             if self._shutdown or self._maintenance or self._admitted or self._operations:
                 return False

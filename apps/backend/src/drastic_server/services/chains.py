@@ -88,6 +88,7 @@ def list_runs(user_id, chain_id, before_id=None):
 
 
 def cancel_run(user_id, chain_id, run_id):
+    """Persist a cancellation request; the dispatcher fences admission and cancels active work later."""
     get_chain(user_id, chain_id)
     run = require_result(BackupChainRun.query.filter_by(id=run_id, chain_id=chain_id))
     if run.state == "running":
@@ -100,6 +101,7 @@ def utcnow():
 
 
 def save_chain(chain, user_id, data):
+    """Validate owned step references and commit the chain with any new repository assignments."""
     steps = []
     retry = BackupRetrySchema().load(data.get("retry", chain.retry) or {})
     for step in data["steps"]:
@@ -166,6 +168,7 @@ def chain_payload(chain):
 
 
 def start_chain(chain, *, now=None, planned_slot=None):
+    """Commit a run and consume due one-shots; an already-consumed scheduled slot returns None."""
     now = now or utcnow()
     # Serialize manual/scheduled starts and consume one-shots with their durable occurrence.
     chain = require_result(BackupChain.query.filter_by(id=chain.id).populate_existing().with_for_update())

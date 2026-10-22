@@ -30,6 +30,7 @@ function shouldSkipAuthRefresh(config) {
 }
 
 async function ensureSessionRefresh() {
+  // Refresh tokens rotate: parallel 401 responses must share one refresh instead of replaying the old token.
   if (!authRefreshInFlight) {
     authRefreshInFlight = import('stores/user')
       .then(({ useUserStore }) => useUserStore().refreshSession())

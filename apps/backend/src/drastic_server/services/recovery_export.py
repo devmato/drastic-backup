@@ -83,6 +83,7 @@ def build_recovery_archive(payload, archive_password, restic_targets):
 
 
 def build_recovery_export_payload(user: User, password: str) -> dict[str, Any]:
+    """Reauthenticate and return plaintext recovery material; never log or persist this payload."""
     try:
         password_matches = user.check_password(password)
     except (TypeError, ValueError) as exc:

@@ -23,6 +23,7 @@ def json_mapping(value):
 
 
 def agent_password(repository, private_key, cache):
+    """Unseal a locally cached envelope without backend I/O; plaintext stays in the supplied memory cache."""
     repository_id = repository.get("id")
     if repository_id in cache:
         return cache[repository_id]

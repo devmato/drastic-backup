@@ -1,4 +1,7 @@
-// ponytail: only background reloads; one request and one pending follow-up per queue.
+/**
+ * Coalesce background notices into one request and one follow-up; errors are logged, not propagated.
+ * The returned function is not a completion barrier. cancel() drops future work, not an active request.
+ */
 export function createQueuedReload(loader, interval = 1000) {
   let inFlight = false
   let queued = false

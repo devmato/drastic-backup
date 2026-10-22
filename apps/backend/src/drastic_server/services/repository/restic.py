@@ -1,3 +1,5 @@
+"""Quarantine native repository files so database deletion can be rolled back or recovered."""
+
 from __future__ import annotations
 
 import json
@@ -39,6 +41,7 @@ def generate_native_repository_password() -> str:
 
 
 def native_repository_storage_path(repository_path: str) -> Path:
+    """Resolve a native path beneath the data root, rejecting symlinks and traversal."""
     normalized_path = _normalize_native_repository_path(repository_path)
     path_segments = normalized_path.split("/")
     data_root = _native_repository_data_root()
@@ -58,6 +61,7 @@ def native_repository_has_locks(repository_path: str) -> bool:
 
 
 def quarantine_native_repository(repository_path: str) -> NativeRepositoryQuarantine | None:
+    """Journal and move existing data; the caller must restore on rollback or purge after commit."""
     normalized_path = _normalize_native_repository_path(repository_path)
     storage_path = native_repository_storage_path(repository_path)
     if not storage_path.exists():
@@ -96,6 +100,7 @@ def quarantine_native_repository(repository_path: str) -> NativeRepositoryQuaran
 
 
 def restore_quarantined_native_repository(quarantine: NativeRepositoryQuarantine) -> None:
+    """Undo a staged deletion without overwriting a repository recreated at the original path."""
     persisted = _read_quarantine_entry(quarantine.entry_path)
     if persisted != quarantine:
         raise RuntimeError("Invalid native repository quarantine entry")
@@ -112,6 +117,7 @@ def restore_quarantined_native_repository(quarantine: NativeRepositoryQuarantine
 
 
 def delete_quarantined_native_repository(quarantine: NativeRepositoryQuarantine) -> None:
+    """Permanently purge a validated entry; call only after its database deletion commits."""
     persisted = _read_quarantine_entry(quarantine.entry_path)
     if persisted != quarantine:
         raise RuntimeError("Invalid native repository quarantine entry")
@@ -119,6 +125,7 @@ def delete_quarantined_native_repository(quarantine: NativeRepositoryQuarantine)
 
 
 def reconcile_native_repository_quarantine() -> tuple[int, int]:
+    """Restore still-referenced data and purge committed deletions; leave conflicts for inspection."""
     from drastic_server.models.repository import Repository
 
     quarantine_root = _native_repository_quarantine_root(create=False)

@@ -1,3 +1,5 @@
+"""Validate TrueNAS connections and dataset-relative backup selection shared across applications."""
+
 import re
 from pathlib import PurePosixPath
 from urllib.parse import urlsplit
@@ -52,6 +54,7 @@ class TrueNASPathSchema(Schema):
 
 
 def path_is_within(entry, parent):
+    """Compare logical dataset/path identities; physical custom mountpoints are resolved by the agent."""
     if entry["dataset"] != parent["dataset"]:
         return parent["path"] == "." and entry["dataset"].startswith(parent["dataset"] + "/")
     return (parent["path"] == "." or entry["path"] == parent["path"]

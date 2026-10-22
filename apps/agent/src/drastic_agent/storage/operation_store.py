@@ -1,3 +1,5 @@
+"""Persist completed reports for replay across disconnects and agent restarts."""
+
 import json
 import logging
 from datetime import datetime, timezone
@@ -33,6 +35,7 @@ class OperationStore:
         self._lock = RLock()
 
     def save(self, operation):
+        """Snapshot a finished report; callers can include this upsert in their history transaction."""
         with operation._lock:
             if not operation.ended:
                 raise ValueError("Only completed operations can be added to the outbox")
@@ -70,6 +73,7 @@ class OperationStore:
             agent_operation_queue.delete(uuid=operation_uuid)
 
     def load(self, operation_class):
+        """Rehydrate without creating history; log and delete corrupt entries instead of blocking replay."""
         operations = []
         with self._lock:
             for row in list(agent_operation_queue.all()):

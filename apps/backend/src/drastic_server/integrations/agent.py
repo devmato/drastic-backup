@@ -54,6 +54,7 @@ class AgentService:
 
     @classmethod
     def send_command(cls, agent, command, await_response=True, timeout=None, **kwargs):
+        """Dispatch a supported command; an awaited timeout reports uncertainty, not execution failure."""
         command = agent_command_value(command)
         if not agent.online:
             return cls.failed_command_report("Agent is offline")

@@ -144,6 +144,7 @@ class RestoreService:
 
     @classmethod
     def list_snapshots(cls, user_id, job_id, agent_id, repository_id):
+        """Read the assigned repository, optionally filtering by a live job rather than report history."""
         job = cls._get_job(user_id, job_id) if job_id is not None else None
         agent = cls._get_agent(user_id, agent_id)
         repository = cls._get_repository(user_id, repository_id)
@@ -164,6 +165,7 @@ class RestoreService:
 
     @classmethod
     def delete_point(cls, user_id, data):
+        """Revalidate the confirmed member set, then commit deletion intent before agent dispatch."""
         agent = cls._get_agent(user_id, data["agent_id"])
         repository = cls._get_repository(user_id, data["repository_id"])
         cls._ensure_agent_repository(agent, repository)
@@ -249,6 +251,7 @@ class RestoreService:
 
     @classmethod
     def start_restore(cls, user_id, data):
+        """Verify access and snapshot capabilities, then commit intent; dispatch timeouts remain unresolved."""
         job = cls._get_job(user_id, data["job_id"]) if data.get("job_id") is not None else None
         agent = cls._get_agent(user_id, data["agent_id"])
         repository = cls._get_repository(user_id, data["repository_id"])

@@ -71,6 +71,7 @@ def update_agent(user_id, agent_id, data):
 
 
 def delete_agent(user_id, agent_id):
+    """Remove configuration but retain owned history; unresolved operations block the deletion."""
     # Lock the parent before checking children. New operation inserts also need this
     # parent through their foreign key, and report ingestion takes the same lock.
     agent = require_result(Agent.query.filter_by(id=agent_id, user_id=user_id).populate_existing().with_for_update())

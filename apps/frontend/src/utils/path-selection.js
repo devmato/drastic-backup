@@ -8,6 +8,7 @@ export function isPathWithin(entry, parent) {
 }
 
 export function pathSelectionOptions(entry, selection, contains = isPathWithin) {
+  // The most specific containing rule wins; exclusions take precedence at the same path.
   let rule = null
   for (const [state, entries] of [['include', selection.paths || []], ['exclude', selection.exclude_patterns || []]]) {
     for (const parent of entries) {

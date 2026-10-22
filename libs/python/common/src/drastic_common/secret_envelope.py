@@ -1,3 +1,5 @@
+"""Versioned password and agent-key envelopes shared by the backend and agent."""
+
 import base64
 from typing import Any, Mapping
 
@@ -44,6 +46,7 @@ def _derive_password_key(password: str, salt: bytes, iterations: int) -> bytes:
 
 
 def encrypt_with_password(plaintext: str, password: str) -> Mapping[str, str | int]:
+    """Return an authenticated envelope with its own salt and KDF parameters for later decryption."""
     salt = get_random_bytes(16)
     key = _derive_password_key(password, salt, _PASSWORD_ITERATIONS)
     cipher = AES.new(key, AES.MODE_GCM)
@@ -94,6 +97,7 @@ def generate_agent_keypair() -> tuple[str, str]:
 
 
 def encrypt_for_public_key(plaintext: str, public_key: str) -> Mapping[str, str | int]:
+    """Seal the value with AES-GCM and wrap its random data key for the receiving agent."""
     try:
         key = RSA.import_key(public_key)
     except (ValueError, IndexError, TypeError) as exc:
@@ -120,6 +124,7 @@ def encrypt_for_public_key(plaintext: str, public_key: str) -> Mapping[str, str 
 
 
 def decrypt_with_private_key(envelope: Mapping[str, Any], private_key: str) -> str:
+    """Read current hybrid envelopes and legacy direct-RSA values without rewriting stored data."""
     if int(envelope.get("v") or 0) != _ENVELOPE_VERSION:
         raise SecretEnvelopeError("unsupported public key envelope version")
     algorithm = envelope.get("alg")

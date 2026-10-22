@@ -1,3 +1,5 @@
+"""Stream managed Restic traffic after authenticating the agent and its assignment."""
+
 from __future__ import annotations
 
 from hashlib import sha256
@@ -37,6 +39,8 @@ def _upstream_session() -> requests.Session:
 
 
 class _SizedRequestStream:
+    """Expose Content-Length to requests without buffering known-length uploads."""
+
     def __init__(self, stream, content_length: int | None):
         self._stream = stream
         self._content_length = content_length
@@ -177,7 +181,7 @@ def _authenticate_agent() -> Agent | None:
 
     password_bytes = password.encode("utf-8")
     auth_key = (agent_id, agent.secret, sha256(password_bytes).digest())
-    # ponytail: one successful auth per thread; mixed-agent traffic may repeat bcrypt.
+    # Include the stored hash so credential rotation invalidates this thread's auth cache.
     if getattr(_state, "auth_key", None) != auth_key:
         if not bcrypt.checkpw(password_bytes, agent.secret.encode("utf-8")):
             return None
@@ -214,6 +218,7 @@ def _authorize_repository(agent: Agent, proxy_path: str) -> Repository | None:
 
 
 def _normalize_proxy_path(proxy_path: str) -> tuple[str, bool]:
+    """Decode before authorization so encoded traversal cannot escape the assigned repository."""
     raw_path = str(proxy_path or "")
     has_trailing_slash = raw_path.endswith("/")
     decoded_path = raw_path

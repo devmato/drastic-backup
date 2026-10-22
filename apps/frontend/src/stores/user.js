@@ -38,6 +38,7 @@ function getRecoveryExportFilename(contentDisposition) {
 export const useUserStore = defineStore('user', () => {
 
   const user = ref(null)
+  // Keep the unlocked key in memory only; never copy it to browser storage.
   const recoveryKey = ref(null)
   const needsInit = ref(false)
   const environment = ref('dev')
@@ -207,6 +208,7 @@ export const useUserStore = defineStore('user', () => {
   }
 
   async function withRecoveryKey(operation, { require = false } = {}) {
+    // Retry once after unlocking, and only for errors explicitly identified as recovery-key failures.
     let key = require ? await ensureRecoveryKey() : recoveryKey.value
 
     try {

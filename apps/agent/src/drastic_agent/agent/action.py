@@ -1,3 +1,5 @@
+"""Execute configured host-shell and Docker lifecycle hooks with task timeouts."""
+
 import subprocess
 from threading import Lock
 
@@ -23,6 +25,7 @@ class AgentAction:
     def docker(report, docker_client, container, action, command, **kwargs):
         timeout = env_int("DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS)
         api = getattr(docker_client, "api", None)
+        # The SDK timeout belongs to the shared client, so hooks must not change it concurrently.
         with AgentAction._docker_timeout_lock:
             previous_timeout = getattr(api, "timeout", None)
             if api is not None:

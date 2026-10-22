@@ -238,9 +238,8 @@ class Agent:
             timeout=env_int("DRASTIC_RESTIC_TIMEOUT_SECONDS", DefaultConfig.RESTIC_TIMEOUT_SECONDS),
         )
 
-    """ Start job & report scheduler (Blocking) """
-
     def __start_scheduler(self):
+        """Run connection, sync, schedule and report maintenance until shutdown; blocks the caller."""
         sleep_time = 0.1
         next_sync_attempt = 0
 
@@ -270,7 +269,6 @@ class Agent:
                 self._debug_scheduler["phase"] = "schedules"
                 self.__run_due_schedules(now)
 
-            # Process tasks that require server connection
             if self.connected:
                 self._debug_scheduler["phase"] = "reports"
                 self.__flush_report_queue()
@@ -382,14 +380,10 @@ class Agent:
         self.__next_reconnect_attempt_at = now + self.__reconnect_retry_interval
         self.__connect()
 
-    """ Send request to server """
-
     def __send_request(self, __action, **kwargs):
         return connection.request(self.client, __action, kwargs, timeout=env_int(
             "DRASTIC_COMMAND_TIMEOUT_SECONDS", DefaultConfig.COMMAND_TIMEOUT_SECONDS,
         ))
-
-    """ Send report to server """
 
     def __send_report(self, report):
         # Retain the outbox until metadata IDs are reconciled, without hiding execution's end.
@@ -398,13 +392,10 @@ class Agent:
                               completion_pending=lambda: bool(report.ended and agent_settings.find_one(
                                   name=task_key(report.repository_id, report.uuid))))
 
-    """ Setup repository for use with restic binary """
-
     def __set_repository(self, repository_id):
-        # Load repository
+        """Configure the worker's repository and recover completion IDs under its existing admission."""
         repository = repositories.find_one(id=repository_id)
 
-        # Cancel if repository not found
         if not repository:
             raise AgentExeption(
                 f"Repository with id {repository_id} not found in agent repositories"
@@ -417,11 +408,11 @@ class Agent:
         return repository
 
     def configure_repository(self, repository):
+        """Resolve credentials and set this thread's Restic target without recovering pending cleanup."""
         backup_host = f"drastic-{self.uuid}"
         location, env = self.__repository_location_env(repository)
         password = self.__repository_password(repository, location, env)
 
-        # Setup repository for usage with restic
         self.__resticapi.set_repository(
             ResticRepository(
                 location=location,
@@ -725,12 +716,9 @@ class Agent:
 
         return False
 
-    """ Execute agent actions """
-
     def __execute_actions(self, actions, report):
         log_message = True
         for action in actions:
-            # Log hook name on first loop run
             if log_message:
                 report.log_message(f"Executing actions on {action['hook']}:")
                 log_message = False
@@ -746,24 +734,20 @@ class Agent:
                 )
                 continue
 
-            # Check if AgentAction has appropriate methode
             if hasattr(AgentAction, module):
                 try:
-                    # Execute action
                     getattr(AgentAction, module)(
                         report=report, docker_client=self.__docker_client, **action["data"]
                     )
                 except Exception as e:
                     report.set_data("hook_failed", True)
-                    # Set warning state and log message on error
                     report.log_message(
                         f"Failed to execute {module} action: {e}",
                         final_state=AgentReportState.warning,
                     )
 
-    """ Init configuration """
-
     def init_config(self):
+        """Load local identity, apply the server override and register if bootstrap credentials exist."""
         _ensure_agent_data_dir()
         self.__config.read(_agent_data_path("config.ini"))
         self.__ensure_ssh_keypair()
@@ -772,13 +756,11 @@ class Agent:
         env_username = os.getenv("DRASTIC_USER")
         env_password = os.getenv("DRASTIC_PASSWORD")
 
-        # Set server url from environment variable
         if env_server:
             self.__config["SERVER"] = {"url": env_server}
 
         configured_server = self.__config.get("SERVER", "url", fallback=env_server)
 
-        # Register new agent if no agent data is present
         if "AGENT" not in self.__config and env_username and env_password:
             self.register(configured_server, env_username, env_password)
 
@@ -857,9 +839,8 @@ class Agent:
             )
             return False
 
-    """ Startup agent """
-
     def startup(self):
+        """Recover durable work before admission, then block in the maintenance loop until shutdown."""
         if self.managed_repo_rewrite_enabled and self.env_name != "dev":
             self.__warn_managed_repo_rewrite_enabled()
 
@@ -884,10 +865,8 @@ class Agent:
         if self.install_type in {"git", "docker"}:
             self.__check_update(startup=True)
 
-        # Attempt registration/connection to server
         self.__maintain_server_connection(datetime.now())
 
-        # Start job & report scheduler (Blocking)
         self.__start_scheduler()
 
     def __warn_managed_repo_rewrite_enabled(self):
@@ -900,9 +879,8 @@ class Agent:
         )
         self.__managed_repo_rewrite_warning_logged = True
 
-    """ Shutdown agent """
-
     def shutdown(self):
+        """Signal cancellation, wait for admitted workers and preserve terminal reports for replay."""
         logging.info("Shutting down...")
 
         if hasattr(self, "_Agent__shutdown_event"):
@@ -925,9 +903,8 @@ class Agent:
         # Finalize any operations which did not exit through their worker.
         AgentReport.save_queue()
 
-    """ Save configuration """
-
     def save_config(self):
+        """Replace the identity/credential file atomically with private permissions."""
         logging.info("Saving config file")
         _ensure_agent_data_dir()
         config_path = _agent_data_path("config.ini")
@@ -1033,8 +1010,6 @@ class Agent:
         return updates.start(self.install_type, self.__execution_manager(), data_dir=_agent_data_dir(),
                              install_root=AGENT_INSTALL_ROOT, command=AGENT_COMMAND, unit=AGENT_UPDATE_UNIT)
 
-    """ Get available docker container on this client """
-
     def cmd_get_containers(self):
         report = AgentReport(AgentReportType.command, data=[])
 
@@ -1047,19 +1022,15 @@ class Agent:
 
         return report.finish()
 
-    """ Get directory listing (Used for backup job creation) """
-
     def cmd_get_dirlist(self, base_directory="/"):
         report = AgentReport.command_report(data={"dirlist": []})
 
-        # Abort if path dont exist
         if not os.path.exists(base_directory):
             report.log_message(
                 "Requested directory doesn't exist", final_state=AgentReportState.failed
             )
             return report.finish()
 
-        # Abort if path is not directory
         if not os.path.isdir(base_directory):
             report.log_message(
                 "Requested path is not a directory", final_state=AgentReportState.failed
@@ -1154,9 +1125,11 @@ class Agent:
         report.log_message("Repository check finished successfully")
         return report.finish()
 
-    """ Sync job & repository data with server """
-
     def cmd_sync(self):
+        """Replace cached configuration transactionally, then unseal credentials into memory.
+
+        Secret warnings do not undo a successful configuration sync; failed writes retain the old cache.
+        """
         report = AgentReport.command_report()
 
         request = self.__send_request("sync")
@@ -1251,8 +1224,6 @@ class Agent:
     def __store_secret_envelope_value(self, envelope):
         repository_secrets_service.store_secret_value(envelope, self.private_key, self.__secret_value_cache())
 
-    """ Run backup job: returns None """
-
     def cmd_run_job(
         self,
         job_id,
@@ -1260,6 +1231,7 @@ class Agent:
         operation_uuid=None,
         run_options=None,
     ):
+        """Execute an admitted backup and return its terminal report, or a command report on rejection."""
         if (run_options or {}).get("chain_run_id"):
             reason = self.__validate_run_job_admission({"job_id": job_id, "repository_id": repository_id,
                                                        "run_options": run_options})
@@ -1333,9 +1305,8 @@ class Agent:
             report.log_message(str(exc), final_state=AgentReportState.failed)
         return report.finish()
 
-    """ Cancel running backup job """
-
     def cmd_cancel_job(self, job_id, operation_uuid=None, cancel_if_missing=False):
+        """Cancel queued/running work; cancel_if_missing durably fences a not-yet-admitted chain UUID."""
         report = AgentReport.command_report()
         with _COMMAND_ADMISSION_LOCK:
             if cancel_if_missing and operation_uuid and not agent_operations.find_one(uuid=operation_uuid):
@@ -1382,8 +1353,6 @@ class Agent:
 
         return report.finish()
 
-    """ Run restore point retention """
-
     def cmd_run_retention(self, repository_id, job_id=None, job_uuid=None, current_operation_uuid=None,
                           operation_uuid=None, repository_scope=False):
         job = jobs.find_one(id=job_id)
@@ -1418,8 +1387,6 @@ class Agent:
             resticapi=self.__resticapi, settings=agent_settings, send_report=self.__send_report,
             operation_uuid=operation_uuid, repository_scope=repository_scope,
         )
-
-    """ Unlock repository """
 
     def cmd_unlock_repository(self, repository_id, operation_uuid=None):
         report = AgentReport(

@@ -23,6 +23,7 @@ export function useJobEditor(jobStore, agentStore, userStore) {
   }
 
   async function saveJob(data, editingJob, agentId) {
+    // Leave the form draft intact: a later child-write failure cannot roll back earlier API commits.
     submitting.value = true
     let dirty = false
     let failed = false

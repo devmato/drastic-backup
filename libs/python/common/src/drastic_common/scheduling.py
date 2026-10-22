@@ -101,6 +101,7 @@ def timing_from_cron(expression):
 
 
 def as_cron(timing):
+    """Return a faithful cron expression, or an empty string when the timing cannot be represented."""
     kind = timing["type"]
     if kind == "cron":
         return timing["expression"]
@@ -141,6 +142,7 @@ def _valid_calendar_time(value):
 
 
 def matches(timing, now):
+    """Evaluate this minute in the supplied zone; skip DST gaps and repeated calendar occurrences."""
     if timing["type"] != "periodic" and not _valid_calendar_time(now):
         return False
     if timing["type"] == "once":
@@ -178,6 +180,7 @@ def next_run(timing, now):
 
 
 def slot_key(timing, now):
+    """Keep one-shot claims tied to wall time; recurring claims identify an absolute UTC minute."""
     if timing["type"] == "once":
         return "once:" + _once_at(timing, now).replace(tzinfo=None).isoformat()
     return now.astimezone(timezone.utc).replace(second=0, microsecond=0).isoformat()

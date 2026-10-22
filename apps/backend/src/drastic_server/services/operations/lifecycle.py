@@ -93,6 +93,7 @@ def unknown_agent_operation_dispatch_response(operation, msg):
 
 
 def fail_started_agent_operation(operation, message):
+    """Commit an explicit dispatch rejection only if no agent report has already confirmed the start."""
     operation = AgentOperation.query.filter_by(id=operation.id).populate_existing().with_for_update().one()
     if operation.state != AgentOperationState.running or (operation.data or {}).get(DISPATCH_STATUS_KEY) not in {"pending", "unknown"}:
         db.session.commit()

@@ -1,3 +1,5 @@
+"""Stream local Proxmox VM backups and journal temporary resources for crash cleanup."""
+
 import json
 import logging
 import math
@@ -18,11 +20,12 @@ from drastic_agent.storage.database import proxmox_native_runs, proxmox_snapshot
 from drastic_common.process import run_process
 from drastic_common.restic.exceptions import ResticCancelledError
 
-# ponytail: serialize local snapshot backups; per-VM locks if concurrency is needed.
+# Snapshot and native recovery share this host-wide lock with backup execution.
 PROXMOX_LOCK = Lock()
 
 
 def cleanup_snapshots(report=None):
+    """Delete only journaled, host-owned snapshots; callers hold PROXMOX_LOCK and unresolved rows remain."""
     for row in list(proxmox_snapshots.all()):
         try:
             if row["host_id"] != Path("/etc/machine-id").read_text().strip():
@@ -207,6 +210,7 @@ class ProxmoxBackupJobHandler(BackupJobHandler):
 
 
 def check_thin_pools(plan, report=None):
+    """Reject missing measurements or unsafe data/metadata headroom before or during streaming."""
     reserve_gib = env_int("DRASTIC_PROXMOX_MIN_FREE_GIB", 20)
     free_by_pool = {}
     for pool in {item["pool"] for item in plan["volumes"]}:

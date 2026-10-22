@@ -30,6 +30,7 @@ class SessionAuthService:
 
     @classmethod
     def login(cls, username, password, *, user_agent="", schedule_timezone=None):
+        """Authenticate and commit a session, returning the unlocked recovery key and token pair."""
         user = User.query.filter_by(name=username.lower()).first()
         if not user or not bcrypt.checkpw(password.encode("UTF-8"), user.password.encode("UTF-8")):
             raise AuthenticationFailed("Wrong username or password")
@@ -75,6 +76,7 @@ class SessionAuthService:
 
     @classmethod
     def create_session(cls, user: User, *, user_agent: str = "") -> tuple[UserSession, str, str]:
+        """Stage a session and issue tokens; the caller must commit before sending them to the client."""
         session = UserSession(
             user=user,
             refresh_token_hash="",
@@ -92,6 +94,7 @@ class SessionAuthService:
 
     @classmethod
     def rotate_refresh_token(cls, session: UserSession, *, user_agent: str = "") -> tuple[str, str]:
+        """Replace the accepted refresh-token hash; the caller owns the commit."""
         access_token, refresh_token, refresh_expires_at = cls._issue_tokens(session.user, session)
         session.refresh_token_hash = cls.hash_token(refresh_token)
         session.expires_at = refresh_expires_at

@@ -1,3 +1,5 @@
+"""Load backend defaults and typed DRASTIC_* environment overrides."""
+
 from __future__ import annotations
 
 import json
@@ -73,6 +75,7 @@ def apply_environment_config(
     *,
     environ: Mapping[str, str] | None = None,
 ) -> None:
+    """Override existing config; JSON values become native types, other values stay strings."""
     source = os.environ if environ is None else environ
     for key in sorted(source):
         if not key.startswith("DRASTIC_") or key == "DRASTIC_ENV":

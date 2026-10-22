@@ -1,3 +1,5 @@
+"""Track worker progress, durable operation history and reports awaiting backend acknowledgement."""
+
 import json
 import logging
 from collections import deque
@@ -19,6 +21,8 @@ _PID_UNSET = object()
 
 
 class AgentOperation:
+    """Mutable operation state; snapshot under _lock and coordinate shared queues with _registry_lock."""
+
     uuid = None
     type = None
     source = None
@@ -118,6 +122,7 @@ class AgentOperation:
         data=None,
         started=None,
     ):
+        """Return (row, created) for UUID deduplication; callers must serialize admission."""
         existing = agent_operations.find_one(uuid=operation_uuid)
         if existing:
             return existing, False
@@ -431,6 +436,7 @@ class AgentOperation:
 
     @final_state.setter
     def final_state(self, state):
+        # Failure and cancellation are sticky; downgrading a saved backup to a warning is explicit.
         with self._lock:
             if self._final_state not in (
                 AgentOperationState.failed,
@@ -444,6 +450,7 @@ class AgentOperation:
                 self._final_state = AgentOperationState.warning
 
     def finish(self, *, ended=None):
+        """Persist non-command history and outbox together before queueing delivery; safe to call twice."""
         with self._lock:
             if self.ended:
                 return self
@@ -530,6 +537,7 @@ class AgentOperation:
             return "\n".join(log["message"] for log in self._logs[self._log_cursor :])
 
     def mark_logs_sent(self, sequence=None):
+        """Advance only through acknowledged sequences; completed reports retain their full replay log."""
         with self._lock:
             if not self._full_log:
                 self._log_cursor = (self._logs[-1]["sequence"] if self._logs else self._log_cursor) if sequence is None else sequence
@@ -590,6 +598,7 @@ class AgentOperation:
 
     @classmethod
     def recover_interrupted(cls):
+        """Convert interrupted history to failed outbox reports, preserving artifacts and cleanup receipts."""
         for row in list(agent_operations.find(state=AgentOperationState.running.name)):
             if row["type"] == AgentOperationType.agent_update.name:
                 continue  # Recovered from the installer's durable status instead.

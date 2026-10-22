@@ -1,3 +1,5 @@
+"""Encrypt backend-managed settings with a server-held key, not a user recovery key."""
+
 import base64
 from hashlib import sha256
 from typing import Any, Mapping
@@ -13,6 +15,7 @@ class CryptoError(ValueError):
 
 
 def _derive_key(key: str) -> bytes:
+    # Callers supply a high-entropy application key; this is not a password KDF.
     normalized_key = str(key or "")
     if not normalized_key:
         raise CryptoError("encryption key cannot be empty")

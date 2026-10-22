@@ -35,6 +35,10 @@ class AgentOperationService:
         self.agent = agent
 
     def ingest(self, operation_json):
+        """Validate and commit a replayable report before notifications; return its acknowledgement ID.
+
+        Failed ingestion leaves rollback to the transport boundary; confirmed cleanup survives replays.
+        """
         operation_data = AgentOperationSchema().load(operation_json)
         if operation_data["type"] == AgentOperationType.command and operation_data["data"].get("diagnostic"):
             from drastic_server.services.diagnostics import ingest_report
