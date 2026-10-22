@@ -70,7 +70,7 @@ class AgentRequestService:
     def get_repositories(self):
         return self._repositories_payload()
 
-    def retention_context(self, repository_id, include_policies=False):
+    def retention_context(self, repository_id, include_policies=False, include_job_names=False):
         """Return current ownership, job membership and safety state, not backup history."""
         from drastic_server.models.job import Job
         from drastic_server.models.retention import Retention
@@ -82,6 +82,7 @@ class AgentRequestService:
         if (self.agent.protocol_version or 0) < RETENTION_RULES_PROTOCOL:
             raise AgentException(f"Update the agent for retention rules (protocol {RETENTION_RULES_PROTOCOL})")
         policy = Retention.query.filter_by(id=self.agent.user.default_retention_id, user_id=self.agent.user_id).first()
+        jobs = Job.query.with_entities(Job.uuid, Job.name).join(Agent).filter(Agent.user_id == self.agent.user_id).all()
         context = {
             "owner_uuid": self.agent.user.backup_owner_uuid,
             "timezone": self.agent.user.effective_schedule_timezone,
@@ -89,9 +90,12 @@ class AgentRequestService:
                 user_id=self.agent.user_id, repository_id=repository.id, type=AgentOperationType.backup,
                 ).filter(AgentOperation.blocks_cleanup)],
             "check_token": repository.retention_check_token,
-            "job_uuids": [uuid for (uuid,) in Job.query.with_entities(Job.uuid).join(Agent).filter(Agent.user_id == self.agent.user_id)],
+            "job_uuids": [job.uuid for job in jobs],
             "default": {"rules": policy.rules} if policy else None,
         }
+        # Older agents validate exact context keys, so labels must be explicitly requested.
+        if include_job_names:
+            context["job_names"] = {job.uuid: job.name for job in jobs}
         if include_policies:
             policies = {item.id: {"rules": item.rules}
                         for item in Retention.query.filter_by(user_id=self.agent.user_id)}

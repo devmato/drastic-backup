@@ -212,6 +212,65 @@ def test_reportless_owned_runs_are_retained_together_while_foreign_and_legacy_sn
     assert result.source.name == "triggered"  # Internal cleanup without a parent is still not a solo start.
     assert set(repo.items) == {a["snapshot_id"] for a in kept + foreign + legacy}
     assert repo.checks == [{"read_data": False, "read_data_subset": None}]
+    assert 'Removed restore point: Deleted job (00000000) — 01 Jan 2026, 00:00 UTC — 2 snapshots' in result.log
+
+
+@pytest.mark.parametrize("existing,names,count,label", [
+    (True, {A: "NAS daily"}, 2, '"NAS daily"'),
+    (True, {A: 'NAS "täglich"\nbackup'}, 1, '"NAS \\"täglich\\"\\nbackup"'),
+    (False, {}, 2, "Deleted job (00000000)"),
+    (True, None, 2, "Job (00000000)"),
+])
+def test_removed_restore_points_log_job_name_earliest_date_and_count_in_account_zone(settings, existing, names, count, label):
+    repo, backend = Repo(), Backend(job_uuids=[A] if existing else [])
+    backend.timezone = "Europe/Berlin"
+    old = repo.add_run(backend, number=10, count=count)
+    kept = repo.add_run(backend, number=11)
+    for index, artifact in enumerate(old):
+        repo.items[artifact["snapshot_id"]]["time"] = f"2026-10-{20 + index * 2}T00:00:00Z"
+    for artifact in kept:
+        repo.items[artifact["snapshot_id"]]["time"] = "2026-10-21T00:00:00Z"
+
+    def context():
+        return {**backend(), **({"job_names": names} if names is not None else {})}
+
+    result = execute(repo, backend, settings, job_uuid=A, policy=backend.default, request=context)
+    assert result.state == AgentReportState.success
+    assert f"Removed restore point: {label} — 20 Oct 2026, 02:00 CEST — {count} snapshot{'s' if count != 1 else ''}" in result.log
+    assert result.log.count("Removed restore point:") == 1
+    assert "Partially removed" not in result.log
+
+
+@pytest.mark.parametrize("failure", [None, "first_batch", "second_batch", "prune"])
+def test_removal_labels_only_count_confirmed_batches_and_survive_prune_failures(settings, monkeypatch, failure):
+    repo, backend = Repo(), Backend()
+    old = repo.add_run(backend, number=10, count=1100)
+    repo.add_run(backend, number=11)
+    calls = 0
+    forget = repo.forget_snapshots
+
+    def forget_batch(ids, prune=False):
+        nonlocal calls
+        calls += 1
+        forget(ids, prune=prune)
+        if (failure == "first_batch" and calls == 1) or (failure == "second_batch" and calls == 2):
+            raise ResticError("Forget response lost")
+
+    monkeypatch.setattr(repo, "forget_snapshots", forget_batch)
+    repo.fail_prune = failure == "prune"
+    result = execute(repo, backend, settings)
+    assert result.state == (AgentReportState.warning if failure else AgentReportState.success)
+    if failure == "first_batch":
+        assert "removed restore point:" not in result.log.lower()
+        assert result.data["deleted_snapshot_ids"] == []
+    elif failure == "second_batch":
+        assert "Partially removed restore point: Deleted job (00000000) — 01 Jan 2026, 00:00 UTC — 1000 of 1100 snapshots" in result.log
+        assert "Removed restore point:" not in result.log
+        assert len(result.data["deleted_snapshot_ids"]) == 1000
+    else:
+        assert "Removed restore point: Deleted job (00000000) — 01 Jan 2026, 00:00 UTC — 1100 snapshots" in result.log
+        assert "Partially removed" not in result.log
+        assert set(result.data["deleted_snapshot_ids"]) == {item["snapshot_id"] for item in old}
 
 
 @pytest.mark.parametrize("policy,remaining", [(None, 4), ({"rules": [{"type": "last", "count": 1}]}, 2), ({"rules": [{"type": "last", "count": 2}]}, 4)])
@@ -257,6 +316,7 @@ def test_context_is_read_after_scan_and_refreshed_before_deletion(settings, monk
     if unavailable:
         assert report.state == AgentReportState.warning and report.data["cleanup_pending"]
         assert not repo.removed and not repo.prune_calls
+        assert "removed restore point:" not in report.log.lower()
         assert settings.find_one(name=f"retention_task:1:{B}") is not None
     else:
         assert report.state == AgentReportState.success
@@ -268,6 +328,7 @@ def test_context_is_read_after_scan_and_refreshed_before_deletion(settings, monk
     ("disconnected", "agent is not connected to the backend"),
     ("rejected", "backend rejected request (AgentException)"),
     ("transport", "backend request failed (ConnectionError)"),
+    ("transport-type-error", "backend request failed (TypeError)"),
 ])
 def test_context_transport_failures_are_explained_in_the_operation_log(settings, monkeypatch, failure, reason):
     repo, backend = Repo(), Backend()
@@ -276,11 +337,14 @@ def test_context_transport_failures_are_explained_in_the_operation_log(settings,
     calls = []
 
     def call(*args, **kwargs):
+        assert args[1]["args"]["include_job_names"] is True
         calls.append(args)
         if failure == "timeout":
             raise socketio.exceptions.TimeoutError("private transport detail")
         if failure == "transport":
             raise socketio.exceptions.ConnectionError("private transport detail")
+        if failure == "transport-type-error":
+            raise TypeError("private transport detail")
         return {"success": False, "result": {"error": "AgentException"}}
 
     agent = Agent.__new__(Agent)
@@ -295,6 +359,53 @@ def test_context_transport_failures_are_explained_in_the_operation_log(settings,
     assert reason in report.log and "private transport detail" not in report.log
     assert len(calls) == (0 if failure == "disconnected" else 1)
     assert not repo.removed and not repo.prune_calls and not repo.checks
+
+
+@pytest.mark.parametrize("repository_scope", [False, True])
+@pytest.mark.parametrize("failure", [None, "rejected", "incomplete", "type_error"])
+def test_runtime_retention_falls_back_to_previous_backend_signature_once(settings, monkeypatch, repository_scope, failure):
+    repo, backend = Repo(), Backend()
+    old = repo.add_run(backend, number=10)
+    kept = repo.add_run(backend, number=11)
+    calls = []
+
+    def old_context(repository_id, include_policies=False):
+        assert repository_id == 1
+        if failure == "rejected":
+            return {"success": False, "result": {"error": "AgentException"}}
+        if failure == "type_error":
+            raise TypeError("Backend failure")
+        context = backend()
+        if include_policies:
+            context["job_policies"] = {B: None}
+        return {"success": True, "result": {} if failure == "incomplete" else context}
+
+    def call(event, payload, **kwargs):
+        assert event == "request" and payload["action"] == "retention_context"
+        calls.append(payload["args"].copy())
+        try:
+            return old_context(**payload["args"])
+        except TypeError:
+            return {"success": False, "result": {"error": "TypeError"}}
+
+    agent = Agent.__new__(Agent)
+    agent.client = SimpleNamespace(connected=True, call=call)
+    agent._Agent__resticapi = repo
+    agent._Agent__send_report = backend.send_report
+    monkeypatch.setattr(agent, "_Agent__set_repository", lambda _: None)
+    monkeypatch.setattr(runtime_module, "agent_settings", settings)
+    monkeypatch.setattr(runtime_module, "jobs", SimpleNamespace(find_one=lambda **kwargs: None))
+    result = agent.cmd_run_retention(1, repository_scope=repository_scope)
+    args = {"repository_id": 1, **({"include_policies": True} if repository_scope else {})}
+    assert calls == [{**args, "include_job_names": True}, args] + ([args] if failure is None else [])
+    if failure is None:
+        assert result.state == AgentReportState.success and not result.data["cleanup_pending"]
+        assert set(result.data["deleted_snapshot_ids"]) == {item["snapshot_id"] for item in old}
+        assert set(repo.items) == {item["snapshot_id"] for item in kept}
+        assert "Removed restore point: Deleted job" in result.log and repo.prune_calls == 1
+    else:
+        assert result.state == AgentReportState.warning and result.data["cleanup_pending"]
+        assert not repo.removed and not repo.prune_calls and not repo.checks
 
 
 @pytest.mark.parametrize("failure", ["forget", "prune", "verification", "policy_removed"])
@@ -417,7 +528,7 @@ def test_new_check_failure_cannot_be_cleared_by_an_older_check(settings):
     assert [check["read_data"] for check in repo.checks] == [False, True]
 
 
-@pytest.mark.parametrize("invalid", ["missing-zone", "invalid-zone", "empty-rules", "unknown-rule", "legacy-policy", "changed-zone", "changed-owner"])
+@pytest.mark.parametrize("invalid", ["missing-zone", "invalid-zone", "empty-rules", "unknown-rule", "legacy-policy", "changed-zone", "changed-owner", "invalid-job-names", "invalid-job-name"])
 def test_invalid_or_changed_context_never_deletes_backups(settings, invalid):
     repo, backend = Repo(), Backend()
     repo.add_run(backend, number=10)
@@ -435,6 +546,10 @@ def test_invalid_or_changed_context_never_deletes_backups(settings, invalid):
             value["default"] = {"rules": [{"type": "unknown"}]}
         elif invalid == "legacy-policy":
             value["default"] = {"keep_last": 1}
+        elif invalid == "invalid-job-names":
+            value["job_names"] = []
+        elif invalid == "invalid-job-name":
+            value["job_names"] = {A: None}
         return value
 
     if invalid == "changed-zone":
@@ -518,7 +633,8 @@ def test_repository_scope_uses_each_jobs_policy_and_default_only_for_orphans(set
     new_orphan = repo.add_run(backend, job=orphan, number=15)
 
     def context():
-        return {**backend(), "job_policies": {A: {"rules": [{"type": "last", "count": 1}]}, **({} if missing_policy else {B: None})}}
+        return {**backend(), "job_names": {A: "NAS daily", B: "VM weekly"},
+                "job_policies": {A: {"rules": [{"type": "last", "count": 1}]}, **({} if missing_policy else {B: None})}}
 
     report = execute(repo, backend, settings, job_uuid=None, operation_uuid=str(UUID(int=102)),
         repository_scope=True, request=context)
@@ -529,6 +645,9 @@ def test_repository_scope_uses_each_jobs_policy_and_default_only_for_orphans(set
         assert set(repo.items) == {item["snapshot_id"] for item in new_a + disabled + new_orphan}
         assert set(report.data["deleted_snapshot_ids"]) == {item["snapshot_id"] for item in old_a + old_orphan}
         assert "4 snapshot(s) removed" in report.log
+        assert report.log.count("Removed restore point:") == 2
+        assert 'Removed restore point: "NAS daily" — 01 Jan 2026, 00:00 UTC — 2 snapshots' in report.log
+        assert 'Removed restore point: Deleted job (00000000) — 01 Jan 2026, 00:00 UTC — 2 snapshots' in report.log
 
 
 def test_existing_completion_intents_retry_under_their_backup(settings):

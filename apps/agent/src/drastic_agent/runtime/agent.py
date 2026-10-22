@@ -1396,9 +1396,16 @@ class Agent:
             if selected:
                 policy = {"rules": selected.get("rules")}
 
+        context_args = {"repository_id": repository_id, "include_job_names": True,
+                        **({"include_policies": True} if repository_scope else {})}
+
         def request_context():
-            response = self.__send_request("retention_context", repository_id=repository_id,
-                **({"include_policies": True} if repository_scope else {}))
+            response = self.__send_request("retention_context", **context_args)
+            # Older backends reject the optional keyword with a bare TypeError response.
+            if (not response.get("success") and "include_job_names" in context_args
+                    and response.get("result") == {"error": "TypeError"}):
+                context_args.pop("include_job_names")
+                response = self.__send_request("retention_context", **context_args)
             if not response.get("success"):
                 details = response.get("result") or {}
                 reason = details.get("message") or f"backend rejected request ({details.get('error', 'unknown error')})"

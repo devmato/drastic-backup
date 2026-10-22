@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from drastic_agent.agent.enums import AgentOperationSource, AgentOperationState, AgentOperationType
 from drastic_agent.agent.report import AgentReport
 from drastic_common.restic.exceptions import is_repository_locked
-from drastic_common.restic.snapshots import run_is_complete, snapshot_uuid
+from drastic_common.restic.snapshots import restore_point_key, run_is_complete, snapshot_uuid
 from drastic_common.retention import RetentionPolicySchema
 from drastic_common.scheduling import validate_timezone
 
@@ -108,9 +108,12 @@ def validate_context(context, repository_scope=False):
     keys = {"owner_uuid", "job_uuids", "default", "running_operation_uuids", "check_token", "timezone"}
     if repository_scope:
         keys.add("job_policies")
-    if (not isinstance(context, dict) or set(context) != keys
+    if (not isinstance(context, dict) or set(context) - {"job_names"} != keys
             or not isinstance(context["job_uuids"], list) or not isinstance(context["running_operation_uuids"], list)):
         raise ValueError("Missing or incomplete backend retention context; cleanup deferred")
+    names = context.get("job_names", {})
+    if not isinstance(names, dict) or any(not isinstance(key, str) or not isinstance(name, str) for key, name in names.items()):
+        raise ValueError("Invalid job names in backend retention context; cleanup deferred")
     context["owner_uuid"] = str(UUID(context["owner_uuid"]))
     if not isinstance(context["timezone"], str):
         raise ValueError("Missing account time zone; cleanup deferred")
@@ -124,6 +127,28 @@ def validate_context(context, repository_scope=False):
             UUID(job_uuid)
             validate_policy(policy)
     return context
+
+
+def log_removed_restore_points(report, snapshots, selected, context):
+    """Describe only acknowledged removals, including successful batches before a later failure."""
+    deleted = set(report.data["deleted_snapshot_ids"])
+    groups = {}
+    for identity in selected:
+        snapshot = snapshots[identity]
+        groups.setdefault(restore_point_key(snapshot), []).append(snapshot)
+    for group in groups.values():
+        removed = sum(snapshot["id"] in deleted for snapshot in group)
+        if not removed:
+            continue
+        job_uuid = snapshot_uuid(group[0], "job_uuid")
+        name = context.get("job_names", {}).get(job_uuid)
+        label = (json.dumps(name, ensure_ascii=False) if name else
+                 f"{'Job' if job_uuid in context['job_uuids'] else 'Deleted job'} ({job_uuid[:8]})")
+        started = min(parse_datetime(snapshot["time"]) for snapshot in group).astimezone(ZoneInfo(context["timezone"]))
+        partial = removed < len(group)
+        count = f"{removed} of {len(group)}" if partial else str(removed)
+        report.log_message(f"{'Partially removed' if partial else 'Removed'} restore point: {label} — "
+                           f"{started:%d %b %Y, %H:%M %Z} — {count} snapshot{'s' if len(group) != 1 else ''}")
 
 
 class RetentionService:
@@ -254,13 +279,15 @@ class RetentionService:
                 settings.delete(name=f"retention_check_failed:{repository_id}")
                 selected = cls.select_runs(snapshots, context, policies, current_operation_uuid, now=now)
                 settings.upsert({"name": prune_key, "settings": "pending"}, ["name"])
-                for start in range(0, len(selected), 1000):
-                    batch = selected[start:start + 1000]
-                    resticapi.forget_snapshots(batch, prune=False)
-                    # Keep confirmed removals replayable if a later batch/prune or the process fails.
-                    report.set_data("deleted_snapshot_ids", report.data["deleted_snapshot_ids"] + batch)
-                    report.checkpoint()
-                    report.log_message(f"Retention removed {len(batch)} expired snapshot(s)")
+                try:
+                    for start in range(0, len(selected), 1000):
+                        batch = selected[start:start + 1000]
+                        resticapi.forget_snapshots(batch, prune=False)
+                        # Keep confirmed removals replayable if a later batch/prune or the process fails.
+                        report.set_data("deleted_snapshot_ids", report.data["deleted_snapshot_ids"] + batch)
+                        report.checkpoint()
+                finally:
+                    log_removed_restore_points(report, snapshots, selected, context)
                 report.log_message("Reclaiming repository space")
                 report.data["prune"] = resticapi.prune()
                 settings.delete(name=prune_key)

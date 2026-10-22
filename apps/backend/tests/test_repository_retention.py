@@ -271,12 +271,16 @@ def test_live_context_includes_all_owned_jobs_only(restore_api):
     assert context == {"owner_uuid": agent.user.backup_owner_uuid, "default": None, "timezone": "UTC",
                        "running_operation_uuids": [running.uuid], "check_token": agent.repositories[0].retention_check_token}
     assert request.sync()["backup_owner_uuid"] == context["owner_uuid"] != foreign.user.backup_owner_uuid
+    named_context = request.retention_context(agent.repositories[0].id, include_job_names=True)
+    assert named_context["job_names"] == {job.uuid: job.name, disabled.uuid: "Disabled"}
+    assert "job_names" not in request.retention_context(agent.repositories[0].id)
     default = create_retention(agent.user_id, {"name": "Default", "rules": [{"type": "last", "count": 2}]})
     update_retention(agent.user_id, default.id, {"is_default": True})
     custom = create_retention(agent.user_id, {"name": "Custom", "rules": [{"type": "last", "count": 3}]})
     job.retention_mode, job.retention = "custom", custom
     db.session.commit()
-    context = request.retention_context(agent.repositories[0].id, include_policies=True)
+    context = request.retention_context(agent.repositories[0].id, include_policies=True, include_job_names=True)
+    assert context["job_names"] == named_context["job_names"]
     assert set(context["job_policies"]) == {job.uuid, disabled.uuid}
     assert context["job_policies"][job.uuid]["rules"][0]["count"] == 3
     assert context["job_policies"][disabled.uuid] is None and context["default"]["rules"][0]["count"] == 2
