@@ -24,19 +24,23 @@ dRastic Backup is designed for trusted Homelab use, not as a multi-tenant enterp
 
 `DRASTIC_APP_MASTER_SECRET` derives backend runtime and settings-encryption keys. Repository passwords are encrypted with a per-user recovery key that is decrypted at login and kept only in browser memory, then provisioned to agents through public-key envelopes when they need repository access. Revealing a repository password in the UI requires re-entering the account password. Repository password rotation after creation is not supported yet.
 
+Custom repository environment values and notification URLs use the backend settings key, not user recovery encryption. Database plus master secret can decrypt those fields, including any credentials explicitly stored there. Do not treat them as end-to-end encrypted against the server.
+
 Each agent generates and stores its own SSH identity locally. The backend stores only the agent SSH public key, fingerprint, and algorithm so users can copy the public key into SSH/SFTP targets. Treat every agent assigned to an SSH repository as trusted with that repository's SSH access.
 
 Agents generate a keypair during registration and advertise the public key to the server. The backend stores agent-specific envelopes for local restic access keys and recovery access, but cannot decrypt them by itself.
 
-On startup sync, an agent decrypts its local restic access keys into memory and uses them as the primary access path. The keys are not persisted in the agent data directory. If a local key is missing or no longer works, the agent requests the recovery envelope from the backend, decrypts it in memory, initializes or re-provisions repository access, and discards the recovery password after use.
+- Agent data stores **encrypted** Restic access-key envelopes and the private key needed to decrypt them. Plaintext Restic passwords remain in memory.
+- A synchronized agent can unlock its keys after restart without the backend. Offline backups require a directly reachable custom repository; native repositories still need the backend proxy.
+- Missing or invalid access keys require recovery provisioning. Preserve the local private key and encrypted envelopes together.
 
 For SSH repositories, agents use their local SSH identity for restic processes. SSH `known_hosts` data is local agent state and can be reset per agent from the agent properties actions. Rotating an agent SSH key requires installing the new public key on affected SSH/SFTP targets.
 
-This reduces the risk of copied agent state, but the state still authenticates the agent. A copied agent identity can request fresh envelopes until the agent is removed or rotated, and a running agent still holds restic access keys in memory. Native and Docker installs set the agent data directory to `0700` and the local `config.ini` to `0600` where the host filesystem supports those permissions.
+**A copy of the complete agent data directory can unlock already synchronized repository keys and authenticate as that agent.** Removing the server-side agent blocks further server/proxy access; it does not revoke credentials already copied for directly reachable custom repositories or SSH targets. Repository password rotation is not available in the UI. Treat suspected compromise as a storage-credential incident, not just an agent-registration issue. Native and Docker installs use `0700` for agent data and `0600` for `config.ini` where supported.
 
 Agent registration currently uses a dRastic username and password. After registration, agents store their generated identifier and secret and use those credentials for ongoing server and repository access.
 
-Changing a user password re-encrypts that user's recovery key with the new password and revokes existing sessions. It does not rotate repository passwords or SSH keys.
+Changing an account password rewraps its recovery key and revokes browser sessions and debug access. It does not revoke registered agents or rotate repository/SSH credentials.
 
 ## Backup Safety
 

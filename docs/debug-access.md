@@ -84,7 +84,7 @@ SQL queries or stack locals can be requested.
 
 Additional events include effective backup job/run/retention configuration, phase
 changes, command receipt, process start/exit and elapsed time, Proxmox disk selection
-and `vzdump` output. Every 10 seconds, active operation reports are marked for a
+and supervised process error output. Every 10 seconds, active operation reports are marked for a
 diagnostic snapshot and agent counters are sampled. The backend stores the selected
 reports instead of receiving a second copy of their state. Events carry source and
 server receipt times; process durations use a

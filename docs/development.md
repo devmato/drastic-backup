@@ -105,12 +105,12 @@ If the installer runs from another host or VM, set `DRASTIC_PUBLIC_URL` to a URL
 
 Linux-side tests simulate launchctl for install/update/rollback/removal and exercise the unchanged shared file-backup/restore code. They cannot establish macOS TCC permission behavior or filesystem fidelity. Follow [macOS installation and permissions](agent-installation.md#macos-permissions-and-first-backup) on a real Mac:
 
-1. Install from the same published ref as the bootstrap, grant access and create a file job using a small protected test folder. Include spaces/Unicode names, a symlink, an excluded file and a file with an extended attribute.
+1. Install from the backend-matched build, grant access and create a file job using a small protected test folder. Include spaces/Unicode names, a symlink, an excluded file and a file with an extended attribute.
 2. Run the backup **through the web UI**, restore to a separate physical directory and compare content, exclusions, modes, symlink targets and extended attributes.
 3. Run another backup after changing a file; verify the matching parent and restore the new version. Exercise a scheduled run and retention with a disposable repository.
 4. With permission removed, verify the report does not claim a complete successful backup. Restore permission, restart the daemon and repeat successfully.
 5. Restart the Mac, unlock FileVault if enabled, check reconnection, then test waking from sleep.
-6. Update via CLI and the web action against a macOS-capable backend; verify identity, configuration and permissions, then run another backup/restore. Test startup rollback with a deliberately failing test build. During older-backend development, use explicit CLI refs instead.
+6. Update via CLI and the web action; verify identity, configuration and permissions, then run another backup/restore. Test startup rollback only with a deliberately failing disposable test build.
 7. Uninstall without purge and reinstall; the identity must survive. Check purge separately using only disposable agent state.
 
 Run the acceptance check on both Intel and Apple Silicon before claiming both are verified. macOS system logs and the agent/update logs named in the installation guide are the relevant evidence when a check fails.
@@ -124,6 +124,8 @@ Reset persistent development volumes without removing local images:
 ```
 
 `reset-storage` and `clean` also remove local `apps/agent/data` runtime state so Docker and host-based agent runs reset consistently.
+
+**Destructive:** these commands remove development databases, local repository contents and agent identities. Stop any host-run development agent first; never use these paths for production backups.
 
 ## Backend Checks
 
@@ -144,7 +146,7 @@ cd apps/backend
 ./scripts/test-migrations.sh
 ```
 
-The script checks migration heads and history, upgrades a fresh database, runs Alembic's schema check, downgrades to `base`, and repeats the upgrade and check. Docker must be available.
+The script checks migration history, upgrades/checks a fresh MariaDB database, downgrades to `base`, repeats the upgrade/check, and runs the MariaDB report-deletion concurrency regression. Docker must be available; this is not a validation of arbitrary historical database upgrades.
 
 Run lint checks for modified backend files:
 
@@ -191,7 +193,48 @@ yarn build
 Build the documentation site from the repository root:
 
 ```bash
-mkdocs build --site-dir docs-site
+mkdocs build --strict --site-dir docs-site
 ```
 
 The development Compose stack builds the docs into `/tmp/drastic-docs-site` inside the backend container and serves them at `/docs/`.
+
+## Live Proxmox Checks
+
+Use a disposable test host, root privileges and the [restore dependencies](backup-and-restore.md#proxmox-vm-and-guest-file-restore). Normal tests mock host commands; these checks need actual Restic/FUSE or Proxmox resources.
+
+Restic/FUSE disk checks need Linux, `/dev/fuse`, `fusermount3`, Restic and system `python3-fuse`, but not Proxmox or guestfs:
+
+```bash
+cd apps/agent
+uv run pytest tests/test_guest_disks.py tests/test_guest_linux.py -v
+```
+
+Guest-file and optional whole-VM round trip, from `apps/agent`:
+
+```bash
+# A small existing TEST VM on LVM-thin; the test creates/deletes its temporary snapshot.
+export DRASTIC_TEST_PROXMOX_VMID=990000
+export DRASTIC_TEST_GUEST_VOLUME=/dev/vg/root
+export DRASTIC_TEST_GUEST_FILE=/etc/hostname
+export DRASTIC_TEST_GUEST_SHA256='replace-with-original-file-sha256'
+# These authorize creating a stopped VM; the destination VMID must be FREE cluster-wide.
+export DRASTIC_TEST_RESTORE_VMID=990001
+export DRASTIC_TEST_RESTORE_STORAGE=local-lvm
+uv run pytest tests/test_proxmox_restore_integration.py -v
+```
+
+- Set the source volume/path/checksum from your test guest. Repeat with a Windows/NTFS guest and a known file to check that platform.
+- The imported VM remains stopped for manual boot verification and removal. Omitting the two restore-target settings skips whole-VM import.
+- Use a dedicated disposable `--basetemp` directory if necessary; pytest may clear its contents.
+
+Native/CBT round trip, also from `apps/agent`:
+
+```bash
+# Requires root, local-lvm, Restic and native FUSE/libnbd tools.
+# VMIDs 990103 and 990104 must be FREE; only the newly created test VMs are removed.
+DRASTIC_TEST_NATIVE_ROUNDTRIP=1 uv run pytest \
+  tests/test_proxmox_native.py::test_real_native_proxmox_roundtrip \
+  --basetemp=/var/tmp/drastic-native-test -s
+```
+
+This exercises full/CBT reads, upload/crash recovery, checkpoint invalidation, cleanup, pruning and streaming import with EFI/TPM. A real restored-guest boot/application check is still required.

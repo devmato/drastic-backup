@@ -70,25 +70,31 @@ Important paths:
 - `apps/agent/src/drastic_agent/services` -- Restore, retention, connection settings, repository access and credentials.
 - `apps/agent/src/drastic_agent/integrations` -- Host-tool adapters, including verified restic installation.
 - `scripts/install-drastic-agent.sh` -- Shared Linux/macOS pipe bootstrap, including a private Python runtime.
-- `scripts/drastic-agent-installer.py` -- Shared native Linux/macOS and Docker lifecycle manager; installed independently as `/opt/drastic-agent/bin/installer.py` and stages backend-matched source, dependencies and restic before activation. Uses systemd on Linux and launchd on macOS.
-- `apps/agent/src/drastic_agent/proxmox.py` -- Proxmox guest discovery and backup streaming.
+- `scripts/drastic-agent-installer.py` -- Independent Linux/macOS/Docker lifecycle manager, installed as `/opt/drastic-agent/bin/installer.py`.
+- `apps/agent/src/drastic_agent/proxmox.py` -- Proxmox API client and guest discovery.
+- `apps/agent/src/drastic_agent/proxmox_snapshot.py`, `proxmox_blocks.py` -- Snapshot TAR streaming and native block export.
+- `apps/agent/src/drastic_agent/guest_disks.py`, `services/guest_linux.py`, `services/proxmox_restore.py` -- Read-only disk access and Proxmox VM/file restore.
 - `apps/agent/data` -- Local development agent state.
 
 ## Shared Library
 
 `libs/python/common` contains shared Python code used by backend and agent.
 
-`libs/python/common/src/drastic_common/restic` contains the shared restic client. Common also owns the shared agent protocol, scheduling rules, secret envelopes, process utilities and product version generation; it does not import application packages.
+Paths below are relative to `libs/python/common/src/drastic_common/`. Common does not import application packages.
 
-`drastic_common/backup_selection.py` translates literal File/TrueNAS path rules into Restic exclusions and identifies configurations requiring include-exception support. The frontend shares browser inheritance and state feedback in `src/utils/path-selection.js`.
+| Path | Responsibility |
+| --- | --- |
+| `agent/` | Command names, protocol gates, shared enums and wire schemas |
+| `restic/client.py`, `restic/repository.py` | Supervised commands and repository credentials |
+| `restic/snapshots.py` | Owner/job/run tags and restore-point grouping |
+| `restic/binary.py` | Verified official archives for installation and recovery kits |
+| `backup_selection.py` | Literal path rules and include-exception compatibility |
+| `retention.py`, `backup_retry.py`, `scheduling.py` | Rule validation, retry eligibility and calendar/UTC schedules |
+| `secret_envelope.py`, `ssh_keys.py` | Credential envelopes and SSH identity helpers |
+| `process.py`, `diagnostics.py` | Supervised host tools and bounded diagnostics |
+| `version.py` | Product version/full revision and packaging stamps |
 
-Common `retention.py` validates composable policy/rule contracts. Agent `services/retention.py` unions count, calendar-window, recent-period and date rules over owned snapshot runs directly from repository tags, using the effective account zone and an additional last-complete-run safety floor. `services/backup_completion.py` journals and verifies a single Restic completion-tag rewrite; `storage/snapshot_references.py` atomically updates its artifact, outbox and CBT references. Backend `services/retention.py` manages policies; `services/agent/request.py` supplies the stable account owner, current job UUIDs, known running operations, account zone, default policy and check state without querying backup history. `services/operations/reports.py` records cleanup outcomes, canonical snapshot-ID replacements and repository check state using the existing report workflow. Frontend `components/retentions/` edits policy drafts and individual rules; `utils/retention-rules.js` builds API values and readable descriptions.
-
-`drastic_common/restic/snapshots.py` identifies restore-point groups from owner/job/run tags, with legacy job/run grouping for unmarked snapshots. Backend and agent restore services use it for listing and whole-point deletion; the frontend displays groups and selects individual components for restore.
-
-`drastic_common/restic/binary.py` downloads checksum-verified official Restic archives for recovery kits and unpacks them for agent installation. Agent `integrations/restic_binary.py` retains local executable/version validation and atomic activation; recovery export bundles archives unchanged.
-
-`drastic_common/version.py` generates product versions and full source revisions. Packages and Docker builds preserve them in generated `build-version.txt` and `build-revision.txt` files, including when Git is unavailable at runtime.
+Retention spans backend `services/retention.py` (policy management), `services/agent/request.py` (live context), agent `services/retention.py` (selection/deletion), `services/backup_completion.py` and `storage/snapshot_references.py` (completion recovery), and backend `services/operations/reports.py` (reconciliation). See [Architecture](architecture.md#completion-and-retention) for their ordering and safety rules.
 
 ## Release Tooling
 

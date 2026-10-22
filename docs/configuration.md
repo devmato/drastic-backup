@@ -50,6 +50,8 @@ Compose loads `.env` into dRastic application containers through `env_file`. Val
 | `DRASTIC_DOCS_SITE_PATH` | `/app/docs-site` | Path to the built documentation site served under `/docs/`. |
 | `DRASTIC_JWT_COOKIE_SECURE` | `false` | Production HTTPS examples set this to `true`. Use `false` only for HTTP-only trusted deployments. |
 
+`TZ` does not choose the account's scheduling or retention zone. Set that under **User menu > Settings > Preferences**; an unset account uses UTC.
+
 ## Storage Paths
 
 | Variable | Default | Purpose |
@@ -70,14 +72,26 @@ The test environment uses `/opt/drastic-test/db`, `/opt/drastic-test/restic`, an
 
 ## Timeouts
 
-| Variable | Purpose |
-| --- | --- |
-| `DRASTIC_GUNICORN_TIMEOUT` | Backend HTTP worker timeout. |
-| `DRASTIC_REST_PROXY_TIMEOUT_SECONDS` | Backend-to-rest-server proxy timeout. |
-| `DRASTIC_COMMAND_TIMEOUT_SECONDS` | Interactive backend-agent command timeout. |
-| `DRASTIC_TASK_TIMEOUT_SECONDS` | Longer agent task timeout. |
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DRASTIC_GUNICORN_TIMEOUT` | `300` | Backend worker timeout in seconds; minimum `30`. |
+| `DRASTIC_REST_PROXY_TIMEOUT_SECONDS` | `300` | Backend-to-rest-server read timeout in seconds. |
+| `DRASTIC_COMMAND_TIMEOUT_SECONDS` | `60` | Default command-response timeout in seconds; some commands use explicit shorter/longer limits. |
+| `DRASTIC_TASK_TIMEOUT_SECONDS` | `600` | Agent hook/task timeout in seconds. |
+| `DRASTIC_RESTIC_TIMEOUT_SECONDS` | `86400` | Agent Restic operation timeout in seconds. |
+| `DRASTIC_AGENT_MAX_WORKERS` | `2` | Concurrent agent executor workers. |
+| `DRASTIC_AGENT_MAX_PENDING` | `8` | Additional queued tasks; admitted tasks reserve their job/repository resources. |
 
-The agent defaults to 2 workers, 8 pending jobs, 60 seconds for commands, 600 seconds for tasks and 86400 seconds for restic. Override these with `DRASTIC_AGENT_MAX_WORKERS`, `DRASTIC_AGENT_MAX_PENDING`, `DRASTIC_COMMAND_TIMEOUT_SECONDS`, `DRASTIC_TASK_TIMEOUT_SECONDS` and `DRASTIC_RESTIC_TIMEOUT_SECONDS` when needed. Cancellation requests set the operation's cancellation event immediately, including during parent lookup or between processes; the worker reports the final state after cleanup. Development overrides in `.env.dev.override` are passed to the Docker agent; the default `./scripts/dev.sh up` needs no override file.
+Cancellation signals the operation immediately; the worker reports its final state after cleanup. A command-response timeout does not prove that execution failed.
+
+### Agent Runtime Paths
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `DRASTIC_AGENT_DATA_DIR` | `/app/data` | Agent-local database, identity, keys and cached configuration. Native installs use `/opt/drastic-agent/data`; the development helper uses `apps/agent/data`. |
+| `DRASTIC_RESTORE_WORK_DIR` | `<agent data>/restore-work` | Private restore workspace; must not be shared between agents. |
+
+Set native overrides in `/opt/drastic-agent/drastic-agent.env`; for Docker use the agent host's `.env` or container environment. Restart after changes. Development overrides in `.env.dev.override` also reach the Docker agent.
 
 ## Agent Credentials
 
@@ -96,9 +110,9 @@ Without web UI settings, the agent uses `DRASTIC_PROXMOX_TOKEN_ID` and `DRASTIC_
 
 ## Secret Handling
 
-`DRASTIC_APP_MASTER_SECRET` derives the backend settings-encryption key used for repository environment values and notification URLs. Repository passwords are wrapped with a per-user recovery key that is decrypted during login and kept only in browser memory. Database data plus `.env` is not enough to open repositories without a user password or an already provisioned agent.
+`DRASTIC_APP_MASTER_SECRET` derives backend keys for repository environment values and notification URLs. Repository password envelopes use a separate per-user recovery key, unlocked during login and held in browser memory. The master secret does not unwrap that user key. Credentials placed directly in a custom repository's environment remain backend-decryptable; database plus master secret exposes those settings.
 
-Agents generate their own keypair during registration. The backend stores agent-specific envelopes for local restic access keys and recovery access, but cannot decrypt them by itself. Agents hydrate restic access keys into memory during startup sync; restic access keys are not persisted in the agent data directory. Repository passwords can be generated automatically or set manually during repository creation, and revealing them in the UI requires re-entering the account password. Changing repository passwords after creation is not supported yet.
+Agents persist encrypted Restic access-key envelopes alongside their private agent key. Plaintext passwords are held only in memory. An already synchronized key can be unlocked after restart without a backend round trip; copied agent state must therefore be treated as repository access. See [Security](security.md#secrets). Revealing a repository password requires the account password; repository password rotation is not supported in the UI.
 
 Agents generate SSH identities locally and advertise only their SSH public key to the backend. Install the public key shown in the agent properties dialog on SSH/SFTP repository targets. Agents manage SSH `known_hosts` locally in their data directory.
 
@@ -108,3 +122,5 @@ For production-style Homelab deployments, back up these items together:
 - `DRASTIC_REST_SERVER_STORAGE_PATH`.
 - `.env` or the equivalent secret store containing `DRASTIC_APP_MASTER_SECRET`.
 - Agent data directories containing registered agent identifiers, secrets, and keypairs.
+
+Use the [control-plane backup procedure](backup-and-restore.md#back-up-the-control-plane), including its stop/consistency requirements. A live directory copy is not a consistent backup.

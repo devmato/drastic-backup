@@ -29,21 +29,23 @@ The server and Docker agent use the published GHCR `latest` images by default; `
 
 The bootstrap admin seed creates the configured user when it does not exist. It never changes an existing user's password or recovery secrets.
 
-Native agents install directly from Git using a private Python runtime. Select the matching release tag with installer `--ref`; see [Agent Installation](agent-installation.md). No backend artifact cache is needed.
+Native agents install directly from Git using a private Python runtime. The installer selects the exact running backend commit automatically; `--ref` overrides one invocation only. See [Agent Installation](agent-installation.md).
 
 ## Agent Installation
 
-For Linux hosts with systemd, use the public installer from the web UI or directly from the backend:
+For Linux hosts with systemd or macOS with launchd, use the installer from the web UI or backend:
 
 ```bash
 curl -fsSL https://backup.example.net/install | bash
 ```
 
-The native installer stores agent files under `/opt/drastic-agent`, installs a wrapper at `/usr/local/bin/drastic-agent`, and creates `drastic-agent.service`.
+The installer uses `/opt/drastic-agent` and `/usr/local/bin/drastic-agent`, with `drastic-agent.service` on Linux or `net.drastic.agent` on macOS. macOS also requires [Full Disk Access](agent-installation.md#macos-permissions-and-first-backup).
 
 ## Agent Stack
 
 For Docker-based agents, copy the dedicated host configuration template:
+
+Use a separate deployment directory on the agent host. Do not overwrite an existing server `.env` with the agent template.
 
 ```bash
 cp .env.agent.example .env
@@ -100,7 +102,10 @@ dRastic Backup is intended for trusted Homelab environments. Prefer running it b
 
 ## Updating
 
-Pull the new images and recreate the Compose stack:
+1. Read the target release's update notes and [protocol requirements](agent-installation.md#protocol-compatibility).
+2. Pause schedules and finish active operations. Stop offline agents that still hold enabled cached schedules.
+3. Take a [control-plane backup](backup-and-restore.md#back-up-the-control-plane).
+4. Set explicit matching image tags, update the backend first, then agents. Run the server commands in its deployment directory and the agent commands on each Docker agent host:
 
 ```bash
 docker compose -f docker-compose.yaml pull
@@ -109,6 +114,10 @@ docker compose -f docker-compose.agent.yaml pull
 docker compose -f docker-compose.agent.yaml up -d
 ```
 
-Database migrations run during backend startup.
+5. Inspect startup logs, synchronize agents, verify their versions, run a small backup and restore, then resume schedules. Missed occurrences are not caught up.
+
+Database migrations run before backend startup. Native agents update with `sudo drastic-agent update` after the backend is running.
+
+**Rollback is not just an image change.** Restoring an older executable does not undo database or agent-state migrations. Use a compatible build or restore matching state from the pre-update backup in isolation.
 
 The current pre-production release uses a consolidated `init` Alembic baseline for a fresh database. No upgrade migration from older development schemas is provided because no production deployment required compatibility when the baseline was replaced. Recreate old development or test databases; do not point this baseline at an older schema and assume an in-place upgrade is supported.

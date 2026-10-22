@@ -7,7 +7,7 @@ Quasar frontend for the `drastic-backup` web UI.
 ```bash
 corepack enable
 corepack prepare yarn@4.10.3 --activate
-yarn install
+yarn install --immutable
 ```
 
 ## Development
@@ -23,7 +23,7 @@ The dev server uses `DRASTIC_BIND_DEV_FRONTEND_PORT` and proxies API requests to
 
 ```bash
 yarn lint
-yarn format
+yarn test
 ```
 
 ## Production build
@@ -31,3 +31,5 @@ yarn format
 ```bash
 yarn build
 ```
+
+For the integrated backend, agent and frontend stack, see [Development Setup](../../docs/development.md).

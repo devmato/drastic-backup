@@ -46,11 +46,11 @@ Breaking changes:
 
 Jobs:
 
-- Python backend tests in `apps/backend`.
-- Python agent tests in `apps/agent`.
-- Python common library tests in `libs/python/common`.
+- Backend lint/tests on Python 3.13 and 3.11 in `apps/backend`.
+- Agent lint/tests on Python 3.11 in `apps/agent`.
+- Common library lint/tests on Python 3.11 in `libs/python/common`.
 - MariaDB migration baseline upgrade/downgrade round-trip through `apps/backend/scripts/test-migrations.sh`.
-- Frontend build in `apps/frontend`.
+- Frontend build, lint and Node tests in `apps/frontend`.
 - Documentation build with MkDocs.
 - Release tooling shell syntax checks.
 
@@ -66,7 +66,7 @@ Publishing the draft triggers `.github/workflows/publish-release.yml`. It verifi
 
 Docker builds and native installations use the same `libs/python/common/src/drastic_common/version.py` helper. It combines the commit date in UTC with the first eight SHA characters and appends `-dirty` for local changes. The version is stamped into `drastic_common/build-version.txt` before packaging, so installed software needs no Git for version reporting. Development checkouts read Git directly; missing metadata reports `unknown`. Agent properties and debug diagnostics expose the same backend/agent versions. Protocol compatibility remains independent of version equality.
 
-CI computes the version on the host and passes it through the `DRASTIC_VERSION` build argument. Python/npm package version fields are fixed packaging placeholders and are neither bumped nor reported as product versions.
+CI supplies `DRASTIC_VERSION` and the full commit SHA as `DRASTIC_REVISION`. Python/npm versions are fixed packaging placeholders, not product versions.
 
 GitHub publishes the default images to GitHub Container Registry:
 
@@ -93,11 +93,14 @@ A linked Git worktree stores its Git metadata outside that context. Compute its 
 
 ```bash
 VERSION=$(python3 libs/python/common/src/drastic_common/version.py)
-docker build --build-arg "DRASTIC_VERSION=$VERSION" -f Dockerfile -t drastic-backend:local .
-docker build --build-arg "DRASTIC_VERSION=$VERSION" -f apps/agent/Dockerfile -t drastic-agent:local .
+REVISION=$(git rev-parse HEAD)
+docker build --build-arg "DRASTIC_VERSION=$VERSION" --build-arg "DRASTIC_REVISION=$REVISION" \
+  -f Dockerfile -t drastic-backend:local .
+docker build --build-arg "DRASTIC_VERSION=$VERSION" --build-arg "DRASTIC_REVISION=$REVISION" \
+  -f apps/agent/Dockerfile -t drastic-agent:local .
 ```
 
-Recompute the value after changing the source; local modifications retain the `-dirty` suffix. With an explicit version, the build does not need usable Git metadata inside its context.
+Recompute after source changes; local modifications retain `-dirty`. Both arguments avoid needing Git metadata inside the context. Without the full revision, the backend cannot advertise a reproducible native-agent target; dirty builds still require an explicit local source override.
 
 The optional Docker regression check exercises both version build stages with ordinary checkouts and clean/dirty linked worktrees:
 
@@ -107,7 +110,7 @@ DRASTIC_TEST_DOCKER=1 uv run --project libs/python/common pytest libs/python/com
 
 ## Native Agent
 
-Native Linux agents install directly from Git with `scripts/install-drastic-agent.sh`. The installer uses the committed lockfile and a private Python runtime; no PyInstaller archives or release-asset upload jobs are built. Lifecycle tests run with the agent tests, and CI checks installer shell syntax and Python compilation.
+Native Linux/macOS agents install from Git through `scripts/install-drastic-agent.sh`, using the committed lockfile and a private Python runtime. No native release archives are built. Lifecycle tests run in the agent suite; CI checks shell syntax and Python compilation. Real macOS permissions still require the [acceptance check](development.md#macos-acceptance-check).
 
 `.github/workflows/release.yml` prepares GitHub drafts with Conventional Commit notes, without attaching native agent archives. Draft candidates can already install native agents from the exact backend commit.
 

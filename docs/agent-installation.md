@@ -2,9 +2,9 @@
 
 Agents execute backups and restores. They authenticate against the server with a generated agent identifier and secret after registration.
 
-## Agent identity and protocol 15
+## Agent Identity
 
-Update the backend (including its database migration) before updating agents. Backup, restore and repository statistics require agent protocol 15. Older connected agents can still deliver reports, be diagnosed and use the supported update action, but the backend rejects those execution commands until they are updated.
+Use matching server and agent builds. Update the backend/database first, then agents, and synchronize before resuming schedules. See [Protocol Compatibility](#protocol-compatibility) for current requirements.
 
 Each registered agent has a server-issued UUID, persisted in the backend and the agent's `config.ini`. Existing agents acquire it on their first successful sync after upgrading. Missing or invalid UUIDs fail rather than falling back to a numerical ID or container hostname. Keep the agent data directory when recreating containers or restoring an installation; a new registration creates a new UUID.
 
@@ -115,18 +115,6 @@ The tool roots `tools/bin`, `tools/python` and `tools/restic` must not be symlin
 
 A sleeping Mac cannot run scheduled jobs. Keep it awake for the initial backup/restore test. The existing scheduler and reconnect behavior apply after waking; the agent does not configure automatic wake-up or APFS snapshots. File backups read the live filesystem. Files stored only in iCloud must be downloaded locally before relying on them being backed up.
 
-### Testing a Published macOS Branch
-
-Until the backend includes macOS support, its `/install` script may still reject Macs. Download the bootstrap from the **same published macOS-capable ref** that you want to install:
-
-```bash
-REF=your-published-macos-branch
-curl -fsSL "https://raw.githubusercontent.com/devmato/drastic-backup/$REF/scripts/install-drastic-agent.sh" | bash -s -- \
-  --ref "$REF" --server https://backup.example.net
-```
-
-Replace the ref and server URL. This requires committed, pushed source; it cannot install unpublished edits on another computer. While testing against an older backend, use `sudo drastic-agent update --ref "$REF"` for subsequent test builds. Plain `update` and web updates still follow the backend commit, and the installer rejects targets predating macOS support before stopping the active release. The macOS web-update action also requires the updated backend/frontend.
-
 ### Layout and Updates
 
 All managed files live under one root:
@@ -183,17 +171,30 @@ restic is pinned to **0.19.1** in `drastic_common/restic/constants.py` and chang
 
 ### Protocol Compatibility
 
-Protocol 24 adds the account scheduling time zone. Update the backend first, then agents, and synchronize before enabling schedules. The first successful browser login initializes an unset account zone; without initialization its effective zone is UTC. Select the intended zone in User Settings and review previous agent-local job times. Enabled job schedule synchronization, schedule edits and job previews require protocol 24. The local SQLite migration head is checked at startup: an older agent refuses a newer database rather than using an unknown state format. Keep a compatible agent build when rolling back program files.
+The current protocol is **27** (`drastic_common/agent/commands.py`). A newer agent cannot connect to an older backend that does not recognize its protocol. Older agents may connect but cannot necessarily synchronize or execute current jobs.
 
-Protocol 26 adds composable retention rules and applies the account zone to all retention calendars, including migrated policies. Pause autonomous schedules before upgrading the backend/database and all participating agents, synchronize, then resume. New backup and retention commands, configuration synchronization and retention contexts require protocol 26. Local SQLite schema 8 converts cached counters once; there is no legacy UTC-policy mode. See [Retention rules](backup-and-restore.md#retention-rules) for calendar semantics and migration details.
+| Operation | Minimum agent protocol on the current backend |
+| --- | --- |
+| Configuration sync, backups, retention contexts and standalone retention | `26` |
+| Backup chains | `26` |
+| Account-zone schedule edits and job previews | `24` |
+| Plain-file restore and snapshot browsing | `15`; untagged snapshots need `22` |
+| Restore metadata options | `17` |
+| Restore-point deletion | `22`; owner-tagged points need `23` |
 
-The same unreleased protocol 24 contract includes completion-tagged backups and canonical metadata-ID reporting. New manual and chain backups require protocol 24; upgrade all agents before resuming autonomous schedules too. Full data runs mark one snapshot with `drastic-run-complete`. Pending rewrites survive restarts and are retried through existing repository admission and retention retry scheduling. Reports remain running with a pending flag until ID reconciliation finishes. Retention preserves the last tagged complete run, and preserves unknown history when no tagged complete run exists. See [Retention](backup-and-restore.md#retention).
+Upgrade order:
 
-Docker and native agents and the backend all report `YYYY-MM-DD-<8-character SHA>`, using the commit date in UTC (for example `2026-10-08-a1b2c3d4`). Agent properties show both versions. Matching clean versions identify the same commit; differing versions do not by themselves mean incompatibility. Local changes append `-dirty`; `unknown` means source metadata is unavailable. Updates and rollbacks use the version packaged with the selected release.
+1. Pause job and chain schedules and let active operations finish. Offline agents can still run cached schedules; stop them if they cannot synchronize the pause.
+2. Back up the [control plane](backup-and-restore.md#back-up-the-control-plane), then update the backend/database.
+3. Update all participating agents to the same build and synchronize.
+4. Review the account time zone, retention policies and reports before resuming schedules.
 
-Agents report `protocol_version` when connecting. The backend checks command minimum versions and the UI hides unsupported features. Missing means legacy protocol 0; protocol 1 adds web-based Proxmox configuration and native `update`, protocol 2 adds Proxmox restore support, protocol 3 adds connection status, connection removal and TrueNAS snapshot backups, and protocol 4 adds managed Docker updates. Unknown versions are rejected; update the server before its agents.
-
-Existing agents without a protocol number report as protocol 0. Update them once manually with `sudo drastic-agent update` to enable the update button and web-based Proxmox configuration. Docker agents predating protocol 4 need one update through their container deployment before they support web updates.
+- Protocol 26 migrates retention counters to rule lists. Agent SQLite schema **8** converts cached policies once; see [Retention rules](backup-and-restore.md#retention-rules).
+- Protocol 27 reports finished backups with their actual end time even when completion-ID reconciliation remains pending. Recovery runs before the next backup in that repository or explicit retention, not on a timer. Pending references remain protected from deletion; see [Finalization and recovery](backup-and-restore.md#finalization-and-recovery).
+- Older agents retain their previous finalization/retry behavior until updated.
+- Software rollback does not roll back MariaDB or agent SQLite state. An older agent refuses a newer local schema; retain compatible builds and state backups.
+- Product versions are `YYYY-MM-DD-<8-character SHA>` from the UTC commit date. `-dirty` means local changes; `unknown` means missing source metadata. Protocol compatibility is separate from version equality.
+- Legacy native agents may need one manual update; Docker agents predating protocol 4 need one image recreation before web updates work.
 
 ### Uninstall
 

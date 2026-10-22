@@ -9,10 +9,10 @@ The documentation is written as Markdown files in `docs/` and rendered with [MkD
 
 ## Installation
 
-Install MkDocs Material locally:
+Install MkDocs Material in a Python environment:
 
 ```bash
-pip install mkdocs-material
+python3 -m pip install mkdocs-material
 ```
 
 Or with `uv`:
@@ -36,7 +36,7 @@ The site is available at `http://127.0.0.1:8000`.
 Generate static HTML:
 
 ```bash
-mkdocs build --site-dir docs-site
+mkdocs build --strict --site-dir docs-site
 ```
 
 The output is written to `docs-site/`. This directory is generated output and should not be committed.
@@ -51,7 +51,6 @@ It defines:
 - Navigation order.
 - Material theme settings.
 - Markdown extensions.
-- GitHub Release descriptions, which are edited and published directly on GitHub.
 
 `docs/stylesheets/extra.css` matches the web app's blue header and neutral
 light/dark surfaces. Keep its colors aligned with
@@ -63,8 +62,16 @@ Material layout.
 ## Adding a Page
 
 1. Create a Markdown file in `docs/`.
-2. Add it to the `nav` section in `mkdocs.yml`.
-3. Run `mkdocs serve` or `mkdocs build` to verify links and rendering.
+2. Add it to `mkdocs.yml` navigation and `docs/index.md`.
+3. Run `mkdocs build --strict` and check affected links/anchors and rendered code blocks.
+
+Keep pages task-focused:
+
+- Procedures: prerequisites, numbered actions, verification, relevant failure/rollback limits.
+- Reference: short lists or tables of actual defaults and supported values.
+- Explain behavior once; link to its main page instead of copying it.
+- Verify claims against code, configuration, scripts and tests. Mark hardware checks as unverified unless actually run.
+- Keep historical release notes out of current operating instructions; releases are documented on GitHub.
 
 ## Integrated Serving
 

@@ -8,8 +8,9 @@ dRastic Backup separates the web server from the machines that actually read fil
 - **Agent** -- Runs on a machine that should be backed up or should execute backup tasks.
 - **Repository** -- A restic target. It can be managed by dRastic or configured manually as a custom repository.
 - **Job** -- Defines what an agent backs up.
-- **Schedule** -- Runs a job automatically with a selected repository, optional repository check, and retention policy.
-- **Retention** -- Defines how old successful job runs and their snapshots are pruned after backups.
+- **Schedule** -- Runs a job automatically with a selected repository and optional repository check.
+- **Backup chain** -- Runs existing jobs in order, potentially on different agents.
+- **Retention** -- Keeps whole backup runs according to a job policy, including partial/failed runs with snapshots. The newest confirmed complete run remains protected.
 
 ## Normal Workflow
 
@@ -20,7 +21,8 @@ dRastic Backup separates the web server from the machines that actually read fil
 5. Assign repositories to the agent.
 6. Create a backup job.
 7. Add a schedule or run the job manually.
-8. Monitor job reports in the web UI.
+8. Restore sample files to a separate empty directory and compare their contents.
+9. Monitor reports and repeat restore checks regularly.
 
 ## Agent Display Names
 
@@ -33,7 +35,7 @@ Clear the field and save to use the hostname again. Names are limited to 255 cha
 dRastic supports two repository types:
 
 - **Native repositories** are created and stored by the integrated `rest-server` service.
-- **Custom repositories** are existing restic repositories configured with a location, password, and optional environment variables.
+- **Custom repositories** use an existing or new restic target, with a location, password, and optional environment variables.
 
 Native repositories are the simplest option for a single dRastic deployment. Custom repositories are useful when you already operate restic storage separately.
 
@@ -55,11 +57,15 @@ Changing the account password re-encrypts the account recovery key for the new p
 
 ## Jobs
 
-File jobs back up selected filesystem paths from the agent host. Proxmox jobs stream temporary LVM-thin VM snapshots into restic without a full local copy, deduplicating stable disk contents on the agent.
+| Type | Source | Requirements |
+| --- | --- | --- |
+| File | Live files and folders | Read access on the agent host |
+| Proxmox | QEMU VM disks and configuration | Root agent on the Proxmox node; mode-specific host tools |
+| TrueNAS | Files from temporary ZFS snapshots | Agent app on the NAS, API permissions and verified snapshot mounts |
 
 All job types use an available/selected split view, stacked on smaller screens. **Advanced** below the selection opens custom file exclude patterns, TrueNAS exclude patterns, or the optional Proxmox temporary storage override. Settings remain part of the job when Advanced is collapsed.
 
-Proxmox jobs also offer **Native — read all disks** and **Native — with CBT** on updated, supported agents. A suitable local LVM-thin temporary backup storage is selected automatically; optionally specify one under **Advanced**. The selected storage is shown in the job log. CBT skips unchanged large-disk blocks only when tracking is confirmed; otherwise a full native read is logged. All modes produce independently restorable Restic snapshots, and old TAR/VMA backups remain available. Job details separates actual disk reads/reuse from newly stored repository bytes.
+Proxmox offers **Snapshot**, **Native — read all disks**, and **Native — with CBT**. CBT reuses unchanged blocks only with a confirmed checkpoint; otherwise it performs a full native read. Each backup is independently restorable. Legacy VMA archives remain recoverable as files, not through the specialized VM restore modes. See [Backup and Restore](backup-and-restore.md) for prerequisites and limitations.
 
 Only create jobs for data the agent can actually access. Docker agents typically mount the host filesystem read-only under `/mnt/host`.
 
