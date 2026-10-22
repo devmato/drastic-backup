@@ -13,6 +13,7 @@ from drastic_common.agent.enums import (
     AgentRepositoryKind,
 )
 from drastic_common.backup_retry import BackupRetrySchema
+from drastic_common.restic.validation import validate_read_data_subset
 from drastic_common.retention import RetentionRuleSchema
 
 _JOB_TYPE_NAMES = tuple(AgentJobType.__members__)
@@ -84,6 +85,13 @@ class AgentProxmoxBackupJobConfigSchema(Schema):
             )
 
 
+def validate_check_read_data(value):
+    try:
+        validate_read_data_subset(value)
+    except ValueError as exc:
+        raise ValidationError(str(exc)) from exc
+
+
 class AgentRepositoryCheckConfigSchema(Schema):
     class Meta:
         unknown = EXCLUDE
@@ -98,6 +106,7 @@ class AgentRepositoryCheckConfigSchema(Schema):
             return
 
         read_data = str(data.get("read_data") or "").strip() or None
+        validate_check_read_data(read_data)
         data["read_data"] = read_data
 
 

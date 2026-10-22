@@ -32,7 +32,7 @@ def list_jobs(user_id):
         selectinload(Agent.repositories),
         selectinload(Agent.jobs).selectinload(Job.schedules).selectinload(JobSchedule.repository),
         selectinload(Agent.jobs).selectinload(Job.actions),
-        selectinload(Agent.jobs).selectinload(Job.operations),
+        selectinload(Agent.jobs).selectinload(Job.last_operation),
     ).filter(Agent.user_id == user_id).all()
 
 
@@ -41,7 +41,7 @@ def job_detail(user_id, job_id):
         selectinload(Job.agent).selectinload(Agent.repositories),
         selectinload(Job.schedules).selectinload(JobSchedule.repository),
         selectinload(Job.actions),
-        selectinload(Job.operations),
+        selectinload(Job.last_operation),
     ).join(Agent).filter(Job.id == job_id, Agent.user_id == user_id))
 
 

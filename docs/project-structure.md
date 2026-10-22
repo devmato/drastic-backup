@@ -88,6 +88,7 @@ Paths below are relative to `libs/python/common/src/drastic_common/`. Common doe
 | `restic/client.py`, `restic/repository.py` | Supervised commands and repository credentials |
 | `restic/snapshots.py` | Owner/job/run tags and restore-point grouping |
 | `restic/binary.py` | Verified official archives for installation and recovery kits |
+| `restic/validation.py` | Shared check-subset validation before repository I/O |
 | `backup_selection.py` | Literal path rules and include-exception compatibility |
 | `retention.py`, `backup_retry.py`, `scheduling.py` | Rule validation, retry eligibility and calendar/UTC schedules |
 | `secret_envelope.py`, `ssh_keys.py` | Credential envelopes and SSH identity helpers |

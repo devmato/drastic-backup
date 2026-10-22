@@ -32,7 +32,7 @@ def terminate_process(process, grace=5):
         process.wait()
 
 
-def run_process(command, *, cancelled=lambda: False, timeout=86400, input_text=None):
+def run_process(command, *, cancelled=lambda: False, timeout=86400, input_text=None, truncate_output_at=None):
     """Use files rather than pipes so a verbose tool cannot deadlock or exhaust RAM."""
     if cancelled():
         raise ProcessCancelledError("Restore cancelled")
@@ -57,8 +57,11 @@ def run_process(command, *, cancelled=lambda: False, timeout=86400, input_text=N
                     detail = errors.read().decode(errors="replace")
                     raise RuntimeError(f"{command[0]} failed ({process.returncode}): {detail}")
                 output.seek(0)
-                result = output.read(4 * 1024 * 1024 + 1)
-                if len(result) > 4 * 1024 * 1024:
+                limit = truncate_output_at if truncate_output_at is not None else 4 * 1024 * 1024
+                result = output.read(limit + 1)
+                if len(result) > limit and truncate_output_at is not None:
+                    return result[:limit].decode(errors="replace") + "\n[output truncated]"
+                if len(result) > limit:
                     raise ValueError(f"{command[0]} returned too much output")
                 return result.decode(errors="replace")
             finally:

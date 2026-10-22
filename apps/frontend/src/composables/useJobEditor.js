@@ -5,6 +5,15 @@ import { sameSchedule } from '../utils/schedule.js'
 // Own the complete edit workflow; API calls do not reload shared state between each child write.
 export function useJobEditor(jobStore, agentStore, userStore) {
   const submitting = ref(false)
+  const createdJobId = ref(null)
+  const actionIds = new Map()
+  const scheduleIds = new Map()
+
+  function reset() {
+    createdJobId.value = null
+    actionIds.clear()
+    scheduleIds.clear()
+  }
 
   function schedulePayload(schedule, recoveryKey) {
     return {
@@ -17,7 +26,7 @@ export function useJobEditor(jobStore, agentStore, userStore) {
   }
 
   async function saveSchedule(jobId, schedule, create) {
-    await userStore.withRecoveryKey(key => create
+    return userStore.withRecoveryKey(key => create
       ? jobsApi.createSchedule(jobId, schedulePayload(schedule, key))
       : jobsApi.updateSchedule(schedule.id, schedulePayload(schedule, key)))
   }
@@ -40,40 +49,40 @@ export function useJobEditor(jobStore, agentStore, userStore) {
         throw new Error('Update the agent to use account time zones (protocol 24 required)')
       }
 
-      let id = editingJob?.id
-      if (editingJob) {
+      let id = editingJob?.id || createdJobId.value
+      if (id) {
         await jobsApi.updateJob(id, payload)
       } else {
         id = (await jobsApi.createJob({ ...payload, agent_id: agentId })).id
+        createdJobId.value = id
       }
       dirty = true
       const saved = await jobsApi.getJob(id)
 
       for (const action of actions) {
-        if (!editingJob || String(action.id).startsWith('draft-')) {
-          await jobsApi.createAction(id, action)
+        const actionId = actionIds.get(action.id) || (String(action.id).startsWith('draft-') ? null : action.id)
+        if (!actionId) {
+          actionIds.set(action.id, (await jobsApi.createAction(id, action)).id)
         } else {
-          await jobsApi.updateAction(action.id, action)
+          await jobsApi.updateAction(actionId, action)
         }
       }
-      if (editingJob) {
-        const actionIds = new Set(actions.map(action => action.id))
-        for (const action of saved.actions) {
-          if (!actionIds.has(action.id)) await jobsApi.deleteAction(action.id)
-        }
+      const keptActionIds = new Set(actions.map(action => actionIds.get(action.id) || action.id))
+      for (const action of saved.actions) {
+        if (!keptActionIds.has(action.id)) await jobsApi.deleteAction(action.id)
       }
 
       for (const schedule of schedules) {
-        const create = !editingJob || String(schedule.id).startsWith('draft-')
-        if (create || !sameSchedule(schedule, saved.schedules.find(item => item.id === schedule.id))) {
-          await saveSchedule(id, schedule, create)
+        const scheduleId = scheduleIds.get(schedule.id) || (String(schedule.id).startsWith('draft-') ? null : schedule.id)
+        if (!scheduleId) {
+          scheduleIds.set(schedule.id, (await saveSchedule(id, schedule, true)).id)
+        } else if (!sameSchedule(schedule, saved.schedules.find(item => item.id === scheduleId))) {
+          await saveSchedule(id, { ...schedule, id: scheduleId }, false)
         }
       }
-      if (editingJob) {
-        const scheduleIds = new Set(schedules.map(schedule => schedule.id))
-        for (const schedule of saved.schedules) {
-          if (!scheduleIds.has(schedule.id)) await jobsApi.deleteSchedule(schedule.id)
-        }
+      const keptScheduleIds = new Set(schedules.map(schedule => scheduleIds.get(schedule.id) || schedule.id))
+      for (const schedule of saved.schedules) {
+        if (!keptScheduleIds.has(schedule.id)) await jobsApi.deleteSchedule(schedule.id)
       }
 
       return id
@@ -94,5 +103,5 @@ export function useJobEditor(jobStore, agentStore, userStore) {
     }
   }
 
-  return { submitting, saveJob }
+  return { submitting, createdJobId, saveJob, reset }
 }

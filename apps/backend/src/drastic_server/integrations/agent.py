@@ -13,7 +13,6 @@ from drastic_common.agent.commands import (
 from drastic_server.config import DefaultConfig, parse_int_value
 from drastic_server.models.agent import AgentOperationState, AgentOperationType
 from drastic_server.schemas.agent import AgentOperationSchema
-from drastic_server.schemas.job import JobSchema
 
 
 def is_agent_timeout_response(response):
@@ -104,12 +103,6 @@ class AgentService:
         return cls.send_command(agent, AgentCommandName.cancel_restore, **kwargs)
 
     @classmethod
-    def init_repository(cls, agent, location, password, env):
-        return cls.send_command(
-            agent, AgentCommandName.init_repository, location=location, password=password, env=env
-        )
-
-    @classmethod
     def sync(cls, agent, await_response=False):
         return cls.send_command(agent, AgentCommandName.sync, await_response=await_response)
 
@@ -152,18 +145,6 @@ class AgentService:
             run_options=run_options or {},
             timeout=5,
         )
-
-    @classmethod
-    def get_job_status(cls, agent, job_id):
-        return cls.send_command(agent, AgentCommandName.get_job_status, job_id=job_id)
-
-    @classmethod
-    def add_job(cls, agent, job):
-        return cls.send_command(agent, AgentCommandName.add_job, job_data=JobSchema().dump(job))
-
-    @classmethod
-    def delete_job(cls, agent, job_id):
-        return cls.send_command(agent, AgentCommandName.delete_job, job_id=job_id)
 
     @classmethod
     def cancel_job(cls, agent, job_id, operation_uuid=None, cancel_if_missing=False):

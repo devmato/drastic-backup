@@ -1,10 +1,11 @@
 import json
 
 from flask import current_app
+from sqlalchemy import and_, select
 
 from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_server.extensions import db
-from drastic_server.models.agent import AgentOperationType
+from drastic_server.models.agent import AgentOperation, AgentOperationType
 from drastic_server.models.mixins import IdMixin, TimeMixin
 from drastic_server.utils.crypto import CryptoError, decrypt, encrypt
 
@@ -36,6 +37,17 @@ class Repository(IdMixin, TimeMixin, db.Model):
     # Reported failures require verification; new repositories have no automatic full-read requirement.
     retention_check_token = db.Column(db.String(36), nullable=True)
     _environment = db.Column("encrypted_environment", db.JSON, nullable=True)
+    _stats_operation = db.relationship(
+        AgentOperation, uselist=False, viewonly=True,
+        primaryjoin=lambda: and_(
+            Repository.id == AgentOperation.repository_id,
+            AgentOperation.id == select(AgentOperation.id).where(
+                AgentOperation.repository_id == Repository.id,
+                AgentOperation.type == AgentOperationType.backup,
+                AgentOperation.data["stats"].as_string().is_not(None),
+            ).order_by(AgentOperation.id.desc()).limit(1).correlate(Repository).scalar_subquery(),
+        ),
+    )
 
     @property
     def environment(self):
@@ -60,9 +72,8 @@ class Repository(IdMixin, TimeMixin, db.Model):
 
     @property
     def stats(self):
-        for operation in reversed(self.operations):
-            if operation.type == AgentOperationType.backup and "stats" in operation.data:
-                return operation.data["stats"]
+        operation = self._stats_operation
+        return operation.data["stats"] if operation else None
 
     @property
     def repository_path(self):

@@ -3,13 +3,13 @@ from datetime import datetime
 from uuid import uuid4
 
 from cron_descriptor import get_description
-from sqlalchemy import Enum
-from sqlalchemy.ext.hybrid import hybrid_property
+from sqlalchemy import Enum, and_, func, select
 from sqlalchemy.ext.mutable import MutableDict
 
 from drastic_common.agent.enums import AgentJobActionModule, AgentJobType
 from drastic_common.scheduling import describe, timing_from_cron
 from drastic_server.extensions import db
+from drastic_server.models.agent import AgentOperation, AgentOperationType
 from drastic_server.models.mixins import IdMixin, TimeMixin
 
 JobType = AgentJobType
@@ -33,16 +33,16 @@ class Job(IdMixin, TimeMixin, db.Model):
     _config = db.Column("config", db.JSON, nullable=False, default=lambda: {"data": {}})
     agent = db.relationship("Agent", foreign_keys=[agent_id], backref=db.backref("jobs"))
 
-    @hybrid_property
-    def last_operation(self):
-        backup_operations = [
-            operation for operation in self.operations if getattr(operation.type, "name", None) == "backup"
-        ]
-        if len(backup_operations) > 0:
-            return max(
-                backup_operations,
-                key=lambda operation: (operation.started or datetime.min, operation.id or 0),
-            )
+    last_operation = db.relationship(
+        AgentOperation, uselist=False, viewonly=True,
+        primaryjoin=lambda: and_(
+            Job.id == AgentOperation.job_id,
+            AgentOperation.id == select(AgentOperation.id).where(
+                AgentOperation.job_id == Job.id, AgentOperation.type == AgentOperationType.backup,
+            ).order_by(func.coalesce(AgentOperation.started, datetime.min).desc(), AgentOperation.id.desc())
+            .limit(1).correlate(Job).scalar_subquery(),
+        ),
+    )
 
     @property
     def effective_retention_id(self):

@@ -387,3 +387,36 @@ def test_startup_maintenance_retries_open_notification_delivery(monkeypatch):
         finally:
             db.session.remove()
             db.drop_all()
+
+
+def test_failed_destinations_do_not_starve_later_notification_retries(monkeypatch):
+    app = _build_app()
+
+    class FailingApprise:
+        def add(self, _url):
+            return True
+
+        def notify(self, **_message):
+            return False
+
+    monkeypatch.setattr(agent_operations, "Apprise", FailingApprise)
+    with app.app_context():
+        db.create_all()
+        try:
+            user = User(name="owner", password="unused", encrypted_recovery_key={})
+            agent = Agent(user=user, secret="unused")
+            config = NotificationConfig(user=user)
+            config.url = "mailto://user@example.test"
+            for index in range(7):
+                operation = AgentOperation(agent=agent, uuid=f"retry-{index}", type=AgentOperationType.backup,
+                                           state=AgentOperationState.success)
+                db.session.add(NotificationDelivery(operation=operation, notification_config=config, state="success"))
+            db.session.commit()
+            for _ in range(2):
+                agent_operations.AgentOperationService._retry_open_notification_deliveries(limit=5)
+            deliveries = NotificationDelivery.query.order_by(NotificationDelivery.id).all()
+            assert all(delivery.attempts >= 1 and delivery.sent_at is None for delivery in deliveries)
+            assert [delivery.attempts for delivery in deliveries[-2:]] == [1, 1]
+        finally:
+            db.session.remove()
+            db.drop_all()

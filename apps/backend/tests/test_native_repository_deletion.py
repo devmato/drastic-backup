@@ -1,8 +1,14 @@
 import json
+import os
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
+from types import SimpleNamespace
 from uuid import uuid4
 
+import bcrypt
 import pytest
+from sqlalchemy import event
 
 from drastic_server import models as _models  # noqa: F401
 from drastic_server.app import create_app
@@ -14,6 +20,7 @@ from drastic_server.models.agent import (
     AgentOperationState,
     AgentOperationType,
 )
+from drastic_server.models.job import Job, JobType
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.services.repository import management as repository_views
@@ -295,3 +302,72 @@ def test_app_factory_does_not_access_missing_database_tables(monkeypatch, tmp_pa
     _build_app(monkeypatch, tmp_path, f"sqlite:///{database_path}")
 
     assert not database_path.exists()
+
+
+@pytest.mark.skipif(not os.environ.get("DRASTIC_TEST_DATABASE_URI"), reason="Requires disposable MariaDB")
+@pytest.mark.parametrize("admission", ["operation", "proxy"])
+def test_repository_deletion_waits_for_concurrent_operation_admission(monkeypatch, tmp_path, admission):
+    app = _build_app(monkeypatch, tmp_path, os.environ["DRASTIC_TEST_DATABASE_URI"])
+    admitted, deletion_at_lock = Event(), Event()
+    with app.app_context():
+        db.create_all()
+        try:
+            repository, repository_path = _create_repository(tmp_path)
+            agent = Agent(user=repository.user, secret=bcrypt.hashpw(b"secret", bcrypt.gensalt(rounds=4)).decode(), repositories=[repository])
+            job = Job(agent=agent, name="Files", type=JobType.file)
+            db.session.add(job)
+            db.session.commit()
+            user_id, agent_id, repository_id, job_id = repository.user_id, agent.id, repository.id, job.id
+            assert job.last_operation is None and repository.stats is None
+            db.session.remove()
+
+            def observe_lock(_conn, _cursor, statement, _parameters, _context, _many):
+                if "FROM agents" in statement and "FOR UPDATE" in statement:
+                    deletion_at_lock.set()
+
+            engine = db.engine
+            event.listen(engine, "before_cursor_execute", observe_lock)
+
+            def admit():
+                if admission == "proxy":
+                    def upstream(_session, **kwargs):
+                        admitted.set()
+                        assert deletion_at_lock.wait(10), "Deletion did not reach its admission fence"
+                        locks = repository_path / "locks"
+                        locks.mkdir()
+                        (locks / "active").write_text("backup acquired a Restic lock")
+                        return SimpleNamespace(status_code=200, headers={}, close=lambda: None,
+                                               iter_content=lambda **kwargs: iter([b"repository data"]))
+
+                    monkeypatch.setattr("requests.Session.request", upstream)
+                    response = app.test_client().get("/restic/native/repository-id/config", auth=(str(agent_id), "secret"), buffered=True)
+                    assert response.status_code == 200
+                    return
+                with app.app_context():
+                    operation = AgentOperation(user_id=user_id, agent_id=agent_id, repository_id=repository_id,
+                        job_id=job_id, state=AgentOperationState.running, type=AgentOperationType.backup)
+                    db.session.add(operation)
+                    db.session.flush()  # FK locks remain held until this admission commits.
+                    admitted.set()
+                    assert deletion_at_lock.wait(10), "Deletion did not reach its admission fence"
+                    db.session.commit()
+
+            def delete():
+                with app.app_context(), pytest.raises(repository_views.ResourceConflict, match="running operation|locked"):
+                    repository_views.delete_repository(user_id, repository_id)
+
+            try:
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    admission_future = executor.submit(admit)
+                    assert admitted.wait(10)
+                    deletion = executor.submit(delete)
+                    admission_future.result(timeout=20)
+                    deletion.result(timeout=20)
+            finally:
+                event.remove(engine, "before_cursor_execute", observe_lock)
+            assert db.session.get(Repository, repository_id) is not None
+            assert repository_path.is_dir()
+            assert AgentOperation.query.filter_by(repository_id=repository_id, state=AgentOperationState.running).count() == (admission == "operation")
+        finally:
+            db.session.remove()
+            db.drop_all()

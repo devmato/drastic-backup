@@ -9,7 +9,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from threading import Event, RLock
+from threading import Event, RLock, Thread
 from time import monotonic
 from uuid import UUID
 from zoneinfo import ZoneInfo
@@ -61,9 +61,11 @@ from drastic_common.agent.commands import (
     AgentDebugRequestSchema,
 )
 from drastic_common.agent.enums import AgentJobActionModule
+from drastic_common.process import ProcessCancelledError
 from drastic_common.restic import RESTIC_VERSION, ResticApi
 from drastic_common.restic.exceptions import ResticError, is_repository_locked
 from drastic_common.restic.repository import ResticRepository
+from drastic_common.restic.validation import validate_read_data_subset
 from drastic_common.scheduling import TimingSchema, preview, validate_timezone
 from drastic_common.secret_envelope import generate_agent_keypair
 from drastic_common.ssh_keys import generate_ssh_keypair
@@ -270,8 +272,6 @@ class Agent:
                 self.__run_due_schedules(now)
 
             if self.connected:
-                self._debug_scheduler["phase"] = "reports"
-                self.__flush_report_queue()
                 if monotonic() >= getattr(self, "_next_diagnostics", 0):
                     self._next_diagnostics = monotonic() + 10
                     try:
@@ -737,8 +737,11 @@ class Agent:
             if hasattr(AgentAction, module):
                 try:
                     getattr(AgentAction, module)(
-                        report=report, docker_client=self.__docker_client, **action["data"]
+                        report=report, docker_client=self.__docker_client, **{**action["data"], "hook": action["hook"]}
                     )
+                except ProcessCancelledError as exc:
+                    report.log_message(str(exc), final_state=AgentReportState.cancelled)
+                    return
                 except Exception as e:
                     report.set_data("hook_failed", True)
                     report.log_message(
@@ -867,6 +870,12 @@ class Agent:
 
         self.__maintain_server_connection(datetime.now())
 
+        self.__report_thread = Thread(
+            target=reporting.run,
+            args=(self.__flush_report_queue, lambda: self.connected, self.__shutdown_event),
+            name="agent-reports", daemon=True,
+        )
+        self.__report_thread.start()
         self.__start_scheduler()
 
     def __warn_managed_repo_rewrite_enabled(self):
@@ -895,6 +904,9 @@ class Agent:
 
         if hasattr(self, "_Agent__execution"):
             self.__execution.shutdown(wait=True)
+        report_thread = getattr(self, "_Agent__report_thread", None)
+        if report_thread is not None:
+            report_thread.join()
 
         from drastic_agent.services.proxmox_restore import cleanup_workspaces
 
@@ -1011,7 +1023,7 @@ class Agent:
                              install_root=AGENT_INSTALL_ROOT, command=AGENT_COMMAND, unit=AGENT_UPDATE_UNIT)
 
     def cmd_get_containers(self):
-        report = AgentReport(AgentReportType.command, data=[])
+        report = AgentReport.command_report(data={"containers": []})
 
         if self.__docker_client:
             report.data = {
@@ -1107,6 +1119,11 @@ class Agent:
 
         configured = False
         try:
+            try:
+                validate_read_data_subset(read_data)
+            except ValueError:
+                report.data["invalid_check_input"] = True
+                raise
             self.__set_repository(repository_id)
             configured = True
             report.data["check"] = self.__resticapi.check(read_data=read_data_full, read_data_subset=read_data_subset)

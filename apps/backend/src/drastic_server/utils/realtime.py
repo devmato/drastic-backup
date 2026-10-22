@@ -5,6 +5,18 @@ def user_room(user_id):
     return f"user:{user_id}"
 
 
+def session_room(public_id):
+    return f"session:{public_id}"
+
+
+def disconnect_session_sockets(public_id):
+    """Disconnect only after revocation commits, including every tab using the session."""
+    if not public_id or socketio.server is None:
+        return
+    for sid, _ in list(socketio.server.manager.get_participants("/", session_room(public_id))):
+        socketio.server.disconnect(sid, namespace="/")
+
+
 def emit_ui_event(user_id, name, data=None):
     socketio.emit(
         "event",

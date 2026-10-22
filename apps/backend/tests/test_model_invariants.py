@@ -1,5 +1,5 @@
 from flask import Flask
-from sqlalchemy import UniqueConstraint, delete, text
+from sqlalchemy import UniqueConstraint, delete, event, text
 
 from drastic_common.agent.enums import (
     AgentJobActionModule,
@@ -21,6 +21,8 @@ from drastic_server.models.notification import NotificationConfig, NotificationD
 from drastic_server.models.repository import Repository
 from drastic_server.models.retention import Retention
 from drastic_server.models.user import User
+from drastic_server.services.jobs.queries import list_jobs
+from drastic_server.services.repository.management import list_repositories
 
 
 def _build_app():
@@ -176,3 +178,40 @@ def test_required_nullability_and_uniques_are_declared():
     assert "ix_notification_deliveries_open" in {
         index.name for index in NotificationDelivery.__table__.indexes
     }
+
+
+def test_summary_reads_load_only_latest_backup_and_latest_statistics():
+    app = _build_app()
+    with app.app_context():
+        db.create_all()
+        user, agent, repository, job = _create_graph()
+        agent.repositories.append(repository)
+        empty = Job(agent=agent, name="Empty", type=AgentJobType.file)
+        db.session.add(empty)
+        operations = [AgentOperation(agent=agent, job=job, repository=repository,
+            state=AgentOperationState.success, type=AgentOperationType.backup,
+            data={"stats": {"total_size": 123}} if index == 10 else {}) for index in range(30)]
+        db.session.add_all(operations)
+        db.session.flush()
+        expected_backup, expected_stats = operations[-1].id, operations[10].id
+        db.session.add(AgentOperation(agent=agent, job=job, repository=repository,
+            state=AgentOperationState.success, type=AgentOperationType.restore, data={"stats": {"total_size": 999}}))
+        db.session.commit()
+        user_id = user.id
+        db.session.expunge_all()
+        loaded = []
+
+        def loaded_operation(operation, _context):
+            loaded.append(operation.id)
+
+        event.listen(AgentOperation, "load", loaded_operation)
+        try:
+            jobs = list_jobs(user_id)[0].jobs
+            assert next(item for item in jobs if item.name == "Files").last_operation.id == expected_backup
+            assert next(item for item in jobs if item.name == "Empty").last_operation is None
+            assert list_repositories(user_id)[0].stats == {"total_size": 123}
+            assert loaded == [expected_backup, expected_stats]
+        finally:
+            event.remove(AgentOperation, "load", loaded_operation)
+            db.session.remove()
+            db.drop_all()

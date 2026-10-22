@@ -19,6 +19,7 @@ from drastic_server.models.user import User
 from drastic_server.models.user_session import UserSession
 from drastic_server.services.exceptions import AuthenticationFailed
 from drastic_server.services.repository import RepositorySecretError, ensure_user_recovery_key
+from drastic_server.utils.realtime import disconnect_session_sockets
 
 
 def utcnow() -> datetime:
@@ -73,6 +74,7 @@ class SessionAuthService:
     def logout(cls, public_id):
         cls.revoke_session_by_public_id(public_id)
         db.session.commit()
+        disconnect_session_sockets(public_id)
 
     @classmethod
     def create_session(cls, user: User, *, user_agent: str = "") -> tuple[UserSession, str, str]:

@@ -67,6 +67,8 @@ HTTP error handlers roll back any unfinished work. Background and CLI callers mu
 
 Native repository deletion follows its own compensating sequence: quarantine the directory, commit the database deletion, then purge the quarantine. A failed database transaction restores the directory; interrupted purges are reconciled by the existing maintenance logic.
 
+Deletion locks the owner's agents in ID order, then the repository, before checking running work. Managed Restic proxy requests hold shared agent/repository locks through streaming, so locally scheduled work cannot create a new storage lock between the deletion check and quarantine.
+
 ## Agent
 
 All paths below are relative to `apps/agent/src/drastic_agent/`.
@@ -115,6 +117,7 @@ Runtime helpers receive focused dependencies: the scheduler gets tables and the 
 
 - Server-issued agent UUIDs identify Restic backup hosts, not implicit snapshot filters. Parent selection also checks owner/job/artifact identity; native CBT requires confirmed source/checkpoint state.
 - Snapshot reports under their lock, release it for network I/O, and advance only acknowledged log sequences. Concurrent changes stay dirty; children cannot overtake outstanding parents. Rotate failed sends.
+- One independent delivery thread keeps report timeouts out of the schedule loop. Log batches stay below the transport limit; terminal state is sent only in the last batch. Outbox replay starts at the first batch and deduplicates through the existing log sequences. Individual log messages retain at most 8192 characters, with explicit truncation markers.
 - Ingestion locks **agent → repository → operation** and refreshes rows before merging logs, artifacts, parents and cleanup receipts. Deletion follows the same parent-lock ordering.
 - Late dispatch callbacks must read current operation state. Timeouts do not prove non-execution and must not overwrite confirmed results or tear down a replacement connection.
 - Union confirmed removal IDs on replay; never resurrect forgotten artifacts. Checkpoint removals before another batch or prune so crash recovery can replay them.
@@ -161,7 +164,7 @@ Not every action needs every layer. A component may use an API function for a lo
 
 API modules group endpoints by jobs, agents, repositories, operations, restores, chains, policies, notifications and users. Existing stateless operation/restore stores delegate to these modules so their callers keep a single established entry point.
 
-`composables/useJobEditor.js` owns job/action/schedule saving. It validates protocol restrictions before the first write, does not mutate the form draft and refreshes shared state once after a write sequence. The existing child endpoints commit independently: on partial failure the editor refreshes persisted state, retains the draft and reports the original error. It does not claim a transaction across multiple HTTP requests.
+`composables/useJobEditor.js` owns job/action/schedule saving. It validates protocol restrictions before the first write, does not mutate the form draft and refreshes shared state once after a write sequence. The existing child endpoints commit independently: on partial failure the editor refreshes persisted state, retains the draft and reports the original error. Acknowledged create IDs remain in the editor until it is reset for another job, so retries update already-created items and can remove them when the draft changes. It does not claim a transaction across multiple HTTP requests.
 
 Continue using the shared backup-selection components and conventions described in the contributor guide. Architecture refactors do not require template, layout or styling changes.
 

@@ -89,6 +89,7 @@
     <JobManageDialog
       v-model="showJobDialog"
       :editing-job="editingJob"
+      :created-job-id="createdJobId"
       :agent-id="currentAgentId"
       :agent-online="currentAgentOnline"
       :repositories="currentAgentRepositories"
@@ -157,7 +158,7 @@ const editingJob = ref(null)
 const currentAgentId = ref(null)
 const currentAgentOnline = ref(false)
 const currentAgentRepositories = ref([])
-const { submitting: jobDialogSubmitting, saveJob } = useJobEditor(jobStore, agentStore, userStore)
+const { submitting: jobDialogSubmitting, createdJobId, saveJob, reset: resetJobEditor } = useJobEditor(jobStore, agentStore, userStore)
 
 const showRunJobDialog = ref(false)
 const showRestoreDialog = ref(false)
@@ -179,6 +180,7 @@ function formatDate(isoStr) {
 }
 
 function showAddJob(agentData) {
+  resetJobEditor()
   editingJob.value = null
   currentAgentId.value = agentData.id
   currentAgentOnline.value = agentData.online
@@ -187,6 +189,7 @@ function showAddJob(agentData) {
 }
 
 function showEditJob(job) {
+  resetJobEditor()
   const agentData = getAgentForJob(job)
   editingJob.value = job
   currentAgentId.value = job.agent_id

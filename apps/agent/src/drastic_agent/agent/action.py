@@ -1,9 +1,9 @@
 """Execute configured host-shell and Docker lifecycle hooks with task timeouts."""
 
-import subprocess
 from threading import Lock
 
 from drastic_agent.config import DefaultConfig, env_int
+from drastic_common.process import run_process
 
 
 class AgentAction:
@@ -12,14 +12,13 @@ class AgentAction:
     @staticmethod
     def command(report, command, **kwargs):
         report.log_message(f"Executing command {command} on agent...")
-        cmd = subprocess.run(
-            command,
+        output = run_process(
+            ["/bin/sh", "-c", command],
             timeout=env_int("DRASTIC_TASK_TIMEOUT_SECONDS", DefaultConfig.TASK_TIMEOUT_SECONDS),
-            shell=True,
-            check=True,
-            capture_output=True,
+            cancelled=(lambda: False) if kwargs.get("hook") in {"end", "error"} else report.cancel_event.is_set,
+            truncate_output_at=8192,
         )
-        report.log_message(f"Command finished:\n {cmd.stdout.decode()}")
+        report.log_message(f"Command finished:\n {output}")
 
     @staticmethod
     def docker(report, docker_client, container, action, command, **kwargs):

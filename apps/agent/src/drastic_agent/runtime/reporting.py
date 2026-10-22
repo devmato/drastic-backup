@@ -1,5 +1,6 @@
 """Replayable report delivery; acknowledgements advance only the sent snapshot."""
 
+import json
 import logging
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -9,6 +10,41 @@ from drastic_agent.agent.report import AgentReport
 from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.storage.operation_store import operation_store
 from drastic_common import diagnostics
+
+# Leave room for the Socket.IO request envelope below Engine.IO's 1 MB limit.
+MAX_REPORT_BYTES = 900_000
+
+
+def run(flush_reports, connected, stopped):
+    """One delivery worker; transport timeouts must never occupy the schedule loop."""
+    while not stopped.wait(0.1):
+        if connected():
+            try:
+                flush_reports()
+            except Exception:
+                logging.exception("Report delivery failed; retaining queued work")
+
+
+def batch_logs(payload, cursor):
+    """Use existing log sequences and running states; no new wire fields are needed."""
+    logs = [log for log in payload["logs"] if log["sequence"] > cursor]
+    payload["logs"] = []
+    size = len(json.dumps(payload))
+    for log in logs:
+        # Old outbox entries may contain unbounded hook output from earlier agents.
+        if len(log["message"]) > AgentReport.MAX_LOG_MESSAGE_CHARS:
+            log["message"] = log["message"][:AgentReport.MAX_LOG_MESSAGE_CHARS] + "\n[log message truncated]"
+        log_size = len(json.dumps(log)) + 2
+        if size + log_size > MAX_REPORT_BYTES:
+            if not payload["logs"]:
+                raise ValueError("Report metadata or a log entry exceeds the delivery limit")
+            break
+        payload["logs"].append(log)
+        size += log_size
+    more = len(payload["logs"]) < len(logs)
+    if more:
+        payload.update(state="running", ended=None)
+    return more
 
 
 def flush(send_report):
@@ -45,6 +81,8 @@ def flush(send_report):
 
 def send(report, *, request, debug, completion_pending=None):
     """Release the report lock during I/O; concurrent updates must stay unsent."""
+    if not report._delivery_lock.acquire(blocking=False):
+        return False
     debug.update(operation_uuid=report.uuid, attempt_at=datetime.now(timezone.utc).isoformat(), phase="serializing")
     started = monotonic()
     try:
@@ -62,6 +100,7 @@ def send(report, *, request, debug, completion_pending=None):
             if defer_completion:
                 # Execution has ended, but unresolved snapshot IDs must not be published.
                 payload["artifacts"] = []
+            more_logs = batch_logs(payload, report._log_cursor)
             report.sent = True
         request_started = monotonic()
         debug["phase"] = "sending"
@@ -78,6 +117,8 @@ def send(report, *, request, debug, completion_pending=None):
                 if not enabled:
                     report.mark_logs_sent()
             with report._lock:
+                if more_logs:
+                    report.sent = False
                 if diagnostic_at is not None and getattr(report, "diagnostic_at", None) == diagnostic_at:
                     del report.diagnostic_at
         else:
@@ -88,7 +129,7 @@ def send(report, *, request, debug, completion_pending=None):
             debug["last_success_at"] = datetime.now(timezone.utc).isoformat()
         else:
             diagnostics.local_event("report.rejected", debug)
-        return success and not defer_completion
+        return success and not defer_completion and not more_logs and (not report.ended or report.sent)
     except Exception as exc:
         report.sent = False
         debug.update(success=False, error=diagnostics.bounded({"type": type(exc).__name__, "message": str(exc)}),
@@ -96,3 +137,5 @@ def send(report, *, request, debug, completion_pending=None):
         diagnostics.local_event("report.failed", debug)
         logging.debug("Failed to send report %s: %s", report.uuid, exc)
         return False
+    finally:
+        report._delivery_lock.release()

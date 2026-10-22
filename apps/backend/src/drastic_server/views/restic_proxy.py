@@ -175,7 +175,8 @@ def _authenticate_agent() -> Agent | None:
     if password is None:
         return None
 
-    agent = Agent.query.filter(Agent.id == agent_id).first()
+    # Keep deletion behind in-flight repository requests, including locally scheduled backups.
+    agent = Agent.query.filter(Agent.id == agent_id).with_for_update(read=True).first()
     if agent is None:
         return None
 
@@ -214,7 +215,12 @@ def _authorize_repository(agent: Agent, proxy_path: str) -> Repository | None:
             best_match = repository
             best_match_length = len(repository_path)
 
-    return best_match
+    if best_match is None:
+        return None
+    return Repository.query.filter(
+        Repository.id == best_match.id, Repository.user_id == agent.user_id,
+        Repository.agents.any(Agent.id == agent.id),
+    ).populate_existing().with_for_update(read=True).first()
 
 
 def _normalize_proxy_path(proxy_path: str) -> tuple[str, bool]:

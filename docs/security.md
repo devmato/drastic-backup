@@ -42,6 +42,8 @@ Agent registration currently uses a dRastic username and password. After registr
 
 Changing an account password rewraps its recovery key and revokes browser sessions and debug access. It does not revoke registered agents or rotate repository/SSH credentials.
 
+Revoking a browser session also disconnects its live notification sockets; password changes disconnect every session's sockets. When an authenticated agent replaces its encryption public key, its old server-held envelopes are invalidated. Synchronize with the unlocked account recovery key to provision envelopes for the new key.
+
 ## Backup Safety
 
 - Test restores regularly.

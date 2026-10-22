@@ -124,7 +124,7 @@ class AgentOperationService:
             if operation_data.get("ended") and operation_data_payload["backup_completion_pending"]:
                 operation_data_payload["backup_completion_failed"] = True
         if (operation_data["type"] == AgentOperationType.repository_check and operation_data["state"] == AgentOperationState.failed
-                and not operation_data_payload.get("repository_locked")):
+                and not operation_data_payload.get("repository_locked") and not operation_data_payload.get("invalid_check_input")):
             operation_data_payload["retention_check_failed"] = True
         if previous_data.get("job_uuid"):
             operation_data_payload["job_uuid"] = previous_data["job_uuid"]
@@ -448,7 +448,7 @@ class AgentOperationService:
         delivery_ids = list(dict.fromkeys(delivery_ids))
         old_deliveries = NotificationDelivery.query.filter(
             NotificationDelivery.sent_at.is_(None)
-        ).order_by(NotificationDelivery.created, NotificationDelivery.id)
+        ).order_by(NotificationDelivery.attempts, NotificationDelivery.created, NotificationDelivery.id)
         if delivery_ids:
             old_deliveries = old_deliveries.filter(NotificationDelivery.id.notin_(delivery_ids))
         old_delivery_ids = [

@@ -3,9 +3,12 @@
 import logging
 
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import selectinload
 
 from drastic_server.extensions import db
+from drastic_server.integrations.agent import AgentService
 from drastic_server.models.agent import Agent, AgentOperation, AgentSession
+from drastic_server.models.job import JobSchedule
 from drastic_server.models.repository import Repository
 from drastic_server.models.user import User
 from drastic_server.services.chains import require_unused_chain_reference
@@ -30,7 +33,7 @@ def get_repository(user_id, repository_id):
 
 
 def list_repositories(user_id):
-    return Repository.query.filter_by(user_id=user_id).all()
+    return Repository.query.options(selectinload(Repository._stats_operation)).filter_by(user_id=user_id).all()
 
 
 def create_repository(user_id, data):
@@ -87,6 +90,10 @@ def update_repository(user_id, repository_id, data):
         db.session.rollback()
         raise ResourceConflict("Repository with this name already exists") from exc
 
+    for agent in repository.agents:
+        if agent.online:
+            AgentService.sync(agent)
+
 
 def reveal_password(user_id, repository_id, password):
     user = require_result(User.query.filter_by(id=int(user_id)))
@@ -99,16 +106,22 @@ def reveal_password(user_id, repository_id, password):
 
 def delete_repository(user_id, repository_id):
     """Quarantine files first, restore on rollback, purge only after the commit."""
-    repository = get_repository(user_id, repository_id)
+    # Match report ingestion's agent -> repository order; FK inserts cannot pass the safety check.
+    Agent.query.filter_by(user_id=user_id).order_by(Agent.id).with_for_update().all()
+    repository = require_result(Repository.query.filter_by(
+        id=repository_id, user_id=user_id,
+    ).populate_existing().with_for_update())
     try:
         require_unused_chain_reference(user_id, "repository_id", repository.id)
     except ValueError as exc:
         raise ResourceConflict(str(exc)) from exc
-    if repository.schedules:
+    if JobSchedule.query.filter_by(repository_id=repository.id).with_for_update().first():
         raise ValueError("Can't remove repository used by schedules. Remove those schedules first.")
     quarantine = None
     try:
-        running = AgentOperation.query.filter_by(repository_id=repository.id).filter(AgentOperation.blocks_cleanup).first()
+        running = AgentOperation.query.filter_by(repository_id=repository.id).filter(
+            AgentOperation.blocks_cleanup,
+        ).populate_existing().with_for_update().first()
         if running is not None:
             raise ResourceConflict("Repository has a running operation or pending backup finalization")
         if repository.kind == Repository.KIND_NATIVE:

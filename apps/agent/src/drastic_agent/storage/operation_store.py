@@ -108,6 +108,8 @@ class OperationStore:
                     operation._log_cursor = payload.get("log_cursor", 0)
                     operation._final_state = AgentOperationState[payload["final_state"]]
                     operation._full_log = bool(payload.get("full_log"))
+                    if operation._full_log:
+                        operation._log_cursor = 0  # Replays restart at the first batch; backend sequences deduplicate.
                     if row.get("status") != "finished" or operation.ended is None:
                         raise ValueError("Outbox entry is not a completed operation")
                     operations.append(operation)

@@ -6,7 +6,9 @@ from marshmallow import ValidationError
 from drastic_common.agent.schemas import AgentJobSchema
 from drastic_server.models.job import Job, JobType
 from drastic_server.schemas.job import (
+    ContainersResponseSchema,
     JobCreateInputSchema,
+    JobUpdateInputSchema,
     ProxmoxGuestsResponseSchema,
     ScheduleCreateInputSchema,
 )
@@ -43,6 +45,20 @@ def test_file_job_stores_config_in_standard_envelope():
     with pytest.raises(ValueError, match="protocol 16"):
         ensure_job_connection(SimpleNamespace(protocol_version=15), "file", exceptions)
     ensure_job_connection(SimpleNamespace(protocol_version=16), "file", exceptions)
+
+
+@pytest.mark.parametrize("paths", ["/etc", [], None, [{}], [{"path": "/etc", "group": "unknown"}]])
+def test_file_job_updates_validate_before_replacing_saved_selection(paths):
+    job = Job(name="Files", agent_id=1, type=JobType.file, config={"paths": [{"path": "/data"}]})
+    original = job.config
+    data = JobUpdateInputSchema().load({"config": {"paths": paths}})
+    with pytest.raises(ValidationError):
+        update_job_instance(job, data)
+    assert job.config == original
+
+
+def test_container_names_survive_response_serialization():
+    assert ContainersResponseSchema().dump({"containers": ["database", "web"]}) == {"containers": ["database", "web"]}
 
 
 def test_proxmox_job_updates_config_envelope():

@@ -4,13 +4,14 @@ from datetime import datetime
 
 import bcrypt
 from marshmallow import ValidationError
-from sqlalchemy import delete
+from sqlalchemy import delete, update
 
 from drastic_common.agent.commands import AGENT_PROTOCOL_VERSION
 from drastic_common.ssh_keys import ssh_public_key_algorithm, ssh_public_key_fingerprint
 from drastic_common.truenas import AgentConnectionsSchema
 from drastic_server.extensions import db
-from drastic_server.models.agent import Agent, AgentSession
+from drastic_server.models.agent import Agent, AgentSession, agent_repositories
+from drastic_server.models.secret import AgentSecretEnvelope
 from drastic_server.utils.realtime import emit_agent_state
 
 
@@ -28,7 +29,7 @@ def connect_agent(auth, session_id):
         return False
     if type(protocol) is not int or not 0 <= protocol <= AGENT_PROTOCOL_VERSION:
         return False
-    agent = Agent.query.filter_by(id=agent_id).first()
+    agent = Agent.query.filter_by(id=agent_id).populate_existing().with_for_update().first()
     if not agent or not isinstance(secret, str):
         return False
     if not bcrypt.checkpw(secret.encode(), agent.secret.encode()):
@@ -43,6 +44,13 @@ def connect_agent(auth, session_id):
     public_key = auth.get("agent_public_key")
     ssh_public_key = auth.get("agent_ssh_public_key")
     if public_key and agent.public_key != public_key:
+        # Ciphertexts for the previous recipient key cannot be reused, even at the same secret version.
+        db.session.execute(update(AgentSecretEnvelope).where(
+            AgentSecretEnvelope.agent_id == agent.id,
+        ).values(active=False))
+        db.session.execute(update(agent_repositories).where(
+            agent_repositories.c.agent_id == agent.id,
+        ).values(encrypted_restic_access_key=None, restic_key_id=None, provisioned=False))
         agent.public_key = public_key
     if ssh_public_key and agent.ssh_public_key != ssh_public_key:
         agent.ssh_public_key = ssh_public_key

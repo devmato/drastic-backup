@@ -146,7 +146,7 @@ cd apps/backend
 ./scripts/test-migrations.sh
 ```
 
-The script checks migration history, upgrades/checks a fresh MariaDB database, downgrades to `base`, repeats the upgrade/check, and runs the MariaDB report-deletion concurrency regression. Docker must be available; this is not a validation of arbitrary historical database upgrades.
+The script checks migration history, upgrades/checks a fresh MariaDB database, downgrades to `base`, repeats the upgrade/check, and runs the MariaDB report/repository-deletion concurrency regressions, including operation admission and streaming proxy traffic. Docker must be available; this is not a validation of arbitrary historical database upgrades.
 
 Run lint checks for modified backend files:
 

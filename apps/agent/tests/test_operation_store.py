@@ -3,12 +3,14 @@ import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
 
 from drastic_agent.agent.enums import AgentOperationState
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.runtime import reporting
 from drastic_agent.storage.database import (
     agent_operation_artifacts,
     agent_operation_queue,
@@ -195,6 +197,97 @@ def test_progress_updates_do_not_persist_the_report_to_outbox():
     report.mark_logs_sent()
 
     assert agent_operation_queue.find_one(uuid="progress-1") is None
+
+
+def test_large_reports_batch_logs_retry_and_replay_before_acknowledging_completion():
+    report = AgentReport.job_report(job_id=4, repository_id=8, operation_uuid="large-report")
+    for index in range(250):
+        report.log_message(f"{index}:" + '\n"ä' * 1000)
+    report.set_data("backup_data_complete", True)
+    report.finish()
+    payloads, received = [], {}
+    accepted = False
+
+    def request(_action, *, operation_json):
+        payloads.append(operation_json)
+        assert len(json.dumps(operation_json).encode()) < 1_000_000
+        if accepted:
+            received.update({log["sequence"]: log["message"] for log in operation_json["logs"]})
+        return {"success": accepted}
+
+    def send(item):
+        return reporting.send(item, request=request, debug={})
+
+    reporting.flush(send)
+    assert agent_operation_queue.find_one(uuid=report.uuid) is not None
+    accepted = True
+    reporting.flush(send)
+    assert payloads[0] == payloads[1] and payloads[1]["state"] == "running"
+    assert agent_operation_queue.find_one(uuid=report.uuid) is not None
+    AgentReport.load_queue()
+    for _ in range(10):
+        if not AgentReport.finished_reports:
+            break
+        reporting.flush(send)
+    assert not AgentReport.finished_reports
+    assert payloads[2] == payloads[1]  # A restart replays acknowledged batches safely.
+    assert len(received) == 250
+    assert all(payload["ended"] is None and payload["state"] == "running" for payload in payloads[:-1])
+    assert payloads[-1]["state"] == "success" and payloads[-1]["ended"]
+    assert payloads[-1]["data"]["backup_data_complete"]
+    assert agent_operation_queue.find_one(uuid=report.uuid) is None
+
+
+def test_old_oversized_log_entries_do_not_poison_the_durable_queue():
+    report = AgentReport.job_report(job_id=4, repository_id=8, operation_uuid="legacy-large-report")
+    report.log_message("x" * 1_100_000)
+    assert len(report.logs[0]["message"]) < 8300 and report.logs[0]["message"].endswith("[log message truncated]")
+    report._logs[0]["message"] = "x" * 1_100_000
+    report.finish()
+    AgentReport.load_queue()
+    sent = []
+    reporting.flush(lambda item: reporting.send(item, request=lambda _action, **args:
+        sent.append(args["operation_json"]) or {"success": True}, debug={}))
+    assert not AgentReport.finished_reports
+    assert len(json.dumps(sent[0])) < 1_000_000
+    assert sent[0]["logs"][0]["message"].endswith("[log message truncated]")
+
+
+def test_concurrent_delivery_cannot_overtake_an_acknowledgement_or_hide_new_logs():
+    report = AgentReport.job_report(job_id=4, repository_id=8, operation_uuid="concurrent-delivery")
+    report.log_message("first")
+    entered, release = Event(), Event()
+    sent = []
+
+    def request(_action, *, operation_json):
+        sent.append(operation_json)
+        entered.set()
+        assert release.wait(5)
+        return {"success": True}
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        first = executor.submit(reporting.send, report, request=request, debug={})
+        try:
+            assert entered.wait(5)
+            assert reporting.send(report, request=request, debug={}) is False
+            report.log_message("second")
+            assert len(sent) == 1
+        finally:
+            release.set()
+        assert first.result(timeout=5)
+    assert not report.sent
+    assert [log["message"] for log in report.logs] == ["second"]
+
+
+def test_invalid_check_input_does_not_prepare_or_mark_the_repository(monkeypatch):
+    from drastic_agent.runtime.agent import Agent
+
+    agent = Agent.__new__(Agent)
+    monkeypatch.setattr(agent, "_Agent__set_repository", lambda _: pytest.fail("Invalid input must not touch storage"))
+    report = agent.cmd_check_repository(repository_id=8, read_data_subset="banana")
+    assert report.final_state == AgentOperationState.failed
+    assert report.data["invalid_check_input"]
+    assert not report.data.get("retention_check_failed")
 
 
 def test_recovery_fails_running_artifacts_and_enqueues_once():

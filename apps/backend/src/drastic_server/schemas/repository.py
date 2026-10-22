@@ -1,7 +1,7 @@
 from marshmallow import EXCLUDE, Schema, fields, validate
 
 from drastic_common.agent.enums import AgentRepositoryKind
-from drastic_common.agent.schemas import AgentRepositorySchema
+from drastic_common.agent.schemas import AgentRepositorySchema, validate_check_read_data
 
 _REPOSITORY_KIND_NAMES = tuple(kind.value for kind in AgentRepositoryKind)
 
@@ -69,7 +69,7 @@ class CheckInputSchema(Schema):
         unknown = EXCLUDE
 
     agent_id = fields.Integer(required=True)
-    read_data_subset = fields.String(load_default=None, allow_none=True)
+    read_data_subset = fields.String(load_default=None, allow_none=True, validate=validate_check_read_data)
 
 
 class UnlockResponseSchema(Schema):

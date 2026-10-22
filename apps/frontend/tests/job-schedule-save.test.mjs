@@ -138,3 +138,59 @@ test('retry-only edits are saved and old agents are rejected before the first wr
     }
   }
 })
+
+test('partial creates retain IDs across retries without mutating drafts, and reset for the next editor', async () => {
+  for (const editing of [false, true]) {
+    const saved = { id: 1, actions: [], schedules: [] }
+    const counts = { jobs: 0, actions: 0, schedules: 0 }
+    let fail = true
+    const jobsApi = {
+      createJob: async () => { counts.jobs++; return { id: 1 } },
+      updateJob: async () => {},
+      getJob: async () => JSON.parse(JSON.stringify(saved)),
+      createAction: async (_id, action) => {
+        const id = ++counts.actions
+        saved.actions.push({ ...action, id })
+        return { id }
+      },
+      updateAction: async () => {},
+      deleteAction: async id => { saved.actions = saved.actions.filter(action => action.id !== id) },
+      createSchedule: async (_id, schedule) => {
+        if (schedule.timing.hour === 3 && fail) throw new Error('Schedule save failed')
+        const id = ++counts.schedules
+        saved.schedules.push({ ...schedule, id })
+        return { id }
+      },
+      updateSchedule: async () => {},
+      deleteSchedule: async id => { saved.schedules = saved.schedules.filter(schedule => schedule.id !== id) },
+    }
+    const factory = runInNewContext(`${editorSource}\n;useJobEditor`, { ref, sameSchedule, jobsApi })
+    const editor = factory({ loadJobs: async () => {} },
+      { agents: [{ id: 1, protocol_version: 27 }], loadAgents: async () => {} },
+      { withRecoveryKey: operation => operation(null) })
+    const draft = { name: 'Files', config: {}, actions: [
+      { id: 'draft-a', hook: 'start', module: 'command', data: { command: 'prepare' } },
+      { id: 'draft-b', hook: 'end', module: 'command', data: { command: 'cleanup' } },
+    ], schedules: [2, 3].map(hour => ({ id: `draft-${hour}`, repository_id: 2, enabled: true,
+      timing: { type: 'daily', hour, minute: 0 }, config: {} })) }
+    const original = JSON.stringify(draft)
+    const job = editing ? { id: 1, schedules: [] } : null
+    await assert.rejects(editor.saveJob(draft, job, 1), /Schedule save failed/)
+    assert.equal(JSON.stringify(draft), original)
+    assert.equal(editor.createdJobId.value, editing ? null : 1)
+    fail = false
+    await editor.saveJob(draft, job, 1)
+    assert.deepEqual(counts, { jobs: editing ? 0 : 1, actions: 2, schedules: 2 })
+    assert.equal(JSON.stringify(draft), original)
+    draft.actions.shift()
+    draft.schedules.shift()
+    await editor.saveJob(draft, job, 1)
+    assert.deepEqual(saved.actions.map(action => action.id), [2])
+    assert.deepEqual(saved.schedules.map(schedule => schedule.id), [2])
+    editor.reset()
+    assert.equal(editor.createdJobId.value, null)
+    saved.actions = saved.schedules = []
+    await editor.saveJob({ ...draft, actions: [], schedules: [] }, null, 1)
+    assert.equal(counts.jobs, editing ? 1 : 2)
+  }
+})

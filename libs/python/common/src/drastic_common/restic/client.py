@@ -23,6 +23,7 @@ from drastic_common.restic.exceptions import (
     ResticFailedError,
     ResticTimeoutError,
 )
+from drastic_common.restic.validation import validate_read_data_subset
 
 
 class ResticApi:
@@ -671,6 +672,7 @@ class ResticApi:
         return {**self.__execute_command(cmd), "mode": "raw-data"}
 
     def check(self, read_data=False, read_data_subset=None):
+        read_data_subset = validate_read_data_subset(read_data_subset)
         cmd = self.__make_command(
             "check",
             read_data=read_data,

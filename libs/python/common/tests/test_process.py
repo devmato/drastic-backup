@@ -47,6 +47,11 @@ def test_process_timeout_and_json_input():
         run_process([sys.executable, "-c", "import time; time.sleep(60)"], timeout=0.1)
 
 
+def test_verbose_hook_output_is_truncated_without_turning_success_into_failure():
+    output = run_process([sys.executable, "-c", "print('x' * 5000000)"], truncate_output_at=8192)
+    assert output == "x" * 8192 + "\n[output truncated]"
+
+
 def test_restic_operation_cancellation_is_scoped_and_checks_before_spawn():
     api = ResticApi("must-not-execute")
     event = Event()
@@ -57,7 +62,8 @@ def test_restic_operation_cancellation_is_scoped_and_checks_before_spawn():
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX process groups")
-def test_cancellation_kills_children_even_when_the_leader_exits_first(tmp_path):
+@pytest.mark.parametrize("failure", ["cancel", "timeout"])
+def test_cancellation_kills_children_even_when_the_leader_exits_first(tmp_path, failure):
     marker = tmp_path / "child-pid"
     program = (
         "import os, signal, time\n"
@@ -66,8 +72,9 @@ def test_cancellation_kills_children_even_when_the_leader_exits_first(tmp_path):
         f" open({str(marker)!r}, 'w').write(str(os.getpid()))\n"
         "time.sleep(60)\n"
     )
-    with pytest.raises(ProcessCancelledError):
-        run_process([sys.executable, "-c", program], cancelled=marker.exists, timeout=5)
+    with pytest.raises(ProcessCancelledError if failure == "cancel" else TimeoutError):
+        run_process([sys.executable, "-c", program],
+                    cancelled=marker.exists if failure == "cancel" else lambda: False, timeout=0.3)
     pid = int(marker.read_text())
     status = Path(f"/proc/{pid}/stat")
     for _ in range(50):

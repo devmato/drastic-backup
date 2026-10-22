@@ -26,19 +26,6 @@ RepositoryCheckConfigSchema = AgentRepositoryCheckConfigSchema
 ScheduleConfigSchema = AgentScheduleConfigSchema
 
 
-class JobSchema(Schema):
-    id = fields.Integer(required=True)
-    uuid = fields.String(required=True)
-    type = fields.Method("get_type")
-    config = fields.Method("get_config")
-
-    def get_type(self, obj):
-        return obj.type.name if obj.type else None
-
-    def get_config(self, obj):
-        return obj.config
-
-
 class JobScheduleResponseSchema(Schema):
     id = fields.Integer(required=True)
     enabled = fields.Boolean(required=True)
@@ -309,7 +296,7 @@ class ContainersQuerySchema(Schema):
 
 
 class ContainersResponseSchema(Schema):
-    containers = fields.List(fields.Dict(keys=fields.String(), values=fields.Raw()), required=True)
+    containers = fields.List(fields.String(), required=True)
 
 
 class ProxmoxGuestsQuerySchema(Schema):

@@ -8,7 +8,7 @@ import stat
 import subprocess
 from concurrent.futures import Future
 from datetime import datetime, timedelta
-from threading import Event
+from threading import Event, Thread
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -19,6 +19,7 @@ import drastic_agent.runtime.agent as agent_module
 from drastic_agent.agent.enums import AgentReportState, AgentReportType
 from drastic_agent.agent.exceptions import AgentExeption
 from drastic_agent.agent.report import AgentReport
+from drastic_agent.agent.schemas import AgentReportSchema
 from drastic_agent.runtime.agent import Agent
 from drastic_agent.runtime.execution import ExecutionManager
 from drastic_agent.services import secrets as repository_secrets_service
@@ -51,6 +52,16 @@ def build_agent(server="http://server.test", identifier=None, secret=None):
     agent._Agent__sync_pending = Event()
     agent._diagnostic_report = AgentReport.command_report(data={"diagnostic": True})
     return agent
+
+
+@pytest.mark.parametrize("names", [None, [], ["database", "web"]])
+def test_container_discovery_serializes_names_and_empty_non_docker_hosts(names):
+    agent = build_agent()
+    agent._Agent__docker_client = (None if names is None else SimpleNamespace(
+        containers=SimpleNamespace(list=lambda **kwargs: [SimpleNamespace(name=name) for name in names]),
+    ))
+    response = AgentReportSchema().dump(agent.cmd_get_containers())
+    assert response["state"] == "success" and response["data"] == {"containers": names or []}
 
 
 def test_diagnostics_use_server_consent_and_retry_unaccepted_events(monkeypatch):
@@ -682,7 +693,7 @@ def test_failed_initial_connection_and_server_disconnect_retry_on_schedule(monke
 
 @pytest.mark.parametrize(("outcome", "sync_times", "prefix"), [
     ("reconnect", [0, 0], ["sync", "sync"]),
-    ("failed", [0, 15], ["sync", "reports", "reports", "sync"]),
+    ("failed", [0, 15], ["sync", "sync"]),
     ("warning", [0], ["sync"]),
     ("offline", [], []),
 ])
@@ -701,29 +712,64 @@ def test_scheduler_syncs_before_schedules_and_retries_failures(monkeypatch, outc
         state = AgentReportState[outcome] if len(attempts) == 1 and outcome in {"failed", "warning"} else AgentReportState.success
         return SimpleNamespace(state=state)
 
-    def flush():
+    def update():
         nonlocal clock
-        calls.append("reports")
-        assert len(calls) < 10  # Bound the test if a regression leaves sync permanently pending.
         if agent._Agent__sync_pending.is_set():
-            clock = 14 if clock == 0 else 15
-        else:
-            agent._Agent__shutdown_event.set()
+            clock += 5
+            assert clock <= 15
+        return False
+
+    def schedules(now):
+        calls.append("schedules")
+        agent._Agent__shutdown_event.set()
 
     monkeypatch.setattr(agent, "cmd_sync", sync)
     monkeypatch.setattr(agent_module, "monotonic", lambda: clock)
-    monkeypatch.setattr(agent, "_Agent__check_update", lambda: False)
-    monkeypatch.setattr(agent, "_Agent__run_due_schedules", lambda now: calls.append("schedules"))
+    monkeypatch.setattr(agent, "_Agent__check_update", update)
+    monkeypatch.setattr(agent, "_Agent__run_due_schedules", schedules)
     monkeypatch.setattr(agent, "_Agent__maintain_server_connection", lambda now: agent._Agent__shutdown_event.set())
-    monkeypatch.setattr(agent, "_Agent__flush_report_queue", flush)
     agent._next_restore_cleanup = agent._next_diagnostics = float("inf")
     agent.client.handlers["/agent"]["connect"]()
     assert not calls  # Connect callback performs no blocking work.
     agent.client.connected = outcome != "offline"
     agent._Agent__start_scheduler()
     assert attempts == sync_times
-    assert calls == prefix + ["schedules"] + ([] if outcome == "offline" else ["reports"])
+    assert calls == prefix + ["schedules"]
     agent.client.shutdown()
+
+
+def test_blocked_report_delivery_does_not_block_schedules(monkeypatch):
+    from drastic_agent.runtime import reporting
+
+    agent = build_agent()
+    agent.client = SimpleNamespace(connected=True)
+    agent._next_restore_cleanup = agent._next_diagnostics = float("inf")
+    entered, release = Event(), Event()
+
+    def flush():
+        entered.set()
+        assert release.wait(5), "Scheduler did not run independently of report delivery"
+
+    due = []
+
+    def schedule(now):
+        due.append(now)
+        agent._Agent__shutdown_event.set()
+
+    monkeypatch.setattr(agent, "_Agent__check_update", lambda: False)
+    monkeypatch.setattr(agent, "_Agent__run_due_schedules", schedule)
+    monkeypatch.setattr(agent, "_Agent__flush_report_queue", flush)
+    worker = Thread(target=reporting.run, args=(flush, lambda: True, agent._Agent__shutdown_event))
+    worker.start()
+    try:
+        assert entered.wait(5)
+        agent._Agent__start_scheduler()
+        assert len(due) == 1 and not release.is_set()
+    finally:
+        agent._Agent__shutdown_event.set()
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
 
 
 def test_shutdown_stops_client_and_prevents_connection_attempts(monkeypatch):

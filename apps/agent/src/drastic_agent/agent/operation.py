@@ -23,6 +23,7 @@ _PID_UNSET = object()
 class AgentOperation:
     """Mutable operation state; snapshot under _lock and coordinate shared queues with _registry_lock."""
 
+    MAX_LOG_MESSAGE_CHARS = 8192
     uuid = None
     type = None
     source = None
@@ -64,6 +65,7 @@ class AgentOperation:
         persist=True,
     ):
         self._lock = RLock()
+        self._delivery_lock = RLock()
         self.cancel_event = Event()
         self.uuid = operation_uuid or str(uuid4())
         self.type = type
@@ -457,6 +459,8 @@ class AgentOperation:
             if self.type == AgentOperationType.backup and self.cancel_event.is_set():
                 self.data["backup_retryable"] = False
             self._full_log = True
+            previous_cursor = self._log_cursor
+            self._log_cursor = 0
             self.ended = ended or datetime.now(timezone.utc)
             self.sent = False
             try:
@@ -467,6 +471,7 @@ class AgentOperation:
             except Exception:
                 self.ended = None
                 self._full_log = False
+                self._log_cursor = previous_cursor
                 raise
 
         if self in self.pending_reports:
@@ -479,6 +484,9 @@ class AgentOperation:
         return self
 
     def log_message(self, message, final_state=None, data=None):
+        message = str(message)
+        if len(message) > self.MAX_LOG_MESSAGE_CHARS:
+            message = message[:self.MAX_LOG_MESSAGE_CHARS] + "\n[log message truncated]"
         if self.type == AgentOperationType.command and not self.data.get("diagnostic"):
             diagnostics.record("command.log", {"message": str(message)}, operation_uuid=self.uuid)
         with self._lock:
@@ -539,12 +547,13 @@ class AgentOperation:
     def mark_logs_sent(self, sequence=None):
         """Advance only through acknowledged sequences; completed reports retain their full replay log."""
         with self._lock:
-            if not self._full_log:
-                self._log_cursor = (self._logs[-1]["sequence"] if self._logs else self._log_cursor) if sequence is None else sequence
-                if self.data.get("diagnostic"):
-                    self._logs = [log for log in self._logs if log["sequence"] > self._log_cursor]
-                    if self._logs:
-                        self.sent = False
+            if sequence is None:
+                sequence = self._logs[-1]["sequence"] if self._logs else self._log_cursor
+            self._log_cursor = max(self._log_cursor, sequence)
+            if self.data.get("diagnostic"):
+                self._logs = [log for log in self._logs if log["sequence"] > self._log_cursor]
+                if self._logs:
+                    self.sent = False
 
     mark_log_sent = mark_logs_sent
 

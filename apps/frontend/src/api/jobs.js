@@ -42,7 +42,7 @@ export async function getContainers(agentId) {
 }
 
 export async function createSchedule(jobId, data) {
-  await api.post(`/jobs/${jobId}/schedules`, data)
+  return (await api.post(`/jobs/${jobId}/schedules`, data)).data
 }
 
 export async function updateSchedule(id, data) {
@@ -54,7 +54,7 @@ export async function deleteSchedule(id) {
 }
 
 export async function createAction(jobId, data) {
-  await api.post(`/jobs/${jobId}/actions`, data)
+  return (await api.post(`/jobs/${jobId}/actions`, data)).data
 }
 
 export async function updateAction(id, data) {

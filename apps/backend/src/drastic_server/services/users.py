@@ -13,6 +13,7 @@ from drastic_server.services.recovery_export import (
     build_recovery_archive,
     build_recovery_export_payload,
 )
+from drastic_server.utils.realtime import disconnect_session_sockets
 
 
 def get_user(user_id):
@@ -51,11 +52,14 @@ def change_password(user_id, data):
     except ValueError as exc:
         raise AuthenticationFailed("Wrong password") from exc
     # Credential changes invalidate browser sessions and independent debug access together.
-    for session in list(user.sessions):
+    sessions = list(user.sessions)
+    for session in sessions:
         SessionAuthService.revoke_session(session)
     user.debug_token_hash = None
     user.debug_enabled_at = None
     db.session.commit()
+    for session in sessions:
+        disconnect_session_sockets(session.public_id)
 
 
 def recovery_archive(user_id, password, archive_password, restic_targets):

@@ -41,6 +41,26 @@ from drastic_server.services.retention import create_retention, update_retention
 restore_api = test_proxmox_restore_api.restore_api
 
 
+def test_invalid_check_settings_do_not_create_or_clear_integrity_failures(restore_api, monkeypatch):
+    client, _, agent, _, _, _ = restore_api
+    repository = agent.repositories[0]
+    monkeypatch.setattr(AgentService, "check_repository", lambda *args, **kwargs: pytest.fail("Invalid subset must not be dispatched"))
+    count = AgentOperation.query.count()
+    response = client.post(f"/api/repositories/{repository.id}/check", json={
+        "agent_id": agent.id, "read_data_subset": "banana",
+    })
+    assert response.status_code == 422 and AgentOperation.query.count() == count
+    service = AgentOperationService(agent)
+    failure_uuid = str(uuid4())
+    expected_token = None
+    for operation_uuid, invalid in [(str(uuid4()), True), (failure_uuid, False), (str(uuid4()), True)]:
+        service.ingest({"uuid": operation_uuid, "type": "repository_check", "state": "failed",
+                        "repository_id": repository.id, "data": {"invalid_check_input": invalid}})
+        if not invalid:
+            expected_token = failure_uuid
+        assert repository.retention_check_token == expected_token
+
+
 def test_finished_pending_backup_keeps_deletion_fences_until_verified_replacement(restore_api, monkeypatch):
     client, _, agent, _, job, _ = restore_api
     agent.protocol_version = 27

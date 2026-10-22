@@ -9,6 +9,7 @@ from drastic_agent.agent.report import AgentReport
 from drastic_agent.jobs.base import BackupJobHandler
 from drastic_agent.jobs.registry import get_job_handler
 from drastic_agent.runtime.agent import Agent
+from drastic_common.process import ProcessCancelledError
 from drastic_common.restic.exceptions import ResticError, ResticFailedError
 
 
@@ -132,6 +133,17 @@ class _CheckingAgent:
     @staticmethod
     def cmd_run_retention(**kwargs):
         return _SuccessfulReport()
+
+
+def test_invalid_cached_post_backup_check_setting_does_not_create_integrity_block(monkeypatch):
+    api = _CheckingResticApi()
+    handler = _Handler(_CheckingAgent(api), {"id": 1}, repository_id=1,
+                       run_options={"repository_check": {"enabled": True, "read_data": "banana"}})
+    report = AgentReport.command_report()
+    monkeypatch.setattr(base_module.RetentionService, "record_check_failure", lambda *_: pytest.fail("Invalid input is not corruption"))
+    assert handler._run_post_backup_check(report) is False
+    assert report.final_state == AgentReportState.warning
+    assert not api.check_calls and not report.data.get("retention_check_failed")
 
 
 class BackupJobHandlerTests(unittest.TestCase):
@@ -531,6 +543,35 @@ def test_cancelled_backup_only_runs_end_hook(monkeypatch):
     assert CancelledAgent.retention_calls == 0
     assert resticapi.stats_calls == 0
     assert hook_calls == ["start", "end"]
+
+
+def test_cancelling_a_start_hook_stops_admission_and_still_runs_end_cleanup(monkeypatch):
+    AgentReport.pending_reports = []
+    AgentReport.finished_reports.clear()
+    calls = []
+
+    class HookActions:
+        @staticmethod
+        def find(job_id, hook):
+            return [{"hook": hook, "module": "command", "data": {"command": hook}}]
+
+    def command(report, command, **kwargs):
+        calls.append(command)
+        if command == "start":
+            report.cancel_event.set()
+            raise ProcessCancelledError("Hook cancelled")
+
+    runtime = Agent.__new__(Agent)
+    runtime._Agent__docker_client = None
+    agent = _CheckingAgent(_CheckingResticApi())
+    agent.execute_actions = runtime.execute_actions
+    monkeypatch.setattr(AgentAction, "command", command)
+    monkeypatch.setattr(base_module, "actions", HookActions())
+    handler = _TrackingBackupHandler(agent, {"id": 1, "uuid": "job-uuid-1"}, repository_id=2)
+    report = handler.run()
+    assert report.final_state == AgentReportState.cancelled and handler.backup_calls == 0
+    assert calls == ["start", "end"]
+    assert not report.data.get("hook_failed") and not report.data["backup_retryable"]
 
 
 if __name__ == "__main__":

@@ -16,6 +16,7 @@ from drastic_common import diagnostics
 from drastic_common.agent.enums import AgentRepositoryKind
 from drastic_common.backup_retry import BackupRetrySchema, is_transient_backup_error, retry_allowed
 from drastic_common.restic.exceptions import ResticCancelledError, ResticError, is_repository_locked
+from drastic_common.restic.validation import validate_read_data_subset
 
 
 class BackupJobHandler:
@@ -405,6 +406,11 @@ class BackupJobHandler:
 
         report.set_data("backup_phase", "check")
         read_data = str(config.get("read_data") or "").strip() or None
+        try:
+            validate_read_data_subset(read_data)
+        except ValueError as exc:
+            report.log_message(f"Invalid repository check setting: {exc}", final_state=AgentOperationState.warning)
+            return False
         read_data_subset = None if read_data == "100%" else read_data
         read_data_full = read_data == "100%"
         report.log_message("Running repository check after successful backup")

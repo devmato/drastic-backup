@@ -28,7 +28,7 @@
                 <q-tab-panel name="general" class="q-pa-none">
                   <div class="q-gutter-sm">
                     <q-input outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.name" label="Job Name" :rules="[val => !!val?.trim() || 'Required']" />
-                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob" :rules="[val => !!val || 'Required']" />
+                    <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.type" :options="jobTypeOptions" label="Job Type" emit-value map-options :disable="!!editingJob || !!createdJobId" :rules="[val => !!val || 'Required']" />
                     <q-select outlined :dense="!$q.platform.has.touch" hide-bottom-space v-model="jobForm.retention" :options="retentionOptions" label="Retention" emit-value map-options
                       hint="Applies to all backups of this job, separately in each repository. After deleting the job, the default policy applies."
                       :rules="[val => val != null || 'Required']" />
@@ -108,6 +108,7 @@ const retentionOptions = computed(() => [
 
 const props = defineProps({
   editingJob: { type: Object, default: null },
+  createdJobId: { type: Number, default: null },
   agentId: { type: [Number, String], default: null },
   agentOnline: { type: Boolean, default: false },
   repositories: { type: Array, default: () => [] },
@@ -206,7 +207,7 @@ watch(
 watch(
   () => jobForm.type,
   type => {
-    if (!props.editingJob) {
+    if (!props.editingJob && !props.createdJobId) {
       jobForm.config = cloneConfig(type)
     }
   }

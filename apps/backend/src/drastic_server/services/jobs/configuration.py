@@ -42,12 +42,7 @@ def _normalize_check_config(config):
 
 
 def _normalize_file_backup_config(config):
-    config = config or {}
-
-    return {
-        "paths": config.get("paths", []),
-        "exclude_patterns": config.get("exclude_patterns", []),
-    }
+    return AgentFileBackupJobConfigSchema().load(config or {})
 
 
 def _normalize_proxmox_backup_config(config):
