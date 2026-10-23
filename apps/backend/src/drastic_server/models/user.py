@@ -1,3 +1,5 @@
+"""Persist account settings and wrap recovery keys with validated account passwords."""
+
 import secrets
 from uuid import uuid4
 
@@ -10,6 +12,15 @@ from drastic_common.secret_envelope import (
 )
 from drastic_server.extensions import db
 from drastic_server.models.mixins import IdMixin, TimeMixin
+
+
+class PasswordTooLong(ValueError):
+    pass
+
+
+def _validate_password_length(password: str) -> None:
+    if len(password.encode("utf-8")) > 72:
+        raise PasswordTooLong("Password must not exceed 72 UTF-8 bytes")
 
 
 class User(IdMixin, TimeMixin, db.Model):
@@ -39,13 +50,14 @@ class User(IdMixin, TimeMixin, db.Model):
         return self.schedule_timezone or "UTC"
 
     def check_password(self, password: str) -> bool:
-        if not self.password:
+        if not self.password or len(password.encode("utf-8")) > 72:
             return False
         return bcrypt.checkpw(password.encode(), self.password.encode())
 
     def set_initial_password(self, password: str, recovery_key: str | None = None) -> None:
         if self.password or self.encrypted_recovery_key:
             raise ValueError("Initial password is already set")
+        _validate_password_length(password)
         self.password = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
         recovery_key = recovery_key or secrets.token_urlsafe(32)
         self.encrypted_recovery_key = encrypt_with_password(recovery_key, password)
@@ -53,6 +65,7 @@ class User(IdMixin, TimeMixin, db.Model):
     def change_password(self, current_password: str, new_password: str) -> None:
         if not self.check_password(current_password):
             raise ValueError("Wrong password")
+        _validate_password_length(new_password)
         if not self.encrypted_recovery_key:
             raise ValueError("Recovery key is missing")
 

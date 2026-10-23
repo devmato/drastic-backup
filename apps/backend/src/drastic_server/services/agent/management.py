@@ -46,7 +46,7 @@ def set_ssh_public_key(agent, public_key):
 
 def register_agent(data):
     user = User.query.filter_by(name=data["username"].strip().lower()).first()
-    if user is None or not bcrypt.checkpw(data["password"].encode("UTF-8"), user.password.encode("UTF-8")):
+    if user is None or not user.check_password(data["password"]):
         raise AuthenticationFailed("Wrong username or password")
     secret = Agent.generate_secret()
     agent = Agent(

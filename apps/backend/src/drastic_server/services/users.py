@@ -3,7 +3,7 @@
 from drastic_server.extensions import db
 from drastic_server.integrations.agent import AgentService
 from drastic_server.models.agent import Agent
-from drastic_server.models.user import User
+from drastic_server.models.user import PasswordTooLong, User
 from drastic_server.services.auth import SessionAuthService
 from drastic_server.services.exceptions import AuthenticationFailed, InvalidInput
 from drastic_server.services.queries import require_result
@@ -39,7 +39,10 @@ def initialize_user(data):
     if not needs_initialization():
         raise ValueError("Initial user already exists")
     user = User(name=data["username"].strip().lower())
-    user.set_initial_password(data["password"])
+    try:
+        user.set_initial_password(data["password"])
+    except PasswordTooLong as exc:
+        raise InvalidInput(str(exc)) from exc
     db.session.add(user)
     db.session.commit()
 
@@ -49,6 +52,8 @@ def change_password(user_id, data):
     user = get_user(user_id)
     try:
         user.change_password(data["current_password"], data["new_password"])
+    except PasswordTooLong as exc:
+        raise InvalidInput(str(exc)) from exc
     except ValueError as exc:
         raise AuthenticationFailed("Wrong password") from exc
     # Credential changes invalidate browser sessions and independent debug access together.

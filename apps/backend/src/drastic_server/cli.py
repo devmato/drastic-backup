@@ -1,3 +1,5 @@
+"""Expose account/bootstrap commands and offline startup maintenance."""
+
 import getpass
 
 import bcrypt
@@ -8,7 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from drastic_server.extensions import db
 from drastic_server.models.agent import Agent, AgentSession
-from drastic_server.models.user import User
+from drastic_server.models.user import PasswordTooLong, User
 from drastic_server.services.operations.reports import (
     STARTUP_NOTIFICATION_RETRY_LIMIT,
     AgentOperationService,
@@ -51,8 +53,11 @@ def _seed_bootstrap_admin_if_configured() -> User | None:
         return user
 
     user = User(name=username)
+    try:
+        user.set_initial_password(password)
+    except PasswordTooLong as exc:
+        raise click.ClickException(str(exc)) from exc
     db.session.add(user)
-    user.set_initial_password(password)
 
     try:
         db.session.commit()
@@ -81,7 +86,10 @@ def user_create(name):
             print("Passwords dont match. Please repeat!")
 
     user = User(name=name)
-    user.set_initial_password(password)
+    try:
+        user.set_initial_password(password)
+    except PasswordTooLong as exc:
+        raise click.ClickException(str(exc)) from exc
 
     try:
         db.session.add(user)

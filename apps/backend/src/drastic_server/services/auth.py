@@ -7,7 +7,6 @@ import hmac
 import logging
 from datetime import UTC, datetime
 
-import bcrypt
 from flask_jwt_extended import create_access_token, create_refresh_token, decode_token
 from marshmallow import ValidationError
 
@@ -33,7 +32,7 @@ class SessionAuthService:
     def login(cls, username, password, *, user_agent="", schedule_timezone=None):
         """Authenticate and commit a session, returning the unlocked recovery key and token pair."""
         user = User.query.filter_by(name=username.lower()).first()
-        if not user or not bcrypt.checkpw(password.encode("UTF-8"), user.password.encode("UTF-8")):
+        if not user or not user.check_password(password):
             raise AuthenticationFailed("Wrong username or password")
         try:
             recovery_key = ensure_user_recovery_key(user, password)

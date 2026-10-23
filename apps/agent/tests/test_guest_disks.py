@@ -1,12 +1,13 @@
 import io
 import json
 import tarfile
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from drastic_agent.guest_disks import DirectorySnapshot, snapshot_disks
-from drastic_agent.proxmox_blocks import BLOCK_SIZE, block_path
+from drastic_agent.proxmox_blocks import BLOCK_SIZE
 from drastic_agent.proxmox_snapshot import write_archive
 
 
@@ -94,29 +95,31 @@ def test_tar_disks_share_one_handle_and_close_it_on_request_failure(tmp_path):
 
 
 def test_native_cross_block_reads_and_inaccessible_data_fail_closed(tmp_path):
-    manifest = {"version": 2, "vmid": 101, "metadata_generation": 1,
-                "block_size": BLOCK_SIZE, "volumes": [
-                    {"disk": "scsi0", "size": BLOCK_SIZE + 512, "generations": [1, 2]}]}
-    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-    for index, data in enumerate((b"a" * BLOCK_SIZE, b"b" * 512)):
-        path = tmp_path / block_path("scsi0", index)
+    # Freeze the v2 layout independently of the current backup writer.
+    block_size = 4194304
+    manifest = Path(__file__).parent / "fixtures/native-v2-manifest.json"
+    (tmp_path / "manifest.json").write_bytes(manifest.read_bytes())
+    for name, data in (("disks/scsi0/000000/0000000000.raw", b"a" * block_size),
+                       ("disks/scsi0/000000/0000000001.raw", b"b" * 512)):
+        path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(data)
     files = DirectorySnapshot(tmp_path)
     with snapshot_disks(files, {"format": "native", "vmid": 101}) as disks:
         disk = disks["scsi0"]
-        assert disk.read_at(BLOCK_SIZE - 3, 7) == b"aaabbbb"
-        assert disk.read_at(BLOCK_SIZE + 510, 9) == b"bb"
-        second = tmp_path / block_path("scsi0", 1)
+        assert disk.size == 4194816
+        assert disk.read_at(block_size - 3, 7) == b"aaabbbb"
+        assert disk.read_at(block_size + 510, 9) == b"bb"
+        second = tmp_path / "disks/scsi0/000000/0000000001.raw"
         second.write_bytes(b"short")
         with pytest.raises(OSError, match="invalid disk block"):
-            disk.read_at(BLOCK_SIZE, 1)
+            disk.read_at(block_size, 1)
         second.unlink()
         with pytest.raises(FileNotFoundError, match="Missing"):
-            disk.read_at(BLOCK_SIZE, 1)
+            disk.read_at(block_size, 1)
         second.symlink_to(tmp_path / "manifest.json")
         with pytest.raises(ValueError, match="symbolic link"):
-            disk.read_at(BLOCK_SIZE, 1)
+            disk.read_at(block_size, 1)
     with pytest.raises(ValueError, match="VM"), snapshot_disks(files, {"format": "native", "vmid": 102}):
         pass
 

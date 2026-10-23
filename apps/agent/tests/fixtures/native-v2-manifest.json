@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "vmid": 101,
+  "metadata_generation": 1,
+  "block_size": 4194304,
+  "volumes": [
+    {
+      "disk": "scsi0",
+      "size": 4194816,
+      "generations": [1, 2]
+    }
+  ]
+}

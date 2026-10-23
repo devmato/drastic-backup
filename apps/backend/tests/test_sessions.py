@@ -22,6 +22,61 @@ from drastic_server.services.repository.secrets import (
 from drastic_server.utils.realtime import emit_ui_event
 
 
+@pytest.mark.parametrize("password", ["x" * 73, "😀" * 19], ids=["ascii", "multibyte"])
+def test_overlong_account_passwords_are_validation_or_authentication_errors(monkeypatch, password):
+    app = build_app(monkeypatch)
+    with app.app_context():
+        db.create_all()
+        try:
+            client = app.test_client()
+            response = client.post("/api/user/init", json={"username": "owner", "password": password})
+            assert response.status_code == 422
+            assert "72 UTF-8 bytes" in response.json["message"]
+            assert User.query.count() == 0
+
+            user = User(name="owner")
+            user.set_initial_password("account-password")
+            db.session.add(user)
+            db.session.commit()
+            response = client.post("/api/auth/login", json={"username": "owner", "password": password})
+            assert response.status_code == 401
+            response = client.post("/api/agents/register", json={"username": "owner", "password": password})
+            assert response.status_code == 401
+            assert client.post("/api/auth/login", json={"username": "owner", "password": "account-password"}).status_code == 200
+            password_hash = user.password
+            recovery_envelope = dict(user.encrypted_recovery_key)
+
+            response = client.put("/api/user/password", json={"current_password": "account-password", "new_password": password})
+            assert response.status_code == 422
+            assert "72 UTF-8 bytes" in response.json["message"]
+            db.session.refresh(user)
+            assert user.password == password_hash
+            assert user.encrypted_recovery_key == recovery_envelope
+            assert client.get("/api/auth/status").json["authenticated"]
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
+@pytest.mark.parametrize("command", [["seed", "bootstrap"], ["user", "create", "owner"]], ids=["bootstrap", "create"])
+def test_cli_rejects_overlong_passwords_without_staging_a_user(monkeypatch, command):
+    app = build_app(monkeypatch)
+    password = "😀" * 19
+    app.config.update(BOOTSTRAP_ADMIN_USERNAME="owner", BOOTSTRAP_ADMIN_PASSWORD=password)
+    monkeypatch.setattr("drastic_server.cli.getpass.getpass", lambda prompt: password)
+    with app.app_context():
+        db.create_all()
+        try:
+            result = app.test_cli_runner().invoke(args=command)
+            assert result.exit_code == 1
+            assert "Error: Password must not exceed 72 UTF-8 bytes" in result.output
+            assert not db.session.new
+            assert User.query.count() == 0
+        finally:
+            db.session.remove()
+            db.drop_all()
+
+
 @pytest.mark.parametrize("revoke", ["logout", "password"])
 def test_revocation_disconnects_every_tab_but_not_other_sessions(monkeypatch, revoke):
     app = build_app(monkeypatch)

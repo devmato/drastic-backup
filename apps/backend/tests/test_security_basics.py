@@ -2,6 +2,7 @@ import json
 import unittest
 
 import bcrypt
+import pytest
 from flask import Flask
 
 from drastic_common.secret_envelope import (
@@ -17,7 +18,7 @@ from drastic_server.cli import _seed_bootstrap_admin_if_configured
 from drastic_server.extensions import db
 from drastic_server.models.notification import NotificationConfig
 from drastic_server.models.repository import Repository
-from drastic_server.models.user import User
+from drastic_server.models.user import PasswordTooLong, User
 from drastic_server.services.repository import (
     RepositorySecretError,
     ensure_user_recovery_key,
@@ -134,6 +135,27 @@ class RepositorySecretRevealTests(unittest.TestCase):
         user.set_initial_password("account-password", recovery_key="user-recovery-key")
 
         self.assertEqual(ensure_user_recovery_key(user, "account-password"), "user-recovery-key")
+
+
+@pytest.mark.parametrize("password", ["a" * 72, "😀" * 18], ids=["ascii", "multibyte"])
+def test_password_limit_counts_utf8_bytes_without_truncating_or_changing_secrets(password):
+    user = User(name="admin")
+    overlong = password + "x"
+    with pytest.raises(PasswordTooLong, match="72 UTF-8 bytes"):
+        user.set_initial_password(overlong)
+    assert user.password is None
+    assert user.encrypted_recovery_key is None
+
+    user.set_initial_password(password, recovery_key="recovery-key")
+    assert user.check_password(password)
+    assert not user.check_password(overlong)
+    password_hash = user.password
+    recovery_envelope = dict(user.encrypted_recovery_key)
+    with pytest.raises(PasswordTooLong, match="72 UTF-8 bytes"):
+        user.change_password(password, overlong)
+    assert user.password == password_hash
+    assert user.encrypted_recovery_key == recovery_envelope
+    assert ensure_user_recovery_key(user, password) == "recovery-key"
 
 
 class UserPasswordTests(unittest.TestCase):

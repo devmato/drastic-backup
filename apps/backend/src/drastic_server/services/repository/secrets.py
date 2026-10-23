@@ -2,7 +2,6 @@
 
 import secrets
 
-import bcrypt
 from sqlalchemy import select, update
 
 from drastic_common.secret_envelope import (
@@ -46,7 +45,7 @@ def reveal_repository_recovery_key(
 ) -> str:
     if not account_password or not user.password:
         raise RepositorySecretError("Account password is required")
-    if not bcrypt.checkpw(account_password.encode("UTF-8"), user.password.encode("UTF-8")):
+    if not user.check_password(account_password):
         raise RepositorySecretError("Wrong account password")
 
     user_recovery_key = ensure_user_recovery_key(user, account_password)
